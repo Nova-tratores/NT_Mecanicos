@@ -127,7 +127,7 @@ export default function DiarioTecnico() {
     const { data: osData } = await supabase
       .from('Ordem_Servico')
       .select('*')
-      .in('Status', ['Execução', 'Execução Procurando peças', 'Execução aguardando peças (em transporte)', 'Aguardando ordem Técnico', 'Executada aguardando cliente', 'Orçamento'])
+      .in('Status', ['Execução', 'Execução Procurando peças', 'Execução aguardando peças (em transporte)', 'Aguardando ordem Técnico', 'Relatório Concluído', 'Orçamento'])
       .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
       .order('Previsao_Execucao', { ascending: true })
       .order('Id_Ordem', { ascending: true })

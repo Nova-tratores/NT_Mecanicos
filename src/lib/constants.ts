@@ -28,7 +28,7 @@ export const FASES_OS = [
   'Executada aguardando comercial',
   'Aguardando outros',
   'Aguardando ordem Técnico',
-  'Executada aguardando cliente',
+  'Relatório Concluído',
   'Concluída',
   'Cancelada',
 ]

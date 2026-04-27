@@ -106,7 +106,7 @@ function formatarDataCompleta(d: string) {
 
 /* ═══ Helpers de fase ═══ */
 const FASES_EXECUCAO = ['Execução', 'Execução Procurando peças', 'Execução aguardando peças (em transporte)']
-const FASES_AGUARDANDO = ['Aguardando outros', 'Aguardando ordem Técnico', 'Executada aguardando cliente', 'Executada aguardando comercial']
+const FASES_AGUARDANDO = ['Aguardando outros', 'Aguardando ordem Técnico', 'Relatório Concluído', 'Executada aguardando comercial']
 
 function getFaseInfo(status: string): { label: string; color: string; bg: string } {
   if (FASES_EXECUCAO.includes(status)) {
@@ -114,7 +114,7 @@ function getFaseInfo(status: string): { label: string; color: string; bg: string
     return { label: 'Em execução', color: colors.info, bg: colors.infoBg }
   }
   if (status === 'Aguardando ordem Técnico') return { label: 'Aguard. ordem técnico', color: '#7C3AED', bg: '#F5F3FF' }
-  if (status === 'Executada aguardando cliente') return { label: 'Aguard. cliente', color: colors.warning, bg: colors.warningBg }
+  if (status === 'Relatório Concluído') return { label: 'Rel. Concluído', color: colors.warning, bg: colors.warningBg }
   if (status === 'Executada aguardando comercial') return { label: 'Aguard. comercial', color: colors.warning, bg: colors.warningBg }
   if (status === 'Aguardando outros') return { label: 'Aguardando', color: colors.textMuted, bg: colors.border }
   if (status.includes('Orçamento')) return { label: 'Orçamento', color: colors.accent, bg: colors.accentBg }

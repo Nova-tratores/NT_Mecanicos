@@ -299,12 +299,40 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
   const uploadFoto = async (file: File, campo: string): Promise<string> => {
     const ext = file.name.split('.').pop() || 'jpg'
+    // Comprimir imagem antes de enviar
+    let fileToUpload: File | Blob = file
+    if (file.size > 500_000) {
+      try {
+        const bitmap = await createImageBitmap(file)
+        const canvas = document.createElement('canvas')
+        const maxDim = 1200
+        let w = bitmap.width, h = bitmap.height
+        if (w > maxDim || h > maxDim) {
+          if (w > h) { h = Math.round(h * maxDim / w); w = maxDim }
+          else { w = Math.round(w * maxDim / h); h = maxDim }
+        }
+        canvas.width = w; canvas.height = h
+        const ctx = canvas.getContext('2d')!
+        ctx.drawImage(bitmap, 0, 0, w, h)
+        const blob = await new Promise<Blob>((resolve) => canvas.toBlob(b => resolve(b!), 'image/jpeg', 0.8))
+        fileToUpload = blob
+      } catch { /* se compressão falha, envia original */ }
+    }
     const path = `os-tecnicos/${id}/${campo}_${Date.now()}.${ext}`
-    const { error } = await supabase.storage.from('requisicoes').upload(path, file)
-    if (error) { console.error(error); return '' }
-    const { data } = supabase.storage.from('requisicoes').getPublicUrl(path)
-    return data.publicUrl
+    // Tentar até 2 vezes
+    for (let tentativa = 0; tentativa < 2; tentativa++) {
+      const { error } = await supabase.storage.from('requisicoes').upload(path, fileToUpload, { upsert: true })
+      if (!error) {
+        const { data } = supabase.storage.from('requisicoes').getPublicUrl(path)
+        return data.publicUrl
+      }
+      console.error(`[foto] Upload tentativa ${tentativa + 1} falhou para ${campo}:`, error.message)
+      if (tentativa === 0) await new Promise(r => setTimeout(r, 1000))
+    }
+    return ''
   }
+
+  const [errosFoto, setErrosFoto] = useState<string[]>([])
 
   const handleFoto = async (setter: (v: string) => void, campo: string, file: File) => {
     const preview = URL.createObjectURL(file)
@@ -312,9 +340,10 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     const url = await uploadFoto(file, campo)
     if (url) {
       setter(url)
+      setErrosFoto(prev => prev.filter(e => e !== campo))
     } else {
-      // Upload falhou — manter preview mas avisar
-      console.warn(`[foto] Upload falhou para ${campo}, mantendo preview local`)
+      setErrosFoto(prev => [...prev.filter(e => e !== campo), campo])
+      alert(`Erro ao enviar foto "${campo}". Verifique sua conexão e tente novamente.`)
     }
   }
 
@@ -357,6 +386,12 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       alert(`Você precisa revisar todos os produtos do PPV antes de enviar.\n\n${ppvItems.filter(p => !p.revisado).length} produto(s) pendente(s).`)
       setPpvAberto(true)
       return
+    }
+
+    // Avisar se tem fotos com erro de upload
+    if (errosFoto.length > 0) {
+      const continuar = confirm(`${errosFoto.length} foto(s) não foram enviadas (${errosFoto.join(', ')}). Deseja enviar mesmo assim sem essas fotos?`)
+      if (!continuar) return
     }
 
     // Validar justificativa se tem peças extras
@@ -499,7 +534,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           await Promise.all([
             supabase.from('Ordem_Servico').update({
               ID_Relatorio_Final: pdfUrl,
-              Status: 'Executada aguardando cliente',
+              Status: 'Relatório Concluído',
             }).eq('Id_Ordem', id),
             supabase.from('Ordem_Servico_Tecnicos').update({ pdf_criado: true }).eq('Ordem_Servico', id),
           ])
