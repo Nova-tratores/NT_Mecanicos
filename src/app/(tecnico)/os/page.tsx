@@ -93,6 +93,7 @@ function formatarData(d: string) {
 }
 
 /* ═══ Helpers de fase ═══ */
+const FASES_ORCAMENTO = ['Orçamento', 'Orçamento enviado para o cliente e aguardando']
 const FASES_EXECUCAO = ['Execução', 'Execução Procurando peças', 'Execução aguardando peças (em transporte)']
 const FASES_AGUARDANDO = ['Aguardando outros', 'Aguardando ordem Técnico', 'Relatório Concluído', 'Executada aguardando comercial']
 
@@ -175,29 +176,61 @@ export default function OrdensHub() {
 
   const hoje = getHoje()
 
-  // Separar: preencher (atrasadas) vs abertas (não vencidas) — exclui enviadas
-  const { preencher, abertas, pendentesCount } = useMemo(() => {
+  // Separar: preencher vs abertas — exclui enviadas
+  // Atrasada = APENAS "Aguardando ordem Técnico" por mais de 1 dia
+  // Preencher = previsão vencida (precisa preencher, mas não necessariamente atrasada)
+  // Abertas = divididas por fase (orçamento, execução, outras)
+  const { atrasadas, preencher, abertasOrcamento, abertasExecucao, abertasOutras, pendentesCount } = useMemo(() => {
     const ords = ordensRaw.filter(o => !enviadas.has(String(o.Id_Ordem)))
 
-    const prn: OrdemServico[] = [] // preencher = atrasadas (previsão vencida)
-    const abt: OrdemServico[] = [] // abertas = não vencidas
+    const atr: OrdemServico[] = []  // atrasadas (Aguardando ordem Técnico > 1 dia)
+    const prn: OrdemServico[] = []  // preencher (previsão vencida, exceto atrasadas)
+    const orc: OrdemServico[] = []  // abertas — orçamento
+    const exe: OrdemServico[] = []  // abertas — execução
+    const out: OrdemServico[] = []  // abertas — outras fases
 
     ords.forEach(o => {
       const prev = o.Previsao_Execucao?.trim?.() || ''
       const datas = agendaMap[o.Id_Ordem] || []
       const datasOrdenadas = [...datas].sort()
+      const previsaoVencida = prev && prev < hoje && !datasOrdenadas.some(d => d >= hoje)
 
-      if (prev && prev < hoje && !datasOrdenadas.some(d => d >= hoje)) {
-        // Previsão vencida — vai para Preencher
+      // Atrasada: "Aguardando ordem Técnico" com previsão vencida há mais de 1 dia
+      if (o.Status === 'Aguardando ordem Técnico' && previsaoVencida) {
+        const prevDate = new Date(prev + 'T00:00:00')
+        const hojeDate = new Date(hoje + 'T00:00:00')
+        const diffDias = Math.floor((hojeDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24))
+        if (diffDias > 1) {
+          atr.push(o)
+          return
+        }
+      }
+
+      // Previsão vencida (precisa preencher mas não é atrasada)
+      if (previsaoVencida) {
         prn.push(o)
+        return
+      }
+
+      // Abertas — separar por fase
+      if (FASES_ORCAMENTO.includes(o.Status)) {
+        orc.push(o)
+      } else if (FASES_EXECUCAO.includes(o.Status)) {
+        exe.push(o)
       } else {
-        // Ainda não venceu — vai para Abertas
-        abt.push(o)
+        out.push(o)
       }
     })
 
     const pend = ords.filter(o => !preenchidas.has(String(o.Id_Ordem))).length
-    return { preencher: prn, abertas: abt, pendentesCount: pend }
+    return {
+      atrasadas: atr,
+      preencher: prn,
+      abertasOrcamento: orc,
+      abertasExecucao: exe,
+      abertasOutras: out,
+      pendentesCount: pend,
+    }
   }, [ordensRaw, enviadas, preenchidas, agendaMap, hoje])
 
   // Busca com debounce
@@ -241,8 +274,8 @@ export default function OrdensHub() {
 
       {/* Métricas */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-        <StatCard value={preencher.length} label="Preencher" tone="danger" />
-        <StatCard value={abertas.length} label="Abertas" tone="warning" />
+        <StatCard value={atrasadas.length + preencher.length} label="Preencher" tone="danger" />
+        <StatCard value={abertasOrcamento.length + abertasExecucao.length + abertasOutras.length} label="Abertas" tone="warning" />
         <StatCard value={enviadasCount} label="Enviadas" tone="success" />
       </div>
 
@@ -257,7 +290,7 @@ export default function OrdensHub() {
         ]}
       />
 
-      {/* ═══ ABA PREENCHER (atrasadas) ═══ */}
+      {/* ═══ ABA PREENCHER ═══ */}
       {aba === 'preencher' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <SearchInput value={busca} onChange={setBusca} placeholder="Buscar OS, cliente ou PPV..." />
@@ -283,47 +316,84 @@ export default function OrdensHub() {
 
           {loading ? (
             <PageSpinner />
-          ) : preencher.length === 0 ? (
+          ) : (atrasadas.length === 0 && preencher.length === 0) ? (
             <EmptyState
               icon={AlertTriangle}
-              title="Nenhuma OS atrasada"
-              subtitle="Você está em dia!"
+              title="Nenhuma OS para preencher"
+              subtitle="Voce esta em dia!"
             />
-          ) : (
-            !busca.trim() && (
-              <Section label="Atrasadas" icon={AlertTriangle} color={colors.danger} count={preencher.length}>
-                <div style={{
-                  background: colors.dangerBg,
-                  borderRadius: radius.xl,
-                  padding: 10,
-                  border: `1px solid ${colors.dangerBorder}`,
-                  display: 'flex', flexDirection: 'column', gap: 8,
-                }}>
+          ) : !busca.trim() && (
+            <>
+              {/* Atrasadas — Aguardando ordem Técnico > 1 dia */}
+              {atrasadas.length > 0 && (
+                <Section label="Atrasadas" icon={AlertTriangle} color={colors.danger} count={atrasadas.length}>
+                  <div style={{
+                    background: colors.dangerBg,
+                    borderRadius: radius.xl,
+                    padding: 10,
+                    border: `1px solid ${colors.dangerBorder}`,
+                    display: 'flex', flexDirection: 'column', gap: 8,
+                  }}>
+                    {atrasadas.map(os => (
+                      <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
+                    ))}
+                  </div>
+                </Section>
+              )}
+
+              {/* Preencher — previsão vencida, não atrasada */}
+              {preencher.length > 0 && (
+                <Section label="Preencher" icon={FileText} color={colors.warning} count={preencher.length}>
                   {preencher.map(os => (
                     <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
                   ))}
-                </div>
-              </Section>
-            )
+                </Section>
+              )}
+            </>
           )}
         </div>
       )}
 
-      {/* ═══ ABA ABERTAS (não vencidas) ═══ */}
+      {/* ═══ ABA ABERTAS (separadas por fase) ═══ */}
       {aba === 'abertas' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {loading ? (
             <PageSpinner />
-          ) : abertas.length === 0 ? (
+          ) : (abertasExecucao.length === 0 && abertasOrcamento.length === 0 && abertasOutras.length === 0) ? (
             <EmptyState
               icon={Wrench}
               title="Nenhuma OS aberta"
               subtitle="Quando houver ordens, elas aparecerão aqui"
             />
           ) : (
-            abertas.map(os => (
-              <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
-            ))
+            <>
+              {/* Em Execução */}
+              {abertasExecucao.length > 0 && (
+                <Section label="Em Execução" icon={Wrench} color={colors.info} count={abertasExecucao.length}>
+                  {abertasExecucao.map(os => (
+                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
+                  ))}
+                </Section>
+              )}
+
+              {/* Orçamento (Futuros) */}
+              {abertasOrcamento.length > 0 && (
+                <Section label="Futuros" icon={Calendar} color={colors.accent} count={abertasOrcamento.length}>
+                  {abertasOrcamento.map(os => (
+                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
+                  ))}
+                </Section>
+              )}
+
+              {/* Outras fases */}
+              {abertasOutras.length > 0 && (
+                <Section label="Outras fases" icon={FileText} color={colors.textMuted} count={abertasOutras.length}>
+                  {abertasOutras.map(os => (
+                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
+                  ))}
+                </Section>
+              )}
+            </>
           )}
         </div>
       )}
