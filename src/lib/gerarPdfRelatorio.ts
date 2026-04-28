@@ -76,6 +76,9 @@ interface DadosRelatorio {
 
   // Se true, não faz download, só retorna o blob
   apenasBlob?: boolean
+
+  // Função customizada para baixar fotos (ex: via Supabase Storage, evitando CORS)
+  downloadFoto?: (url: string) => Promise<string | null>
 }
 
 const VERMELHO = '#C41E2A'
@@ -90,12 +93,23 @@ function formatarDataBR(dateStr: string) {
   return `${d}/${m}/${y}`
 }
 
-async function loadImageAsBase64(url: string): Promise<string | null> {
+async function loadImageAsBase64(url: string, downloadFoto?: (url: string) => Promise<string | null>): Promise<string | null> {
   if (!url) return null
+  // Já é base64 — retorna direto
+  if (url.startsWith('data:')) return url
   // Ignora blob: URLs que não são válidas fora do navegador
   if (url.startsWith('blob:')) return null
+
+  // Tenta downloader customizado primeiro (Supabase Storage, sem CORS)
+  if (downloadFoto) {
+    try {
+      const result = await downloadFoto(url)
+      if (result) return result
+    } catch { /* fall through */ }
+  }
+
   try {
-    // Tenta fetch primeiro (funciona se CORS permite)
+    // Tenta fetch (funciona se CORS permite)
     const resp = await fetch(url, { mode: 'cors' })
     if (resp.ok) {
       const blob = await resp.blob()
@@ -107,7 +121,7 @@ async function loadImageAsBase64(url: string): Promise<string | null> {
       })
     }
   } catch {
-    // CORS bloqueou, tenta via Image element (bypass CORS)
+    // CORS bloqueou, tenta via Image element
   }
   // Fallback: carrega via <img> crossOrigin
   try {
@@ -421,7 +435,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
       doc.text(foto.label, x, y)
 
       // Placeholder ou imagem
-      const imgData = await loadImageAsBase64(foto.url)
+      const imgData = await loadImageAsBase64(foto.url, dados.downloadFoto)
       if (imgData) {
         try {
           doc.addImage(imgData, 'JPEG', x, y + 2, fotoW, fotoH)

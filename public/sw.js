@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nt-mecanicos-v4';
+const CACHE_NAME = 'nt-mecanicos-v5';
 const OFFLINE_URL = '/';
 
 const PRECACHE_URLS = [

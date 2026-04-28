@@ -19,7 +19,7 @@ async function fetchOsEnviadas(nome: string): Promise<OsEnviada[]> {
   const { data } = await supabase
     .from('Ordem_Servico_Tecnicos')
     .select('*')
-    .ilike('TecResp1', nome)
+    .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
     .eq('Status', 'enviado')
     .order('Data', { ascending: false })
   return (data || []) as OsEnviada[]

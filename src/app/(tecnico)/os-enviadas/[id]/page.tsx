@@ -128,6 +128,21 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
       dias.push({ data: '', horaInicio: '', horaFim: '', kmTotal: '' })
     }
 
+    const downloadFoto = async (url: string): Promise<string | null> => {
+      if (!url) return null
+      const match = url.match(/\/object\/public\/requisicoes\/(.+?)(\?|$)/)
+      if (!match) return null
+      const path = decodeURIComponent(match[1])
+      const { data: blob, error } = await supabase.storage.from('requisicoes').download(path)
+      if (error || !blob) return null
+      return new Promise((resolve) => {
+        const reader = new FileReader()
+        reader.onloadend = () => resolve(reader.result as string)
+        reader.onerror = () => resolve(null)
+        reader.readAsDataURL(blob)
+      })
+    }
+
     try {
       await gerarPdfRelatorio({
         ordemServico: id,
@@ -175,6 +190,7 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
         assTecnico: (registro.AssTecnico as string) || '',
         nomResp: (registro.NomResp as string) || '',
         data: (registro.Data as string) || '',
+        downloadFoto,
       })
     } catch (err) {
       console.error('Erro ao gerar PDF:', err)

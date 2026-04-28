@@ -1,13 +1,13 @@
 'use client'
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
-import { Home, Wrench, ClipboardList, CalendarDays, User } from 'lucide-react'
+import { Home, Wrench, ClipboardList, Camera, User } from 'lucide-react'
 
 const tabs = [
   { href: '/', icon: Home, label: 'Início' },
   { href: '/os', icon: Wrench, label: 'Ordens' },
+  { href: '/fotos', icon: Camera, label: 'Fotos' },
   { href: '/requisicoes', icon: ClipboardList, label: 'Requisições' },
-  { href: '/agenda', icon: CalendarDays, label: 'Agenda' },
   { href: '/perfil', icon: User, label: 'Perfil' },
 ]
 

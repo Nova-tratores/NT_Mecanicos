@@ -484,7 +484,22 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         cidade = cli?.cidade || ''
       }
 
-      const pdfBlob = await gerarPdfRelatorio({
+      const downloadFoto = async (url: string): Promise<string | null> => {
+        if (!url) return null
+        const match = url.match(/\/object\/public\/requisicoes\/(.+?)(\?|$)/)
+        if (!match) return null
+        const path = decodeURIComponent(match[1])
+        const { data: blob, error } = await supabase.storage.from('requisicoes').download(path)
+        if (error || !blob) return null
+        return new Promise((resolve) => {
+          const reader = new FileReader()
+          reader.onloadend = () => resolve(reader.result as string)
+          reader.onerror = () => resolve(null)
+          reader.readAsDataURL(blob)
+        })
+      }
+
+    const pdfBlob = await gerarPdfRelatorio({
         ordemServico: id,
         cliente: os?.Os_Cliente || '',
         endereco: os?.Endereco_Cliente || '',
@@ -520,6 +535,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         nomResp,
         data: new Date().toISOString().split('T')[0],
         apenasBlob: true,
+        downloadFoto,
       })
 
       if (pdfBlob) {
