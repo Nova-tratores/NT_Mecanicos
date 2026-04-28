@@ -68,11 +68,14 @@ async function fetchHomeData(nome: string, tecnicoNome: string): Promise<HomeDat
   const osAtrasadas: OrdemServico[] = []
   for (const os of todas) {
     const prev = os.Previsao_Execucao?.trim?.() || ''
-    // Aguardando peças nunca é atrasada
-    const aguardandoPecas = os.Status?.includes('peças') || os.Status?.includes('Procurando peças')
-    if (aguardandoPecas) continue
-    if (!prev || prev === hoje) osHoje.push(os)
-    else if (prev < hoje) osAtrasadas.push(os)
+    if (!prev || prev === hoje) { osHoje.push(os); continue }
+    // Atrasada = APENAS "Aguardando ordem Técnico" com previsão vencida > 1 dia
+    if (prev < hoje && os.Status === 'Aguardando ordem Técnico') {
+      const prevDate = new Date(prev + 'T00:00:00')
+      const hojeDate = new Date(hoje + 'T00:00:00')
+      const diffDias = Math.floor((hojeDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24))
+      if (diffDias > 1) osAtrasadas.push(os)
+    }
   }
 
   const cidadeMap: Record<string, string> = {}
