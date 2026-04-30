@@ -40,6 +40,12 @@ export function useCurrentUser() {
     let cancelled = false
 
     const load = async () => {
+      // Se offline e tem perfil cacheado, usa direto sem tentar rede
+      if (!navigator.onLine && getCachedProfile()) {
+        setLoading(false)
+        return
+      }
+
       try {
         const { data: { session } } = await supabase.auth.getSession()
 

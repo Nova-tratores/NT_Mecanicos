@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { use } from 'react'
 import { supabase } from '@/lib/supabase'
+import { offlineWrite } from '@/lib/offlineWrite'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useFormBackup } from '@/hooks/useFormBackup'
 import type { OrdemServico } from '@/lib/types'
@@ -240,13 +241,22 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
     }
 
     if (existingId) {
-      await supabase.from('Ordem_Servico_Tecnicos').update(payload).eq('IdOs', existingId)
+      const res = await offlineWrite({
+        table: 'Ordem_Servico_Tecnicos', action: 'update',
+        data: payload, match: { IdOs: existingId },
+      })
+      if (!res.ok) { setSalvando(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
     } else {
-      const { data } = await supabase.from('Ordem_Servico_Tecnicos').insert(payload).select('IdOs').single()
-      if (data) {
-        setExistingId(data.IdOs)
-        setJaPreenchida(true)
-        setStatusPreench('rascunho')
+      if (navigator.onLine) {
+        const { data } = await supabase.from('Ordem_Servico_Tecnicos').insert(payload).select('IdOs').single()
+        if (data) {
+          setExistingId(data.IdOs)
+          setJaPreenchida(true)
+          setStatusPreench('rascunho')
+        }
+      } else {
+        const res = await offlineWrite({ table: 'Ordem_Servico_Tecnicos', action: 'insert', data: payload })
+        if (!res.ok) { setSalvando(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
       }
     }
 

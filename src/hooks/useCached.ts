@@ -41,10 +41,8 @@ export function useCached<T>(
     } catch (e) {
       console.error(`[cache] Erro ao buscar ${keyRef.current}:`, e)
       // Se falhou (offline), tenta IndexedDB
-      if (!background) {
-        const persisted = await cacheGetPersisted<T>(keyRef.current)
-        if (persisted) setData(persisted)
-      }
+      const persisted = await cacheGetPersisted<T>(keyRef.current)
+      if (persisted) setData(persisted)
     } finally {
       setLoading(false)
       setRefreshing(false)

@@ -43,7 +43,7 @@ export default function OSDetailPage() {
       const [{ data: osData }, { data: execData }, { data: osTec }, { data: reqData }] = await Promise.all([
         supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
         supabase.from('os_tecnico_execucao').select('*').eq('id_ordem', id).order('created_at', { ascending: false }),
-        supabase.from('Ordem_Servico_Tecnicos').select('JustificativaAtraso, Status').eq('Ordem_Servico', id).maybeSingle(),
+        supabase.from('Ordem_Servico_Tecnicos').select('JustificativaAtraso, Status, TemAlmoco, ValorAlmoco, FotoAlmoco').eq('Ordem_Servico', id).maybeSingle(),
         supabase.from('Requisicao').select('id, titulo, tipo, solicitante, data, status, valor_despeza, Chassis_Modelo, ordem_servico').eq('ordem_servico', id).order('data', { ascending: false }),
       ])
       setOs(osData)
@@ -341,6 +341,42 @@ export default function OSDetailPage() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Almoço */}
+      {osTecnica && (osTecnica.TemAlmoco as boolean) && (
+        <div style={{
+          background: '#fff', borderRadius: 14, padding: 16, marginBottom: 16,
+          boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+          border: '1.5px solid #FDE68A',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+            <span style={{ fontSize: 18 }}>🍽️</span>
+            <span style={{ fontSize: 14, fontWeight: 700, color: '#92400E' }}>Almoço</span>
+          </div>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 11, color: '#9CA3AF' }}>Valor</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: '#1E3A5F' }}>
+                R$ {Number(osTecnica.ValorAlmoco || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              </div>
+            </div>
+            {(osTecnica.FotoAlmoco as string) && (
+              <a
+                href={osTecnica.FotoAlmoco as string}
+                target="_blank"
+                rel="noopener noreferrer"
+                style={{ display: 'block' }}
+              >
+                <img
+                  src={osTecnica.FotoAlmoco as string}
+                  alt="Nota do almoço"
+                  style={{ width: 120, height: 90, objectFit: 'cover', borderRadius: 10, border: '1px solid #E5E7EB' }}
+                />
+              </a>
+            )}
+          </div>
         </div>
       )}
 

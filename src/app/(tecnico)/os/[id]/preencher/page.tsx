@@ -4,6 +4,7 @@ import { use } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useFormBackup } from '@/hooks/useFormBackup'
 import { supabase } from '@/lib/supabase'
+import { offlineWrite } from '@/lib/offlineWrite'
 import type { OrdemServico } from '@/lib/types'
 import FotoUpload from '@/components/FotoUpload'
 import SignaturePad from '@/components/SignaturePad'
@@ -98,6 +99,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [fotoPecaInstalada1, setFotoPecaInstalada1] = useState('')
   const [fotoPecaInstalada2, setFotoPecaInstalada2] = useState('')
 
+  // Almoço
+  const [temAlmoco, setTemAlmoco] = useState(false)
+  const [valorAlmoco, setValorAlmoco] = useState('')
+  const [fotoAlmoco, setFotoAlmoco] = useState('')
+
   // Assinaturas
   const [assCliente, setAssCliente] = useState('')
   const [assTecnico, setAssTecnico] = useState('')
@@ -176,6 +182,9 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         setAssCliente(existing.AssCliente || '')
         setAssTecnico(existing.AssTecnico || '')
         setJustificativaPecaExtra(existing.JustificativaPecaExtra || '')
+        if (existing.TemAlmoco) setTemAlmoco(true)
+        if (existing.ValorAlmoco) setValorAlmoco(String(existing.ValorAlmoco))
+        if (existing.FotoAlmoco) setFotoAlmoco(existing.FotoAlmoco)
 
         const diasLoaded: DiaForm[] = []
         if (existing.DataInicio) {
@@ -236,6 +245,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
     fotoPecaNova1, fotoPecaNova2, fotoPecaInstalada1, fotoPecaInstalada2,
+    temAlmoco, valorAlmoco, fotoAlmoco,
     assCliente, assTecnico,
   }), [
     tecResp1, temTec2, tecResp2, diagnostico, servicoRealizado,
@@ -244,6 +254,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
     fotoPecaNova1, fotoPecaNova2, fotoPecaInstalada1, fotoPecaInstalada2,
+    temAlmoco, valorAlmoco, fotoAlmoco,
     assCliente, assTecnico,
   ])
 
@@ -281,6 +292,9 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (data.fotoPecaNova2 !== undefined) setFotoPecaNova2(data.fotoPecaNova2 as string)
     if (data.fotoPecaInstalada1 !== undefined) setFotoPecaInstalada1(data.fotoPecaInstalada1 as string)
     if (data.fotoPecaInstalada2 !== undefined) setFotoPecaInstalada2(data.fotoPecaInstalada2 as string)
+    if (data.temAlmoco !== undefined) setTemAlmoco(data.temAlmoco as boolean)
+    if (data.valorAlmoco !== undefined) setValorAlmoco(data.valorAlmoco as string)
+    if (data.fotoAlmoco !== undefined) setFotoAlmoco(data.fotoAlmoco as string)
     if (data.assCliente !== undefined) setAssCliente(data.assCliente as string)
     if (data.assTecnico !== undefined) setAssTecnico(data.assTecnico as string)
   }, [])
@@ -394,6 +408,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       if (!continuar) return
     }
 
+    // Validar almoço
+    if (temAlmoco) {
+      if (!valorAlmoco.trim()) {
+        alert('Informe o valor do almoço.')
+        return
+      }
+      const fotoAlmocoLimpa = fotoAlmoco.startsWith('blob:') ? '' : fotoAlmoco
+      if (!fotoAlmocoLimpa) {
+        alert('Anexe a foto da nota do almoço.')
+        return
+      }
+    }
+
     // Validar justificativa se tem peças extras
     if (manualItems.length > 0 && !justificativaPecaExtra.trim()) {
       alert('Você adicionou peças/serviços extras. Por favor, justifique por que não avisou antes.')
@@ -457,6 +484,9 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       FotoPecaNova2: fotoPecaNova2.startsWith('blob:') ? '' : fotoPecaNova2,
       FotoPecaInstalada1: fotoPecaInstalada1.startsWith('blob:') ? '' : fotoPecaInstalada1,
       FotoPecaInstalada2: fotoPecaInstalada2.startsWith('blob:') ? '' : fotoPecaInstalada2,
+      TemAlmoco: temAlmoco,
+      ValorAlmoco: temAlmoco ? parseFloat(valorAlmoco) || 0 : null,
+      FotoAlmoco: temAlmoco ? (fotoAlmoco.startsWith('blob:') ? '' : fotoAlmoco) : null,
       AssCliente: assCliente, AssTecnico: assTecnico,
       PecasInfo: JSON.stringify(pecas),
       JustificativaPecaExtra: justificativaPecaExtra || null,
@@ -466,11 +496,37 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     }
 
     if (existingId) {
-      await supabase.from('Ordem_Servico_Tecnicos').update(payload).eq('IdOs', existingId)
+      const res = await offlineWrite({
+        table: 'Ordem_Servico_Tecnicos', action: 'update',
+        data: payload, match: { IdOs: existingId },
+      })
+      if (!res.ok) { setSaving(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
+      if (res.queued) {
+        // Dados salvos na fila offline — não tenta gerar PDF
+        setSaving(false)
+        setSucesso(true)
+        clearBackup()
+        return
+      }
     } else {
-      const { data } = await supabase.from('Ordem_Servico_Tecnicos').insert(payload).select('IdOs').single()
-      if (data) setExistingId(data.IdOs)
+      if (navigator.onLine) {
+        const { data } = await supabase.from('Ordem_Servico_Tecnicos').insert(payload).select('IdOs').single()
+        if (data) setExistingId(data.IdOs)
+      } else {
+        const res = await offlineWrite({ table: 'Ordem_Servico_Tecnicos', action: 'insert', data: payload })
+        if (!res.ok) { setSaving(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
+        setSaving(false)
+        setSucesso(true)
+        clearBackup()
+        return
+      }
     }
+
+    // Atualizar status da OS para 'Relatório Concluído' independente do PDF
+    await offlineWrite({
+      table: 'Ordem_Servico', action: 'update',
+      data: { Status: 'Relatório Concluído' }, match: { Id_Ordem: id },
+    })
 
     // Gerar PDF, fazer upload e vincular à OS no portal
     try {
@@ -486,17 +542,41 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
       const downloadFoto = async (url: string): Promise<string | null> => {
         if (!url) return null
-        const match = url.match(/\/object\/public\/requisicoes\/(.+?)(\?|$)/)
-        if (!match) return null
-        const path = decodeURIComponent(match[1])
-        const { data: blob, error } = await supabase.storage.from('requisicoes').download(path)
-        if (error || !blob) return null
-        return new Promise((resolve) => {
-          const reader = new FileReader()
-          reader.onloadend = () => resolve(reader.result as string)
-          reader.onerror = () => resolve(null)
-          reader.readAsDataURL(blob)
-        })
+        // Tentar extrair path do Supabase Storage (vários formatos possíveis)
+        let path: string | null = null
+        const match = url.match(/\/(?:object|storage)\/(?:v1\/)?(?:public|sign)\/requisicoes\/(.+?)(\?|$)/)
+        if (match) {
+          path = decodeURIComponent(match[1])
+        } else if (url.includes('/requisicoes/')) {
+          // Fallback: pegar tudo depois de /requisicoes/
+          const idx = url.indexOf('/requisicoes/')
+          path = decodeURIComponent(url.substring(idx + '/requisicoes/'.length).split('?')[0])
+        }
+        if (path) {
+          const { data: blob, error } = await supabase.storage.from('requisicoes').download(path)
+          if (!error && blob) {
+            return new Promise((resolve) => {
+              const reader = new FileReader()
+              reader.onloadend = () => resolve(reader.result as string)
+              reader.onerror = () => resolve(null)
+              reader.readAsDataURL(blob)
+            })
+          }
+        }
+        // Fallback: fetch direto da URL
+        try {
+          const resp = await fetch(url)
+          if (resp.ok) {
+            const blob = await resp.blob()
+            return new Promise((resolve) => {
+              const reader = new FileReader()
+              reader.onloadend = () => resolve(reader.result as string)
+              reader.onerror = () => resolve(null)
+              reader.readAsDataURL(blob)
+            })
+          }
+        } catch { /* ignore */ }
+        return null
       }
 
     const pdfBlob = await gerarPdfRelatorio({
@@ -550,7 +630,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           await Promise.all([
             supabase.from('Ordem_Servico').update({
               ID_Relatorio_Final: pdfUrl,
-              Status: 'Relatório Concluído',
             }).eq('Id_Ordem', id),
             supabase.from('Ordem_Servico_Tecnicos').update({ pdf_criado: true }).eq('Ordem_Servico', id),
           ])
@@ -1065,6 +1144,51 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             <div style={{ fontSize: 16, fontWeight: 700, color: '#1E3A5F' }}>{calcTotalKm() || '—'}</div>
           </div>
         </div>
+
+        {/* Almoço */}
+        <div style={{ height: 1, background: '#E5E7EB', margin: '16px 0' }} />
+        <label style={{
+          display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
+          padding: '10px 0',
+        }}>
+          <input
+            type="checkbox"
+            checked={temAlmoco}
+            onChange={(e) => {
+              setTemAlmoco(e.target.checked)
+              if (!e.target.checked) { setValorAlmoco(''); setFotoAlmoco('') }
+            }}
+            style={{ width: 20, height: 20, accentColor: '#1E3A5F' }}
+          />
+          <span style={{ fontSize: 14, fontWeight: 600, color: '#374151' }}>Teve almoço nesta OS?</span>
+        </label>
+
+        {temAlmoco && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 4 }}>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: '#6B7280', marginBottom: 4, display: 'block' }}>
+                Valor do almoço (R$) <span style={{ color: '#C41E2A' }}>*</span>
+              </label>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={valorAlmoco}
+                onChange={(e) => setValorAlmoco(e.target.value)}
+                placeholder="Ex: 45.00"
+                style={inputStyle}
+              />
+            </div>
+            <div>
+              <FotoUpload
+                label="Nota do almoço"
+                value={fotoAlmoco}
+                onChange={(f) => handleFoto(setFotoAlmoco, 'FotoAlmoco', f)}
+                onRemove={() => setFotoAlmoco('')}
+                obrigatorio
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 5. VEÍCULO */}

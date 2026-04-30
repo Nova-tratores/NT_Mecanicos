@@ -64,13 +64,28 @@ async function fetchHomeData(nome: string, tecnicoNome: string): Promise<HomeDat
   ])
 
   const todas = (osRes.data || []) as OrdemServico[]
+
+  // Buscar OS que o técnico já preencheu (rascunho ou enviado) — não devem aparecer como atrasadas
+  const ids = todas.map(o => o.Id_Ordem)
+  let preenchSet = new Set<string>()
+  if (ids.length > 0) {
+    const { data: preenchData } = await supabase
+      .from('Ordem_Servico_Tecnicos')
+      .select('Ordem_Servico')
+      .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
+      .in('Ordem_Servico', ids)
+    if (preenchData) {
+      preenchSet = new Set(preenchData.map((e: { Ordem_Servico: string }) => String(e.Ordem_Servico)))
+    }
+  }
+
   const osHoje: OrdemServico[] = []
   const osAtrasadas: OrdemServico[] = []
   for (const os of todas) {
     const prev = os.Previsao_Execucao?.trim?.() || ''
     if (!prev || prev === hoje) { osHoje.push(os); continue }
-    // Atrasada = APENAS "Aguardando ordem Técnico" com previsão vencida > 1 dia
-    if (prev < hoje && os.Status === 'Aguardando ordem Técnico') {
+    // Atrasada = APENAS "Aguardando ordem Técnico", não preenchida, previsão vencida > 1 dia
+    if (prev < hoje && os.Status === 'Aguardando ordem Técnico' && !preenchSet.has(String(os.Id_Ordem))) {
       const prevDate = new Date(prev + 'T00:00:00')
       const hojeDate = new Date(hoje + 'T00:00:00')
       const diffDias = Math.floor((hojeDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24))

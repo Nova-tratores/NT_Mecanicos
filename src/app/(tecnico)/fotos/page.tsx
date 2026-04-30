@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { supabase } from '@/lib/supabase'
 import { Search, Download, Camera, X, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -45,99 +45,90 @@ function formatarData(d: string) {
   return `${day}/${m}/${y}`
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function montarResultados(registros: any[], clienteMap: Record<string, string>): ResultadoOS[] {
+  return registros.map((rec) => {
+    const fotos: FotoItem[] = []
+    for (const campo of FOTO_CAMPOS) {
+      const url = rec[campo] as string
+      if (url && !url.startsWith('blob:')) {
+        fotos.push({ label: FOTO_LABELS[campo], url, campo })
+      }
+    }
+    return {
+      ordemServico: String(rec.Ordem_Servico),
+      tecnico: (rec.TecResp1 as string) || '-',
+      cliente: clienteMap[String(rec.Ordem_Servico)] || '-',
+      data: (rec.Data as string) || '-',
+      fotos,
+    }
+  }).filter((r) => r.fotos.length > 0)
+}
+
 export default function FotosTecnicoPage() {
   const { user } = useCurrentUser()
   const nome = user?.nome_pos || user?.tecnico_nome || ''
 
   const [busca, setBusca] = useState('')
-  const [buscando, setBuscando] = useState(false)
-  const [resultados, setResultados] = useState<ResultadoOS[]>([])
-  const [buscaFeita, setBuscaFeita] = useState(false)
+  const [carregando, setCarregando] = useState(true)
+  const [todos, setTodos] = useState<ResultadoOS[]>([])
   const [fotoAberta, setFotoAberta] = useState<FotoItem | null>(null)
   const [baixando, setBaixando] = useState<string | null>(null)
   const [osAberta, setOsAberta] = useState<string | null>(null)
 
-  const pesquisar = async () => {
-    const termo = busca.trim()
-    if (!termo || !nome) return
-    setBuscando(true)
-    setResultados([])
-    setBuscaFeita(false)
-    setOsAberta(null)
+  // Carregar todas as fotos do tecnico ao montar
+  useEffect(() => {
+    if (!nome) return
+    let cancelado = false
 
-    // Buscar registros do tecnico
-    const { data: regs } = await supabase
-      .from('Ordem_Servico_Tecnicos')
-      .select(CAMPOS_SELECT)
-      .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
-      .eq('Status', 'enviado')
-      .ilike('Ordem_Servico', `%${termo}%`)
-      .order('Data', { ascending: false })
-      .limit(20)
+    async function carregar() {
+      setCarregando(true)
 
-    // Se nao encontrou por OS, tenta por cliente
-    let registros = regs || []
-    if (registros.length === 0) {
-      // Buscar OS por nome de cliente
-      const { data: osList } = await supabase
-        .from('Ordem_Servico')
-        .select('Id_Ordem, Os_Cliente')
-        .ilike('Os_Cliente', `%${termo}%`)
-        .limit(50)
+      const { data: regs } = await supabase
+        .from('Ordem_Servico_Tecnicos')
+        .select(CAMPOS_SELECT)
+        .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
+        .eq('Status', 'enviado')
+        .order('Data', { ascending: false })
+        .limit(200)
 
-      if (osList && osList.length > 0) {
-        const ids = osList.map(o => o.Id_Ordem)
-        const { data: regs2 } = await supabase
-          .from('Ordem_Servico_Tecnicos')
-          .select(CAMPOS_SELECT)
-          .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
-          .eq('Status', 'enviado')
-          .in('Ordem_Servico', ids)
-          .order('Data', { ascending: false })
-          .limit(20)
-        registros = regs2 || []
+      if (cancelado) return
+      const registros = regs || []
+
+      if (registros.length > 0) {
+        const osIds = registros.map((r: any) => String(r.Ordem_Servico))
+        const uniqueIds = [...new Set(osIds)]
+        const { data: osData } = await supabase
+          .from('Ordem_Servico')
+          .select('Id_Ordem, Os_Cliente')
+          .in('Id_Ordem', uniqueIds)
+
+        if (cancelado) return
+        const clienteMap: Record<string, string> = {}
+        osData?.forEach((o: { Id_Ordem: string; Os_Cliente: string }) => {
+          clienteMap[String(o.Id_Ordem)] = o.Os_Cliente || '-'
+        })
+
+        setTodos(montarResultados(registros, clienteMap))
+      } else {
+        setTodos([])
       }
+
+      setCarregando(false)
     }
 
-    if (registros.length > 0) {
-      // Buscar nomes dos clientes
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const osIds = registros.map((r: any) => String(r.Ordem_Servico))
-      const { data: osData } = await supabase
-        .from('Ordem_Servico')
-        .select('Id_Ordem, Os_Cliente')
-        .in('Id_Ordem', osIds)
+    carregar()
+    return () => { cancelado = true }
+  }, [nome])
 
-      const clienteMap: Record<string, string> = {}
-      osData?.forEach((o: { Id_Ordem: string; Os_Cliente: string }) => {
-        clienteMap[String(o.Id_Ordem)] = o.Os_Cliente || '-'
-      })
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const resultList: ResultadoOS[] = registros.map((rec: any) => {
-        const fotos: FotoItem[] = []
-        for (const campo of FOTO_CAMPOS) {
-          const url = rec[campo] as string
-          if (url && !url.startsWith('blob:')) {
-            fotos.push({ label: FOTO_LABELS[campo], url, campo })
-          }
-        }
-        return {
-          ordemServico: String(rec.Ordem_Servico),
-          tecnico: (rec.TecResp1 as string) || '-',
-          cliente: clienteMap[String(rec.Ordem_Servico)] || '-',
-          data: (rec.Data as string) || '-',
-          fotos,
-        }
-      }).filter((r: ResultadoOS) => r.fotos.length > 0)
-
-      setResultados(resultList)
-      if (resultList.length === 1) setOsAberta(resultList[0].ordemServico)
-    }
-
-    setBuscaFeita(true)
-    setBuscando(false)
-  }
+  // Filtrar por busca (OS ou cliente)
+  const termo = busca.trim().toLowerCase()
+  const resultados = termo
+    ? todos.filter(r =>
+        r.ordemServico.toLowerCase().includes(termo) ||
+        r.cliente.toLowerCase().includes(termo)
+      )
+    : todos
 
   const baixarFoto = async (foto: FotoItem, osId: string) => {
     setBaixando(foto.campo + osId)
@@ -163,56 +154,53 @@ export default function FotosTecnicoPage() {
           Fotos
         </h1>
         <p style={{ fontSize: 13, color: '#6B7280', margin: 0 }}>
-          Pesquise pelo numero da OS ou nome do cliente
+          Todas as fotos das suas OS enviadas
         </p>
       </div>
 
-      {/* Barra de busca */}
-      <form onSubmit={e => { e.preventDefault(); pesquisar() }} style={{
-        display: 'flex', gap: 8, marginBottom: 20,
-      }}>
-        <div style={{ flex: 1, position: 'relative' }}>
-          <Search size={18} color="#9CA3AF" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
-          <input
-            value={busca}
-            onChange={e => setBusca(e.target.value)}
-            placeholder="OS ou cliente..."
-            style={{
-              width: '100%', padding: '12px 12px 12px 40px', borderRadius: 12,
-              border: '2px solid #E5E7EB', fontSize: 15, outline: 'none',
-              boxSizing: 'border-box', background: '#FAFAFA',
-            }}
-          />
-        </div>
-        <button type="submit" disabled={buscando || !busca.trim()} style={{
-          padding: '12px 20px', borderRadius: 12,
-          background: !busca.trim() ? '#E5E7EB' : '#C41E2A',
-          color: !busca.trim() ? '#9CA3AF' : '#fff',
-          fontSize: 14, fontWeight: 700, border: 'none',
-          cursor: buscando ? 'not-allowed' : 'pointer',
-          display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0,
-        }}>
-          {buscando ? <Loader2 size={16} className="spinner" /> : <Search size={16} />}
-          Buscar
-        </button>
-      </form>
+      {/* Barra de busca / filtro */}
+      <div style={{ position: 'relative', marginBottom: 20 }}>
+        <Search size={18} color="#9CA3AF" style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
+        <input
+          value={busca}
+          onChange={e => { setBusca(e.target.value); setOsAberta(null) }}
+          placeholder="Filtrar por OS ou cliente..."
+          style={{
+            width: '100%', padding: '12px 12px 12px 40px', borderRadius: 12,
+            border: '2px solid #E5E7EB', fontSize: 15, outline: 'none',
+            boxSizing: 'border-box', background: '#FAFAFA',
+          }}
+        />
+      </div>
 
-      {/* Sem resultados */}
-      {buscaFeita && resultados.length === 0 && (
+      {/* Loading */}
+      {carregando && (
+        <div style={{ padding: 40, textAlign: 'center' }}>
+          <Loader2 size={28} color="#C41E2A" className="spinner" style={{ margin: '0 auto 12px' }} />
+          <div style={{ fontSize: 14, color: '#6B7280' }}>Carregando fotos...</div>
+        </div>
+      )}
+
+      {/* Sem fotos */}
+      {!carregando && resultados.length === 0 && (
         <div style={{
           background: '#fff', borderRadius: 16, padding: 40,
           textAlign: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
         }}>
           <Camera size={40} color="#D1D5DB" style={{ marginBottom: 12 }} />
-          <div style={{ fontSize: 15, fontWeight: 600, color: '#6B7280' }}>Nenhuma foto encontrada</div>
-          <div style={{ fontSize: 13, color: '#9CA3AF', marginTop: 4 }}>
-            Verifique o numero da OS ou nome do cliente
+          <div style={{ fontSize: 15, fontWeight: 600, color: '#6B7280' }}>
+            {termo ? 'Nenhuma foto encontrada' : 'Nenhuma OS enviada com fotos'}
           </div>
+          {termo && (
+            <div style={{ fontSize: 13, color: '#9CA3AF', marginTop: 4 }}>
+              Verifique o numero da OS ou nome do cliente
+            </div>
+          )}
         </div>
       )}
 
-      {/* Lista de resultados */}
-      {resultados.length > 0 && (
+      {/* Lista de resultados agrupados por OS */}
+      {!carregando && resultados.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {resultados.map(res => {
             const aberta = osAberta === res.ordemServico

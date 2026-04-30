@@ -27,18 +27,13 @@ interface OsData {
 
 /* ═══ Fetch principal ═══ */
 async function fetchOsData(nome: string): Promise<OsData> {
-  const [osRes, envRes] = await Promise.all([
+  const [osRes] = await Promise.all([
     supabase
       .from('Ordem_Servico')
       .select('*')
       .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
       .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
       .order('Id_Ordem', { ascending: false }),
-    supabase
-      .from('Ordem_Servico_Tecnicos')
-      .select('id', { count: 'exact', head: true })
-      .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
-      .eq('Status', 'enviado'),
   ])
 
   const todas = (osRes.data || []) as OrdemServico[]
@@ -70,6 +65,13 @@ async function fetchOsData(nome: string): Promise<OsData> {
           .map((p: { Ordem_Servico: string }) => String(p.Ordem_Servico)),
       )
     }
+    // OS com status concluído pelo técnico também contam como enviadas
+    const FASES_CONCLUIDAS_TECNICO = ['Relatório Concluído', 'Executada aguardando comercial']
+    for (const o of todas) {
+      if (FASES_CONCLUIDAS_TECNICO.includes(o.Status)) {
+        enviadas.add(String(o.Id_Ordem))
+      }
+    }
     cliRes.data?.forEach((c: { cnpj_cpf: string; cidade: string | null }) => {
       if (c.cidade) cidadeMap[c.cnpj_cpf] = c.cidade
     })
@@ -79,7 +81,7 @@ async function fetchOsData(nome: string): Promise<OsData> {
     })
   }
 
-  return { ordens: todas, preenchidas, enviadas, cidadeMap, enviadasCount: envRes.count || 0, agendaMap }
+  return { ordens: todas, preenchidas, enviadas, cidadeMap, enviadasCount: enviadas.size, agendaMap }
 }
 
 /* ═══ Helpers ═══ */
@@ -177,39 +179,42 @@ export default function OrdensHub() {
   const hoje = getHoje()
 
   // Separar: preencher vs abertas — exclui enviadas
-  // Atrasada = APENAS "Aguardando ordem Técnico" por mais de 1 dia
-  // Preencher = previsão vencida (precisa preencher, mas não necessariamente atrasada)
-  // Abertas = divididas por fase (orçamento, execução, outras)
+  // Atrasada = "Aguardando ordem Técnico" não preenchida, previsão vencida > 1 dia
+  // Preencher = "Aguardando ordem Técnico" não preenchida, previsão vencida (mas <= 1 dia)
+  // Abertas = todas as outras (separadas por fase)
   const { atrasadas, preencher, abertasOrcamento, abertasExecucao, abertasOutras, pendentesCount } = useMemo(() => {
     const ords = ordensRaw.filter(o => !enviadas.has(String(o.Id_Ordem)))
 
-    const atr: OrdemServico[] = []  // atrasadas (Aguardando ordem Técnico > 1 dia)
-    const prn: OrdemServico[] = []  // preencher (previsão vencida, exceto atrasadas)
+    const atr: OrdemServico[] = []  // atrasadas
+    const prn: OrdemServico[] = []  // preencher
     const orc: OrdemServico[] = []  // abertas — orçamento
     const exe: OrdemServico[] = []  // abertas — execução
     const out: OrdemServico[] = []  // abertas — outras fases
 
     ords.forEach(o => {
-      const prev = o.Previsao_Execucao?.trim?.() || ''
-      const datas = agendaMap[o.Id_Ordem] || []
-      const datasOrdenadas = [...datas].sort()
-      const previsaoVencida = prev && prev < hoje && !datasOrdenadas.some(d => d >= hoje)
+      const jaPreencheu = preenchidas.has(String(o.Id_Ordem))
 
-      // Atrasada: "Aguardando ordem Técnico" com previsão vencida há mais de 1 dia
-      if (o.Status === 'Aguardando ordem Técnico' && previsaoVencida) {
-        const prevDate = new Date(prev + 'T00:00:00')
-        const hojeDate = new Date(hoje + 'T00:00:00')
-        const diffDias = Math.floor((hojeDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24))
-        if (diffDias > 1) {
-          atr.push(o)
+      // Só aparece em Preencher/Atrasada se:
+      // - Status é "Aguardando ordem Técnico"
+      // - Técnico ainda NÃO preencheu
+      // - Previsão vencida
+      if (o.Status === 'Aguardando ordem Técnico' && !jaPreencheu) {
+        const prev = o.Previsao_Execucao?.trim?.() || ''
+        const datas = agendaMap[o.Id_Ordem] || []
+        const datasOrdenadas = [...datas].sort()
+        const previsaoVencida = prev && prev < hoje && !datasOrdenadas.some(d => d >= hoje)
+
+        if (previsaoVencida) {
+          const prevDate = new Date(prev + 'T00:00:00')
+          const hojeDate = new Date(hoje + 'T00:00:00')
+          const diffDias = Math.floor((hojeDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24))
+          if (diffDias > 1) {
+            atr.push(o)
+          } else {
+            prn.push(o)
+          }
           return
         }
-      }
-
-      // Previsão vencida (precisa preencher mas não é atrasada)
-      if (previsaoVencida) {
-        prn.push(o)
-        return
       }
 
       // Abertas — separar por fase
@@ -222,7 +227,9 @@ export default function OrdensHub() {
       }
     })
 
-    const pend = ords.filter(o => !preenchidas.has(String(o.Id_Ordem))).length
+    const pend = ords.filter(o =>
+      o.Status === 'Aguardando ordem Técnico' && !preenchidas.has(String(o.Id_Ordem))
+    ).length
     return {
       atrasadas: atr,
       preencher: prn,
@@ -411,13 +418,60 @@ function OsEnviadasTab({ nome }: { nome: string }) {
   const { data: ordens, loading } = useCached(
     `os-enviadas:${nome}`,
     async () => {
-      const { data } = await supabase
+      // 1. Buscar registros preenchidos pelo técnico (enviado ou rascunho)
+      const { data: tecData } = await supabase
         .from('Ordem_Servico_Tecnicos')
         .select('*')
         .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
-        .eq('Status', 'enviado')
+        .in('Status', ['enviado', 'rascunho'])
         .order('Data', { ascending: false })
-      return (data || []) as { id: number; Ordem_Servico: string; TecResp1: string; Data: string; TipoServico: string; Status: string }[]
+      const todosRegs = (tecData || []) as { id: number; Ordem_Servico: string; TecResp1: string; Data: string; TipoServico: string; Status: string; pdf_criado: boolean }[]
+
+      // Buscar status da OS principal para cada registro
+      const osIds = [...new Set(todosRegs.map(r => String(r.Ordem_Servico)))]
+      let osStatusMap: Record<string, string> = {}
+      if (osIds.length > 0) {
+        const { data: osData } = await supabase
+          .from('Ordem_Servico')
+          .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data_Abertura')
+          .in('Id_Ordem', osIds)
+        if (osData) {
+          for (const o of osData) {
+            osStatusMap[String(o.Id_Ordem)] = o.Status
+          }
+        }
+      }
+
+      // Incluir se: registro 'enviado' OU OS principal já está concluída
+      const FASES_CONCLUIDAS = ['Relatório Concluído', 'Executada aguardando comercial']
+      const registros = todosRegs.filter(r =>
+        r.Status === 'enviado' || FASES_CONCLUIDAS.includes(osStatusMap[String(r.Ordem_Servico)] || '')
+      )
+      const idsJaIncluidos = new Set(registros.map(r => String(r.Ordem_Servico)))
+
+      // 2. Buscar OS concluídas que não têm registro na tabela do técnico
+      const { data: osConc } = await supabase
+        .from('Ordem_Servico')
+        .select('Id_Ordem, Tipo_Servico, Os_Cliente, Data_Abertura')
+        .in('Status', FASES_CONCLUIDAS)
+        .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
+      if (osConc) {
+        for (const os of osConc) {
+          if (!idsJaIncluidos.has(String(os.Id_Ordem))) {
+            registros.push({
+              id: 0,
+              Ordem_Servico: String(os.Id_Ordem),
+              TecResp1: nome,
+              Data: os.Data_Abertura || '',
+              TipoServico: os.Tipo_Servico || '',
+              Status: 'enviado',
+              pdf_criado: false,
+            } as any)
+          }
+        }
+      }
+
+      return registros
     },
     { skip: !nome },
   )
