@@ -70,6 +70,10 @@ interface DadosRelatorio {
   assCliente: string
   assTecnico: string
 
+  // Local do serviço
+  fazenda: string
+  cidadeServico: string
+
   // Responsável
   nomResp: string
   data: string
@@ -268,6 +272,14 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
     drawRow([
       { label: 'Marca / Modelo', value: marcaModelo },
       { label: 'Horímetro', value: dados.horimetro || '-' },
+    ])
+  }
+
+  const fazendaCidade = [dados.fazenda, dados.cidadeServico].filter(Boolean)
+  if (fazendaCidade.length > 0) {
+    drawRow([
+      { label: 'Fazenda', value: dados.fazenda || '-' },
+      { label: 'Cidade', value: dados.cidadeServico || '-' },
     ])
   }
 

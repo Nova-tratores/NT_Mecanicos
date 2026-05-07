@@ -43,7 +43,7 @@ export default function OSDetailPage() {
       const [{ data: osData }, { data: execData }, { data: osTec }, { data: reqData }] = await Promise.all([
         supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
         supabase.from('os_tecnico_execucao').select('*').eq('id_ordem', id).order('created_at', { ascending: false }),
-        supabase.from('Ordem_Servico_Tecnicos').select('JustificativaAtraso, Status, TemAlmoco, ValorAlmoco, FotoAlmoco').eq('Ordem_Servico', id).maybeSingle(),
+        supabase.from('Ordem_Servico_Tecnicos').select('JustificativaAtraso, Status, TemAlmoco, ValorAlmoco, FotoAlmoco, Fazenda, Cidade').eq('Ordem_Servico', id).maybeSingle(),
         supabase.from('Requisicao').select('id, titulo, tipo, solicitante, data, status, valor_despeza, Chassis_Modelo, ordem_servico').eq('ordem_servico', id).order('data', { ascending: false }),
       ])
       setOs(osData)
@@ -341,6 +341,30 @@ export default function OSDetailPage() {
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Fazenda / Cidade */}
+      {osTecnica && ((osTecnica.Fazenda as string) || (osTecnica.Cidade as string)) && (
+        <div style={{
+          background: '#fff', borderRadius: 14, padding: 16, marginBottom: 16,
+          boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+          border: '1.5px solid #BFDBFE',
+        }}>
+          <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            {(osTecnica.Fazenda as string) && (
+              <div>
+                <div style={{ fontSize: 11, color: '#9CA3AF' }}>Fazenda</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#1E3A5F' }}>{osTecnica.Fazenda as string}</div>
+              </div>
+            )}
+            {(osTecnica.Cidade as string) && (
+              <div>
+                <div style={{ fontSize: 11, color: '#9CA3AF' }}>Cidade</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: '#1E3A5F' }}>{osTecnica.Cidade as string}</div>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

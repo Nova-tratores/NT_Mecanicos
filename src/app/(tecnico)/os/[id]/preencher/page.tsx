@@ -71,12 +71,16 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [horimetro, setHorimetro] = useState('')
   const [numPlaca, setNumPlaca] = useState('')
   const [nomResp, setNomResp] = useState('')
+  const [fazenda, setFazenda] = useState('')
+  const [cidadeLocal, setCidadeLocal] = useState('')
 
   // Dias (dinâmico)
   const [dias, setDias] = useState<DiaForm[]>([{ data: '', horaInicio: '', horaFim: '', kmTotal: '' }])
 
   // Peças informadas pelo técnico
   const [pecas, setPecas] = useState<PecaInfo[]>([])
+  const pecasRef = useRef<PecaInfo[]>([])
+  pecasRef.current = pecas
   const [loadingPPV, setLoadingPPV] = useState(false)
   const [ppvAberto, setPpvAberto] = useState(false)
   const [ppvRevisado, setPpvRevisado] = useState(false)
@@ -108,25 +112,44 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [assCliente, setAssCliente] = useState('')
   const [assTecnico, setAssTecnico] = useState('')
 
-  const carregarProdutosPPV = async (idPPV: string) => {
+  const carregarProdutosPPV = async (idPPV: string, pecasAtuais?: PecaInfo[]) => {
     setLoadingPPV(true)
     const { data: movs } = await supabase
       .from('movimentacoes')
       .select('*')
       .eq('Id_PPV', idPPV)
+    const existentes = pecasAtuais || []
+    const manuais = existentes.filter(p => p.origem === 'manual')
+
     if (movs && movs.length > 0) {
-      const pecasPPV: PecaInfo[] = (movs as MovimentacaoPPV[]).map((m) => ({
+      const pecasPPV = (movs as MovimentacaoPPV[]).map((m) => ({
         descricao: m.Descricao || m.CodProduto,
         codigo: m.CodProduto || '',
-        qtdUsada: m.Qtde || '1',
-        devolvida: false,
-        qtdDevolvida: '',
-        origem: 'ppv' as const,
         qtdOriginal: m.Qtde || '1',
-        naoUsada: false,
-        revisado: false,
       }))
-      setPecas(pecasPPV)
+      const ppvExistentes = existentes.filter(p => p.origem === 'ppv')
+
+      const merged: PecaInfo[] = pecasPPV.map((ppv) => {
+        const jaExiste = ppvExistentes.find(p => p.codigo === ppv.codigo)
+        if (jaExiste) {
+          return { ...jaExiste, descricao: ppv.descricao, qtdOriginal: ppv.qtdOriginal }
+        }
+        return {
+          descricao: ppv.descricao,
+          codigo: ppv.codigo,
+          qtdUsada: ppv.qtdOriginal,
+          devolvida: false,
+          qtdDevolvida: '',
+          origem: 'ppv' as const,
+          qtdOriginal: ppv.qtdOriginal,
+          naoUsada: false,
+          revisado: false,
+        }
+      })
+
+      setPecas([...merged, ...manuais])
+    } else {
+      setPecas(manuais)
     }
     setLoadingPPV(false)
   }
@@ -164,6 +187,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         setHorimetro(existing.Horimetro || '')
         setNumPlaca(existing.NumPlaca || '')
         setNomResp(existing.NomResp || '')
+        setFazenda(existing.Fazenda || '')
+        setCidadeLocal(existing.Cidade || '')
         setFotoHorimetro(existing.FotoHorimetro || '')
         setFotoChassis(existing.FotoChassis || '')
         setFotoFrente(existing.FotoFrente || '')
@@ -210,16 +235,16 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         if (existing.PecasInfo) {
           try {
             const parsed = JSON.parse(existing.PecasInfo)
-            const pecasLoaded = parsed.map((p: Partial<PecaInfo>) => ({
+            const pecasLoaded: PecaInfo[] = parsed.map((p: Partial<PecaInfo>) => ({
               descricao: p.descricao || '', codigo: p.codigo || '', qtdUsada: p.qtdUsada || '',
               devolvida: p.devolvida || false, qtdDevolvida: p.qtdDevolvida || '',
               origem: p.origem || 'manual', qtdOriginal: p.qtdOriginal || '',
               naoUsada: p.naoUsada || false, revisado: p.revisado !== undefined ? p.revisado : true,
             }))
-            setPecas(pecasLoaded)
-            const ppvItems = pecasLoaded.filter((p: PecaInfo) => p.origem === 'ppv')
-            if (ppvItems.length === 0 || ppvItems.every((p: PecaInfo) => p.revisado)) {
-              setPpvRevisado(true)
+            if (osData?.ID_PPV) {
+              await carregarProdutosPPV(osData.ID_PPV, pecasLoaded)
+            } else {
+              setPecas(pecasLoaded)
             }
           } catch { /* ignore */ }
         } else if (osData?.ID_PPV) {
@@ -237,10 +262,20 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     carregar()
   }, [id, user])
 
+  // Polling automático do PPV (a cada 30s)
+  useEffect(() => {
+    if (!os?.ID_PPV) return
+    const interval = setInterval(() => {
+      carregarProdutosPPV(os.ID_PPV, pecasRef.current)
+    }, 30000)
+    return () => clearInterval(interval)
+  }, [os?.ID_PPV])
+
   // Backup automático do formulário
   const getFormData = useCallback(() => ({
     tecResp1, temTec2, tecResp2, diagnostico, servicoRealizado,
     tipoServico, tipoRev, projeto, chassis, marca, modelo, horimetro, numPlaca, nomResp,
+    fazenda, cidadeLocal,
     dias, pecas, ppvRevisado, justificativaPecaExtra,
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
@@ -250,6 +285,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   }), [
     tecResp1, temTec2, tecResp2, diagnostico, servicoRealizado,
     tipoServico, tipoRev, projeto, chassis, marca, modelo, horimetro, numPlaca, nomResp,
+    fazenda, cidadeLocal,
     dias, pecas, ppvRevisado, justificativaPecaExtra,
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
@@ -273,6 +309,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (data.horimetro !== undefined) setHorimetro(data.horimetro as string)
     if (data.numPlaca !== undefined) setNumPlaca(data.numPlaca as string)
     if (data.nomResp !== undefined) setNomResp(data.nomResp as string)
+    if (data.fazenda !== undefined) setFazenda(data.fazenda as string)
+    if (data.cidadeLocal !== undefined) setCidadeLocal(data.cidadeLocal as string)
     if (data.dias !== undefined) setDias(data.dias as DiaForm[])
     if (data.pecas !== undefined) setPecas(data.pecas as PecaInfo[])
     if (data.ppvRevisado !== undefined) setPpvRevisado(data.ppvRevisado as boolean)
@@ -311,27 +349,36 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     }
   }, [loading, restoreBackup])
 
-  const uploadFoto = async (file: File, campo: string): Promise<string> => {
-    const ext = file.name.split('.').pop() || 'jpg'
-    // Comprimir imagem antes de enviar
-    let fileToUpload: File | Blob = file
-    if (file.size > 500_000) {
-      try {
-        const bitmap = await createImageBitmap(file)
-        const canvas = document.createElement('canvas')
-        const maxDim = 1200
-        let w = bitmap.width, h = bitmap.height
-        if (w > maxDim || h > maxDim) {
-          if (w > h) { h = Math.round(h * maxDim / w); w = maxDim }
-          else { w = Math.round(w * maxDim / h); h = maxDim }
-        }
-        canvas.width = w; canvas.height = h
-        const ctx = canvas.getContext('2d')!
-        ctx.drawImage(bitmap, 0, 0, w, h)
-        const blob = await new Promise<Blob>((resolve) => canvas.toBlob(b => resolve(b!), 'image/jpeg', 0.8))
-        fileToUpload = blob
-      } catch { /* se compressão falha, envia original */ }
-    }
+  const comprimirImagem = async (file: File | Blob): Promise<Blob> => {
+    if (file.size <= 500_000) return file
+    try {
+      const bitmap = await createImageBitmap(file as Blob)
+      const canvas = document.createElement('canvas')
+      const maxDim = 1200
+      let w = bitmap.width, h = bitmap.height
+      if (w > maxDim || h > maxDim) {
+        if (w > h) { h = Math.round(h * maxDim / w); w = maxDim }
+        else { w = Math.round(w * maxDim / h); h = maxDim }
+      }
+      canvas.width = w; canvas.height = h
+      const ctx = canvas.getContext('2d')!
+      ctx.drawImage(bitmap, 0, 0, w, h)
+      return await new Promise<Blob>((resolve) => canvas.toBlob(b => resolve(b!), 'image/jpeg', 0.8))
+    } catch { return file }
+  }
+
+  const fileToBase64 = (blob: File | Blob): Promise<string> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve(reader.result as string)
+      reader.onerror = () => resolve('')
+      reader.readAsDataURL(blob)
+    })
+  }
+
+  const uploadFoto = async (file: File | Blob, campo: string): Promise<string> => {
+    const ext = (file instanceof File ? file.name.split('.').pop() : 'jpg') || 'jpg'
+    const fileToUpload = await comprimirImagem(file)
     const path = `os-tecnicos/${id}/${campo}_${Date.now()}.${ext}`
     // Tentar até 2 vezes
     for (let tentativa = 0; tentativa < 2; tentativa++) {
@@ -346,18 +393,36 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     return ''
   }
 
+  // Upload de uma foto que está em base64 (pendente de offline)
+  const uploadBase64 = async (base64: string, campo: string): Promise<string> => {
+    try {
+      const res = await fetch(base64)
+      const blob = await res.blob()
+      return await uploadFoto(blob, campo)
+    } catch { return '' }
+  }
+
   const [errosFoto, setErrosFoto] = useState<string[]>([])
 
   const handleFoto = async (setter: (v: string) => void, campo: string, file: File) => {
     const preview = URL.createObjectURL(file)
     setter(preview)
-    const url = await uploadFoto(file, campo)
+    const compressed = await comprimirImagem(file)
+    const url = await uploadFoto(compressed, campo)
     if (url) {
       setter(url)
       setErrosFoto(prev => prev.filter(e => e !== campo))
     } else {
-      setErrosFoto(prev => [...prev.filter(e => e !== campo), campo])
-      alert(`Erro ao enviar foto "${campo}". Verifique sua conexão e tente novamente.`)
+      // Offline: salvar como base64 para persistir no localStorage via useFormBackup
+      const base64 = await fileToBase64(compressed)
+      if (base64) {
+        setter(base64)
+        setErrosFoto(prev => prev.filter(e => e !== campo))
+        console.log(`[foto] ${campo} salva localmente (offline)`)
+      } else {
+        setErrosFoto(prev => [...prev.filter(e => e !== campo), campo])
+        alert(`Erro ao salvar foto "${campo}".`)
+      }
     }
   }
 
@@ -393,12 +458,46 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     setTimeout(() => setPpvRevisado(todosRevisados), 0)
   }
 
+  const scrollParaCampo = (id: string) => {
+    const el = document.getElementById(id)
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  }
+
   const enviar = async () => {
     if (!user) return
+
+    // Validar campos obrigatórios com scroll
+    if (!chassis.trim()) {
+      alert('Preencha o campo Chassis.')
+      scrollParaCampo('campo-chassis')
+      return
+    }
+    if (!marca.trim()) {
+      alert('Preencha o campo Marca.')
+      scrollParaCampo('campo-marca')
+      return
+    }
+    if (!modelo.trim()) {
+      alert('Preencha o campo Modelo.')
+      scrollParaCampo('campo-modelo')
+      return
+    }
+
+    if (!fazenda.trim()) {
+      alert('Preencha o nome da Fazenda.')
+      scrollParaCampo('campo-fazenda')
+      return
+    }
+    if (!cidadeLocal.trim()) {
+      alert('Preencha a Cidade.')
+      scrollParaCampo('campo-cidade')
+      return
+    }
 
     if (os?.ID_PPV && !todosRevisados) {
       alert(`Você precisa revisar todos os produtos do PPV antes de enviar.\n\n${ppvItems.filter(p => !p.revisado).length} produto(s) pendente(s).`)
       setPpvAberto(true)
+      scrollParaCampo('secao-ppv')
       return
     }
 
@@ -408,15 +507,17 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       if (!continuar) return
     }
 
-    // Validar almoço
+    // Validar almoço — aceitar base64 (data:) como foto válida (salva offline)
     if (temAlmoco) {
       if (!valorAlmoco.trim()) {
         alert('Informe o valor do almoço.')
+        scrollParaCampo('secao-almoco')
         return
       }
-      const fotoAlmocoLimpa = fotoAlmoco.startsWith('blob:') ? '' : fotoAlmoco
-      if (!fotoAlmocoLimpa) {
+      const fotoAlmocoValida = fotoAlmoco && !fotoAlmoco.startsWith('blob:')
+      if (!fotoAlmocoValida) {
         alert('Anexe a foto da nota do almoço.')
+        scrollParaCampo('secao-almoco')
         return
       }
     }
@@ -424,10 +525,49 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     // Validar justificativa se tem peças extras
     if (manualItems.length > 0 && !justificativaPecaExtra.trim()) {
       alert('Você adicionou peças/serviços extras. Por favor, justifique por que não avisou antes.')
+      scrollParaCampo('secao-extras')
       return
     }
 
     setSaving(true)
+
+    // Resolver fotos pendentes (base64 → upload para Supabase se online)
+    const resolverFoto = async (valor: string, campo: string): Promise<string> => {
+      if (!valor || valor.startsWith('blob:')) return ''
+      if (!valor.startsWith('data:')) return valor // já é URL do Supabase
+      // É base64 — tentar upload se estiver online
+      if (navigator.onLine) {
+        const url = await uploadBase64(valor, campo)
+        if (url) return url
+      }
+      // Se offline ou upload falhou, manter base64 para o offlineWrite guardar
+      return valor
+    }
+
+    const [
+      fotoHorimetroFinal, fotoChassisFinal, fotoFrenteFinal, fotoDireitaFinal,
+      fotoEsquerdaFinal, fotoTraseiraFinal, fotoVolanteFinal,
+      fotoFalha1Final, fotoFalha2Final, fotoFalha3Final, fotoFalha4Final,
+      fotoPecaNova1Final, fotoPecaNova2Final, fotoPecaInstalada1Final, fotoPecaInstalada2Final,
+      fotoAlmocoFinal,
+    ] = await Promise.all([
+      resolverFoto(fotoHorimetro, 'FotoHorimetro'),
+      resolverFoto(fotoChassis, 'FotoChassis'),
+      resolverFoto(fotoFrente, 'FotoFrente'),
+      resolverFoto(fotoDireita, 'FotoDireita'),
+      resolverFoto(fotoEsquerda, 'FotoEsquerda'),
+      resolverFoto(fotoTraseira, 'FotoTraseira'),
+      resolverFoto(fotoVolante, 'FotoVolante'),
+      resolverFoto(fotoFalha1, 'FotoFalha1'),
+      resolverFoto(fotoFalha2, 'FotoFalha2'),
+      resolverFoto(fotoFalha3, 'FotoFalha3'),
+      resolverFoto(fotoFalha4, 'FotoFalha4'),
+      resolverFoto(fotoPecaNova1, 'FotoPecaNova1'),
+      resolverFoto(fotoPecaNova2, 'FotoPecaNova2'),
+      resolverFoto(fotoPecaInstalada1, 'FotoPecaInstalada1'),
+      resolverFoto(fotoPecaInstalada2, 'FotoPecaInstalada2'),
+      temAlmoco ? resolverFoto(fotoAlmoco, 'FotoAlmoco') : Promise.resolve(null),
+    ])
 
     const payload: Record<string, unknown> = {
       Ordem_Servico: id,
@@ -448,6 +588,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       TratorLocal1: '',
       TratorLocal2: '',
       NomResp: nomResp,
+      Fazenda: fazenda,
+      Cidade: cidadeLocal,
       TotalHora: calcTotalHoras(),
       TotalKm: calcTotalKm(),
       DataInicio: dias[0]?.data || '',
@@ -468,25 +610,24 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       FinaHora3: dias[2]?.horaFim || '',
       InicioKm3: '',
       FinalKm3: '',
-      // Nunca salvar blob: URLs — se upload falhou, salvar vazio
-      FotoHorimetro: fotoHorimetro.startsWith('blob:') ? '' : fotoHorimetro,
-      FotoChassis: fotoChassis.startsWith('blob:') ? '' : fotoChassis,
-      FotoFrente: fotoFrente.startsWith('blob:') ? '' : fotoFrente,
-      FotoDireita: fotoDireita.startsWith('blob:') ? '' : fotoDireita,
-      FotoEsquerda: fotoEsquerda.startsWith('blob:') ? '' : fotoEsquerda,
-      FotoTraseira: fotoTraseira.startsWith('blob:') ? '' : fotoTraseira,
-      FotoVolante: fotoVolante.startsWith('blob:') ? '' : fotoVolante,
-      FotoFalha1: fotoFalha1.startsWith('blob:') ? '' : fotoFalha1,
-      FotoFalha2: fotoFalha2.startsWith('blob:') ? '' : fotoFalha2,
-      FotoFalha3: fotoFalha3.startsWith('blob:') ? '' : fotoFalha3,
-      FotoFalha4: fotoFalha4.startsWith('blob:') ? '' : fotoFalha4,
-      FotoPecaNova1: fotoPecaNova1.startsWith('blob:') ? '' : fotoPecaNova1,
-      FotoPecaNova2: fotoPecaNova2.startsWith('blob:') ? '' : fotoPecaNova2,
-      FotoPecaInstalada1: fotoPecaInstalada1.startsWith('blob:') ? '' : fotoPecaInstalada1,
-      FotoPecaInstalada2: fotoPecaInstalada2.startsWith('blob:') ? '' : fotoPecaInstalada2,
+      FotoHorimetro: fotoHorimetroFinal,
+      FotoChassis: fotoChassisFinal,
+      FotoFrente: fotoFrenteFinal,
+      FotoDireita: fotoDireitaFinal,
+      FotoEsquerda: fotoEsquerdaFinal,
+      FotoTraseira: fotoTraseiraFinal,
+      FotoVolante: fotoVolanteFinal,
+      FotoFalha1: fotoFalha1Final,
+      FotoFalha2: fotoFalha2Final,
+      FotoFalha3: fotoFalha3Final,
+      FotoFalha4: fotoFalha4Final,
+      FotoPecaNova1: fotoPecaNova1Final,
+      FotoPecaNova2: fotoPecaNova2Final,
+      FotoPecaInstalada1: fotoPecaInstalada1Final,
+      FotoPecaInstalada2: fotoPecaInstalada2Final,
       TemAlmoco: temAlmoco,
       ValorAlmoco: temAlmoco ? parseFloat(valorAlmoco) || 0 : null,
-      FotoAlmoco: temAlmoco ? (fotoAlmoco.startsWith('blob:') ? '' : fotoAlmoco) : null,
+      FotoAlmoco: fotoAlmocoFinal,
       AssCliente: assCliente, AssTecnico: assTecnico,
       PecasInfo: JSON.stringify(pecas),
       JustificativaPecaExtra: justificativaPecaExtra || null,
@@ -612,7 +753,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         fotoPecaNova1, fotoPecaNova2,
         fotoPecaInstalada1, fotoPecaInstalada2,
         assCliente, assTecnico,
-        nomResp,
+        nomResp, fazenda, cidadeServico: cidadeLocal,
         data: new Date().toISOString().split('T')[0],
         apenasBlob: true,
         downloadFoto,
@@ -705,7 +846,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         fotoPecaNova1, fotoPecaNova2,
         fotoPecaInstalada1, fotoPecaInstalada2,
         assCliente, assTecnico,
-        nomResp,
+        nomResp, fazenda, cidadeServico: cidadeLocal,
         data: new Date().toISOString().split('T')[0],
       })
     } catch (err) {
@@ -807,7 +948,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             {os.Serv_Solicitado && <div><strong>Descrição:</strong> {os.Serv_Solicitado}</div>}
             {os.Projeto && <div><strong>Projeto:</strong> {os.Projeto}</div>}
             {os.ID_PPV && (
-              <button type="button" onClick={() => {
+              <button id="secao-ppv" type="button" onClick={() => {
                 if (!ppvAberto && pecas.filter(p => p.origem === 'ppv').length === 0) {
                   carregarProdutosPPV(os.ID_PPV)
                 }
@@ -1049,19 +1190,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             </div>
           )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <div>
-              <label style={labelStyle}>Marca</label>
+            <div id="campo-marca">
+              <label style={labelStyle}>Marca <span style={{ color: '#C41E2A' }}>*</span></label>
               <input type="text" value={marca} onChange={(e) => setMarca(e.target.value)}
                 style={inputStyle} placeholder="Ex: Valtra" />
             </div>
-            <div>
-              <label style={labelStyle}>Modelo</label>
+            <div id="campo-modelo">
+              <label style={labelStyle}>Modelo <span style={{ color: '#C41E2A' }}>*</span></label>
               <input type="text" value={modelo} onChange={(e) => setModelo(e.target.value)}
                 style={inputStyle} placeholder="Ex: BH 180" />
             </div>
           </div>
-          <div>
-            <label style={labelStyle}>Final do Chassis (escrito)</label>
+          <div id="campo-chassis">
+            <label style={labelStyle}>Final do Chassis (escrito) <span style={{ color: '#C41E2A' }}>*</span></label>
             <input type="text" value={chassis} onChange={(e) => setChassis(e.target.value)}
               style={inputStyle} placeholder="Últimos dígitos do chassis" />
           </div>
@@ -1146,7 +1287,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         </div>
 
         {/* Almoço */}
-        <div style={{ height: 1, background: '#E5E7EB', margin: '16px 0' }} />
+        <div id="secao-almoco" style={{ height: 1, background: '#E5E7EB', margin: '16px 0' }} />
         <label style={{
           display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
           padding: '10px 0',
@@ -1260,15 +1401,27 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         </div>
       </div>
 
-      {/* 9. RESPONSÁVEL DO TRATOR */}
+      {/* 9. RESPONSÁVEL E LOCAL */}
       <div style={sectionStyle}>
         <label style={labelStyle}>Nome do Responsável pelo Trator (cliente)</label>
         <input type="text" value={nomResp} onChange={(e) => setNomResp(e.target.value)} style={inputStyle}
           placeholder="Nome de quem é responsável pelo equipamento" />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+          <div id="campo-fazenda">
+            <label style={labelStyle}>Nome da Fazenda <span style={{ color: '#C41E2A' }}>*</span></label>
+            <input type="text" value={fazenda} onChange={(e) => setFazenda(e.target.value)}
+              style={inputStyle} placeholder="Ex: Fazenda São José" />
+          </div>
+          <div id="campo-cidade">
+            <label style={labelStyle}>Cidade <span style={{ color: '#C41E2A' }}>*</span></label>
+            <input type="text" value={cidadeLocal} onChange={(e) => setCidadeLocal(e.target.value)}
+              style={inputStyle} placeholder="Ex: Ribeirão Preto" />
+          </div>
+        </div>
       </div>
 
       {/* 10. PEÇAS / SERVIÇOS EXTRAS (no final, não obrigatório) */}
-      <div style={sectionStyle}>
+      <div id="secao-extras" style={sectionStyle}>
         {sectionTitle('Peças ou Serviços Extras', '#D97706')}
         <p style={{ fontSize: 13, color: '#6B7280', marginBottom: 14, lineHeight: 1.5 }}>
           Se você usou uma peça a mais ou contratou um serviço de terceiro que não estava previsto, informe aqui. Este campo não é obrigatório.

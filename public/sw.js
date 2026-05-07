@@ -103,3 +103,42 @@ self.addEventListener('fetch', (event) => {
       .catch(() => caches.match(event.request))
   );
 });
+
+// ── Push Notifications ──
+self.addEventListener('push', (event) => {
+  if (!event.data) return;
+
+  const data = event.data.json();
+  const title = data.title || 'Nova Tratores';
+  const options = {
+    body: data.body || '',
+    icon: data.icon || '/Logo_Nova.png',
+    badge: data.badge || '/Logo_Nova.png',
+    vibrate: [200, 100, 200],
+    data: data.data || {},
+    actions: [{ action: 'open', title: 'Abrir' }],
+  };
+
+  event.waitUntil(self.registration.showNotification(title, options));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  const url = event.notification.data?.url || '/';
+
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      // Se já tem uma aba aberta, foca nela e navega
+      for (const client of clients) {
+        if ('focus' in client) {
+          client.focus();
+          client.navigate(url);
+          return;
+        }
+      }
+      // Senão abre uma nova aba
+      return self.clients.openWindow(url);
+    })
+  );
+});

@@ -189,6 +189,8 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
         assCliente: (registro.AssCliente as string) || '',
         assTecnico: (registro.AssTecnico as string) || '',
         nomResp: (registro.NomResp as string) || '',
+        fazenda: (registro.Fazenda as string) || '',
+        cidadeServico: (registro.Cidade as string) || '',
         data: (registro.Data as string) || '',
         downloadFoto,
       })
@@ -345,6 +347,12 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
           <div><div style={fieldLabel}>Horímetro</div><div style={fieldValue}>{(registro.Horimetro as string) || '-'}</div></div>
           <div><div style={fieldLabel}>Garantia</div><div style={{ ...fieldValue, color: registro.Garantia ? '#059669' : '#6B7280' }}>{registro.Garantia ? 'SIM' : 'NÃO'}</div></div>
         </div>
+        {((registro.Fazenda as string) || (registro.Cidade as string)) && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px', marginTop: 4 }}>
+            <div><div style={fieldLabel}>Fazenda</div><div style={fieldValue}>{(registro.Fazenda as string) || '-'}</div></div>
+            <div><div style={fieldLabel}>Cidade</div><div style={fieldValue}>{(registro.Cidade as string) || '-'}</div></div>
+          </div>
+        )}
         {((registro.TratorLocal1 as string) || (registro.TratorLocal2 as string)) && (
           <div><div style={fieldLabel}>Local/Modelo</div><div style={fieldValue}>{[registro.TratorLocal1, registro.TratorLocal2].filter(Boolean).join(' / ')}</div></div>
         )}

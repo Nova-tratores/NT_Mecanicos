@@ -36,10 +36,17 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
         setNotificacoes((prev) => [nova, ...prev].slice(0, 50))
         setNaoLidas((n) => n + 1)
 
-        // Browser notification
-        if (typeof Notification !== 'undefined' && Notification.permission === 'granted' && document.hidden) {
-          new Notification(nova.titulo, { body: nova.descricao || '', icon: '/Logo_Nova.png' })
-        }
+        // Push notification (funciona mesmo com app fechado)
+        fetch('/api/push/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tecnico_nome: tecnicoNome,
+            titulo: nova.titulo,
+            descricao: nova.descricao || '',
+            link: nova.link || '/',
+          }),
+        }).catch(() => { /* ignore */ })
       })
       .subscribe()
 

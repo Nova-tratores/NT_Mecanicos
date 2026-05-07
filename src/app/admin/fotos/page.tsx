@@ -25,6 +25,7 @@ const FOTO_LABELS: Record<string, string> = {
   FotoPecaNova2: 'Peça Nova 2',
   FotoPecaInstalada1: 'Peça Instalada 1',
   FotoPecaInstalada2: 'Peça Instalada 2',
+  FotoAlmoco: 'Almoço',
 }
 
 const FOTO_CAMPOS = Object.keys(FOTO_LABELS)

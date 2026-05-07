@@ -8,6 +8,45 @@ import { getQueue, removeFromQueue, type SyncItem } from './offlineCache'
 
 let syncing = false
 
+// Campos que podem conter fotos em base64 pendentes de upload
+const FOTO_FIELDS = [
+  'FotoHorimetro', 'FotoChassis', 'FotoFrente', 'FotoDireita', 'FotoEsquerda',
+  'FotoTraseira', 'FotoVolante', 'FotoFalha1', 'FotoFalha2', 'FotoFalha3', 'FotoFalha4',
+  'FotoPecaNova1', 'FotoPecaNova2', 'FotoPecaInstalada1', 'FotoPecaInstalada2', 'FotoAlmoco',
+]
+
+/** Upload de uma foto base64 para Supabase Storage */
+async function uploadBase64Foto(base64: string, table: string, campo: string, osId: string): Promise<string> {
+  try {
+    const res = await fetch(base64)
+    const blob = await res.blob()
+    const path = `os-tecnicos/${osId}/${campo}_sync_${Date.now()}.jpg`
+    const { error } = await supabase.storage.from('requisicoes').upload(path, blob, { upsert: true })
+    if (!error) {
+      const { data } = supabase.storage.from('requisicoes').getPublicUrl(path)
+      return data.publicUrl
+    }
+    console.error(`[sync] Upload foto ${campo} falhou:`, error.message)
+  } catch (err) {
+    console.error(`[sync] Erro upload base64 ${campo}:`, err)
+  }
+  return ''
+}
+
+/** Resolve fotos base64 pendentes no payload antes de sincronizar */
+async function resolverFotosPendentes(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const osId = String(data.Ordem_Servico || 'unknown')
+  const resolved = { ...data }
+  for (const campo of FOTO_FIELDS) {
+    const valor = resolved[campo]
+    if (typeof valor === 'string' && valor.startsWith('data:')) {
+      const url = await uploadBase64Foto(valor, 'Ordem_Servico_Tecnicos', campo, osId)
+      resolved[campo] = url // URL do Supabase ou '' se falhou
+    }
+  }
+  return resolved
+}
+
 export async function processQueue(): Promise<number> {
   if (syncing) return 0
   if (!navigator.onLine) return 0
@@ -23,18 +62,23 @@ export async function processQueue(): Promise<number> {
 
     for (const item of items) {
       try {
+        // Resolver fotos base64 antes de gravar
+        const data = item.table === 'Ordem_Servico_Tecnicos'
+          ? await resolverFotosPendentes(item.data)
+          : item.data
+
         let result
 
         if (item.action === 'insert') {
-          result = await supabase.from(item.table).insert(item.data)
+          result = await supabase.from(item.table).insert(data)
         } else if (item.action === 'update' && item.match) {
-          let query = supabase.from(item.table).update(item.data)
+          let query = supabase.from(item.table).update(data)
           for (const [k, v] of Object.entries(item.match)) {
             query = query.eq(k, v)
           }
           result = await query
         } else if (item.action === 'upsert') {
-          result = await supabase.from(item.table).upsert(item.data)
+          result = await supabase.from(item.table).upsert(data)
         }
 
         if (result?.error) {
