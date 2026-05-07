@@ -4,9 +4,10 @@
  */
 
 import { supabase } from './supabase'
-import { getQueue, removeFromQueue, type SyncItem } from './offlineCache'
+import { getQueue, removeFromQueue, updateQueueItem, type SyncItem } from './offlineCache'
 
 let syncing = false
+const MAX_RETRIES = 5
 
 // Campos que podem conter fotos em base64 pendentes de upload
 const FOTO_FIELDS = [
@@ -82,8 +83,15 @@ export async function processQueue(): Promise<number> {
         }
 
         if (result?.error) {
-          console.error(`[sync] Erro ao processar item ${item.id}:`, result.error)
-          continue // pula este, tenta os próximos
+          const retries = (item.retries || 0) + 1
+          if (retries >= MAX_RETRIES) {
+            console.error(`[sync] Item ${item.id} falhou ${MAX_RETRIES}x, removendo da fila:`, result.error)
+            if (item.id) await removeFromQueue(item.id)
+          } else {
+            console.warn(`[sync] Item ${item.id} falhou (tentativa ${retries}/${MAX_RETRIES}):`, result.error.message)
+            if (item.id) await updateQueueItem(item.id, { retries })
+          }
+          continue
         }
 
         if (item.id) await removeFromQueue(item.id)

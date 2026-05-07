@@ -25,6 +25,15 @@ function openDB(): Promise<IDBDatabase> {
   })
 }
 
+/** Aguarda a transação completar de verdade */
+function awaitTx(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.onabort = () => reject(tx.error || new Error('Transaction aborted'))
+  })
+}
+
 // ═══ Cache persistente ═══
 
 export async function offlineGet<T>(key: string): Promise<T | null> {
@@ -48,8 +57,9 @@ export async function offlineSet<T>(key: string, data: T): Promise<void> {
     const tx = db.transaction(STORE_CACHE, 'readwrite')
     const store = tx.objectStore(STORE_CACHE)
     store.put({ key, data, timestamp: Date.now() })
-  } catch {
-    // silently fail
+    await awaitTx(tx)
+  } catch (err) {
+    console.error('[offline] Erro ao salvar cache:', err)
   }
 }
 
@@ -62,17 +72,15 @@ export interface SyncItem {
   data: Record<string, unknown>
   match?: Record<string, unknown> // para updates: { id: 123 }
   createdAt: number
+  retries?: number
 }
 
-export async function queueSync(item: Omit<SyncItem, 'id' | 'createdAt'>): Promise<void> {
-  try {
-    const db = await openDB()
-    const tx = db.transaction(STORE_QUEUE, 'readwrite')
-    const store = tx.objectStore(STORE_QUEUE)
-    store.add({ ...item, createdAt: Date.now() })
-  } catch (err) {
-    console.error('[offline] Erro ao enfileirar:', err)
-  }
+export async function queueSync(item: Omit<SyncItem, 'id' | 'createdAt' | 'retries'>): Promise<void> {
+  const db = await openDB()
+  const tx = db.transaction(STORE_QUEUE, 'readwrite')
+  const store = tx.objectStore(STORE_QUEUE)
+  store.add({ ...item, createdAt: Date.now(), retries: 0 })
+  await awaitTx(tx)
 }
 
 export async function getQueue(): Promise<SyncItem[]> {
@@ -96,8 +104,26 @@ export async function removeFromQueue(id: number): Promise<void> {
     const tx = db.transaction(STORE_QUEUE, 'readwrite')
     const store = tx.objectStore(STORE_QUEUE)
     store.delete(id)
-  } catch {
-    // silently fail
+    await awaitTx(tx)
+  } catch (err) {
+    console.error('[offline] Erro ao remover da fila:', err)
+  }
+}
+
+export async function updateQueueItem(id: number, updates: Partial<SyncItem>): Promise<void> {
+  try {
+    const db = await openDB()
+    const tx = db.transaction(STORE_QUEUE, 'readwrite')
+    const store = tx.objectStore(STORE_QUEUE)
+    const req = store.get(id)
+    req.onsuccess = () => {
+      if (req.result) {
+        store.put({ ...req.result, ...updates })
+      }
+    }
+    await awaitTx(tx)
+  } catch (err) {
+    console.error('[offline] Erro ao atualizar item na fila:', err)
   }
 }
 

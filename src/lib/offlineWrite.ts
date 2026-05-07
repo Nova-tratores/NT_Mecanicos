@@ -14,15 +14,27 @@ interface WriteOptions {
   match?: Record<string, unknown>
 }
 
+function isNetworkError(err: unknown): boolean {
+  const msg = String((err as { message?: string })?.message || err || '').toLowerCase()
+  return (
+    msg.includes('fetch') ||
+    msg.includes('network') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('load failed') ||
+    msg.includes('timeout') ||
+    msg.includes('dns') ||
+    msg.includes('econnrefused') ||
+    msg.includes('enotfound') ||
+    msg.includes('aborted')
+  )
+}
+
 export async function offlineWrite(opts: WriteOptions): Promise<{ ok: boolean; queued: boolean; error?: string }> {
-  // Se offline, vai direto pra fila
+  const queueItem = { table: opts.table, action: opts.action, data: opts.data, match: opts.match }
+
+  // Se offline, vai direto pra fila (queueSync agora aguarda a transação)
   if (!navigator.onLine) {
-    await queueSync({
-      table: opts.table,
-      action: opts.action,
-      data: opts.data,
-      match: opts.match,
-    })
+    await queueSync(queueItem)
     return { ok: true, queued: true }
   }
 
@@ -44,27 +56,17 @@ export async function offlineWrite(opts: WriteOptions): Promise<{ ok: boolean; q
 
     if (result?.error) {
       // Se é erro de rede, enfileira
-      if (result.error.message?.includes('fetch') || result.error.message?.includes('network')) {
-        await queueSync({
-          table: opts.table,
-          action: opts.action,
-          data: opts.data,
-          match: opts.match,
-        })
+      if (isNetworkError(result.error)) {
+        await queueSync(queueItem)
         return { ok: true, queued: true }
       }
       return { ok: false, queued: false, error: result.error.message }
     }
 
     return { ok: true, queued: false }
-  } catch {
+  } catch (err) {
     // Erro de rede, enfileira
-    await queueSync({
-      table: opts.table,
-      action: opts.action,
-      data: opts.data,
-      match: opts.match,
-    })
+    await queueSync(queueItem)
     return { ok: true, queued: true }
   }
 }
