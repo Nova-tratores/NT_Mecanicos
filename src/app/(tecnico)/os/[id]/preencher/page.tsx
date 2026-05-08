@@ -215,19 +215,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         if (existing.DataInicio) {
           diasLoaded.push({
             data: existing.DataInicio, horaInicio: existing.InicioHora || '',
-            horaFim: existing.FinalHora || '', kmTotal: existing.TotalKm || '',
+            horaFim: existing.FinalHora || '', kmTotal: existing.InicioKm || existing.TotalKm || '',
           })
         }
         if (existing.AdicionarData2 && existing.DataInicio2) {
           diasLoaded.push({
             data: existing.DataInicio2, horaInicio: existing.InicioHora2 || '',
-            horaFim: existing.FinalHora2 || '', kmTotal: '',
+            horaFim: existing.FinalHora2 || '', kmTotal: existing.InicioKm2 || '',
           })
         }
         if (existing.AdicionarData3 && existing.DataInicio3) {
           diasLoaded.push({
             data: existing.DataInicio3, horaInicio: existing.InicioHora3 || '',
-            horaFim: existing.FinaHora3 || '', kmTotal: '',
+            horaFim: existing.FinaHora3 || '', kmTotal: existing.InicioKm3 || '',
           })
         }
         if (diasLoaded.length > 0) setDias(diasLoaded)
@@ -596,19 +596,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       DataFinal: dias[dias.length - 1]?.data || dias[0]?.data || '',
       InicioHora: dias[0]?.horaInicio || '',
       FinalHora: dias[0]?.horaFim || '',
-      InicioKm: '',
+      InicioKm: dias[0]?.kmTotal || '',
       FinalKm: '',
       AdicionarData2: dias.length >= 2,
       DataInicio2: dias[1]?.data || '',
       InicioHora2: dias[1]?.horaInicio || '',
       FinalHora2: dias[1]?.horaFim || '',
-      InicioKm2: '',
+      InicioKm2: dias[1]?.kmTotal || '',
       FinalKm2: '',
       AdicionarData3: dias.length >= 3,
       DataInicio3: dias[2]?.data || '',
       InicioHora3: dias[2]?.horaInicio || '',
       FinaHora3: dias[2]?.horaFim || '',
-      InicioKm3: '',
+      InicioKm3: dias[2]?.kmTotal || '',
       FinalKm3: '',
       FotoHorimetro: fotoHorimetroFinal,
       FotoChassis: fotoChassisFinal,
