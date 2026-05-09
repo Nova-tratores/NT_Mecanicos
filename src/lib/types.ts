@@ -167,3 +167,36 @@ export interface MecanicoNotificacao {
   lida: boolean
   created_at: string
 }
+
+export type AlertaSeveridade = 'baixa' | 'media' | 'alta' | 'critica'
+export type AlertaStatus = 'pendente' | 'ocorrencia' | 'ignorado'
+
+export interface MecanicoAlerta {
+  id: number
+  tecnico_nome: string
+  tipo: string
+  severidade: AlertaSeveridade
+  data_referencia: string
+  descricao: string
+  detalhes: Record<string, unknown> | null
+  id_ordem: string | null
+  status: AlertaStatus
+  pontos: number
+  admin_nome: string | null
+  admin_comentario: string | null
+  resolvido_em: string | null
+  created_at: string
+}
+
+export interface MecanicoOcorrencia {
+  id: number
+  tecnico_nome: string
+  tipo: string
+  descricao: string
+  pontos: number
+  data_referencia: string
+  id_ordem: string | null
+  id_alerta: number | null
+  admin_nome: string | null
+  created_at: string
+}

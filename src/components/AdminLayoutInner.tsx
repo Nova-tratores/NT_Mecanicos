@@ -8,16 +8,18 @@ import BottomNav from '@/components/BottomNav'
 export default function AdminLayoutInner({ children }: { children: React.ReactNode }) {
   const { admin, loading, logout } = useAdmin()
   const [reqPendentes, setReqPendentes] = useState(0)
+  const [alertasPendentes, setAlertasPendentes] = useState(0)
 
   useEffect(() => {
     if (!admin) return
 
     const contar = async () => {
-      const { count } = await supabase
-        .from('mecanico_requisicoes')
-        .select('id', { count: 'exact', head: true })
-        .eq('status', 'pendente')
-      setReqPendentes(count || 0)
+      const [{ count: reqCount }, { count: alertaCount }] = await Promise.all([
+        supabase.from('mecanico_requisicoes').select('id', { count: 'exact', head: true }).eq('status', 'pendente'),
+        supabase.from('mecanico_alertas').select('id', { count: 'exact', head: true }).eq('status', 'pendente'),
+      ])
+      setReqPendentes(reqCount || 0)
+      setAlertasPendentes(alertaCount || 0)
     }
     contar()
 
@@ -25,6 +27,9 @@ export default function AdminLayoutInner({ children }: { children: React.ReactNo
       .channel('req_badge_admin')
       .on('postgres_changes', {
         event: '*', schema: 'public', table: 'mecanico_requisicoes',
+      }, () => contar())
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'mecanico_alertas',
       }, () => contar())
       .subscribe()
 
@@ -47,7 +52,7 @@ export default function AdminLayoutInner({ children }: { children: React.ReactNo
       <main style={{ padding: 16 }}>
         {children}
       </main>
-      <BottomNav reqPendentes={reqPendentes} />
+      <BottomNav reqPendentes={reqPendentes} alertasPendentes={alertasPendentes} />
     </div>
   )
 }

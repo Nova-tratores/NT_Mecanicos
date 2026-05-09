@@ -6,13 +6,16 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
 )
 
-webpush.setVapidDetails(
-  'mailto:suporte@novatratores.com.br',
-  process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!,
-  process.env.VAPID_PRIVATE_KEY!,
-)
+function initVapid() {
+  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
+  const privateKey = process.env.VAPID_PRIVATE_KEY
+  if (publicKey && privateKey) {
+    webpush.setVapidDetails('mailto:suporte@novatratores.com.br', publicKey, privateKey)
+  }
+}
 
 export async function POST(request: Request) {
+  initVapid()
   const { tecnico_nome, titulo, descricao, link } = await request.json()
 
   if (!tecnico_nome || !titulo) {

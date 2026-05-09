@@ -8,7 +8,7 @@ import type { OrdemServico, AgendaItem } from '@/lib/types'
 import {
   AlertTriangle, MapPin, ChevronRight, Clock, Navigation,
   Wrench, ClipboardList, FilePlus, Compass, Calendar, X, Loader2,
-  Route, User, FileText,
+  Route, User, FileText, Megaphone,
 } from 'lucide-react'
 import Link from 'next/link'
 import { Card, ListRow, Section, PageSpinner, EmptyState, Badge } from '@/components/ui'
@@ -23,6 +23,14 @@ interface CaminhoAvulso {
   created_at: string
 }
 
+interface AvisoGeral {
+  id: number
+  titulo: string
+  mensagem: string
+  prioridade: 'normal' | 'urgente'
+  created_at: string
+}
+
 interface HomeData {
   osHoje: OrdemServico[]
   osAtrasadas: OrdemServico[]
@@ -30,12 +38,13 @@ interface HomeData {
   agendaHoje: AgendaItem[]
   caminhosHoje: CaminhoAvulso[]
   cidadeMap: Record<string, string>
+  avisos: AvisoGeral[]
 }
 
 async function fetchHomeData(nome: string, tecnicoNome: string): Promise<HomeData> {
   const hoje = new Date().toISOString().split('T')[0]
 
-  const [agendaRes, caminhosRes, osRes, reqRes] = await Promise.all([
+  const [agendaRes, caminhosRes, osRes, reqRes, avisosRes] = await Promise.all([
     supabase
       .from('agenda_visao')
       .select('id, data, tecnico_nome, id_ordem, cliente, servico, endereco, cidade, qtd_horas, ordem_sequencia, status, observacoes')
@@ -61,6 +70,13 @@ async function fetchHomeData(nome: string, tecnicoNome: string): Promise<HomeDat
       .or(`solicitante.ilike.%${nome}%,solicitante.eq.${tecnicoNome}`)
       .eq('status', 'pedido')
       .is('recibo_fornecedor', null),
+    supabase
+      .from('avisos_gerais')
+      .select('id, titulo, mensagem, prioridade, created_at')
+      .eq('ativo', true)
+      .or(`expira_em.is.null,expira_em.gte.${hoje}`)
+      .order('created_at', { ascending: false })
+      .limit(5),
   ])
 
   const todas = (osRes.data || []) as OrdemServico[]
@@ -112,6 +128,7 @@ async function fetchHomeData(nome: string, tecnicoNome: string): Promise<HomeDat
     agendaHoje: (agendaRes.data || []) as unknown as AgendaItem[],
     caminhosHoje: (caminhosRes.data || []) as unknown as CaminhoAvulso[],
     cidadeMap,
+    avisos: (avisosRes.data || []) as AvisoGeral[],
   }
 }
 
@@ -206,7 +223,7 @@ export default function TecnicoHome() {
 
   if (loading) return <PageSpinner />
 
-  const { osHoje = [], osAtrasadas = [], reqPendentes = 0, agendaHoje = [], caminhosHoje = [], cidadeMap = {} } = data || {}
+  const { osHoje = [], osAtrasadas = [], reqPendentes = 0, agendaHoje = [], caminhosHoje = [], cidadeMap = {}, avisos = [] } = data || {}
   const temAlgoHoje = agendaHoje.length > 0 || osHoje.length > 0 || caminhosHoje.length > 0
   const saudacao = () => {
     const h = new Date().getHours()
@@ -238,6 +255,44 @@ export default function TecnicoHome() {
           {dataLabel}
         </span>
       </div>
+
+      {/* ═══ AVISOS GERAIS ═══ */}
+      {avisos.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {avisos.map((av) => (
+            <div key={av.id} style={{
+              background: av.prioridade === 'urgente' ? colors.dangerBg : colors.accentBg,
+              borderRadius: radius.lg, padding: '12px 14px',
+              border: `1.5px solid ${av.prioridade === 'urgente' ? colors.dangerBorder : colors.accentBorder}`,
+              display: 'flex', gap: 10, alignItems: 'flex-start',
+            }}>
+              <Megaphone size={18} color={av.prioridade === 'urgente' ? colors.danger : colors.accent}
+                style={{ flexShrink: 0, marginTop: 2 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: 13, fontWeight: 700,
+                  color: av.prioridade === 'urgente' ? colors.danger : colors.accent,
+                  marginBottom: 2,
+                }}>
+                  {av.titulo}
+                  {av.prioridade === 'urgente' && (
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4,
+                      background: colors.danger, color: '#fff', marginLeft: 6, verticalAlign: 'middle',
+                    }}>URGENTE</span>
+                  )}
+                </div>
+                <div style={{ fontSize: 12, color: colors.text, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                  {av.mensagem}
+                </div>
+                <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 4 }}>
+                  {new Date(av.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ═══ PENDÊNCIAS (prioridade visual) ═══ */}
       {(osAtrasadas.length > 0 || reqPendentes > 0) && (

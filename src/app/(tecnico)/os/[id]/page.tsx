@@ -114,19 +114,19 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
         if (preench.DataInicio) {
           diasLoaded.push({
             data: preench.DataInicio, horaChegada: preench.InicioHora || '',
-            horaSaida: preench.FinalHora || '', kmTotal: preench.TotalKm || '',
+            horaSaida: preench.FinalHora || '', kmTotal: preench.InicioKm || preench.TotalKm || '',
           })
         }
         if (preench.AdicionarData2 && preench.DataInicio2) {
           diasLoaded.push({
             data: preench.DataInicio2, horaChegada: preench.InicioHora2 || '',
-            horaSaida: preench.FinalHora2 || '', kmTotal: '',
+            horaSaida: preench.FinalHora2 || '', kmTotal: preench.InicioKm2 || '',
           })
         }
         if (preench.AdicionarData3 && preench.DataInicio3) {
           diasLoaded.push({
             data: preench.DataInicio3, horaChegada: preench.InicioHora3 || '',
-            horaSaida: preench.FinalHora3 || '', kmTotal: '',
+            horaSaida: preench.FinalHora3 || '', kmTotal: preench.InicioKm3 || '',
           })
         }
         if (diasLoaded.length > 0) {
@@ -200,6 +200,13 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       return
     }
 
+    // Validar km total de cada dia
+    const diaKmVazio = dias.findIndex(d => !d.kmTotal.trim())
+    if (diaKmVazio >= 0) {
+      alert(`Preencha o Total KM do dia ${diaKmVazio + 1}.`)
+      return
+    }
+
     // Validar justificativa se necessário
     if (precisaJustificar && !justificativa.trim()) {
       alert('Informe a justificativa do atraso (serviço iniciado após a previsão de execução).')
@@ -216,21 +223,21 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       DataFinal: dias[dias.length - 1]?.data || dias[0]?.data || '',
       InicioHora: dias[0]?.horaChegada || '',
       FinalHora: dias[0]?.horaSaida || '',
-      InicioKm: '',
+      InicioKm: dias[0]?.kmTotal || '',
       FinalKm: '',
       // Dia 2
       AdicionarData2: dias.length >= 2,
       DataInicio2: dias[1]?.data || '',
       InicioHora2: dias[1]?.horaChegada || '',
       FinalHora2: dias[1]?.horaSaida || '',
-      InicioKm2: '',
+      InicioKm2: dias[1]?.kmTotal || '',
       FinalKm2: '',
       // Dia 3
       AdicionarData3: dias.length >= 3,
       DataInicio3: dias[2]?.data || '',
       InicioHora3: dias[2]?.horaChegada || '',
       FinaHora3: dias[2]?.horaSaida || '',
-      InicioKm3: '',
+      InicioKm3: dias[2]?.kmTotal || '',
       FinalKm3: '',
       TotalHora: calcTotalHoras(),
       TotalKm: calcTotalKm(),

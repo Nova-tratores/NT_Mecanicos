@@ -494,6 +494,14 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       return
     }
 
+    // Validar km total de cada dia
+    const diaKmVazio = dias.findIndex(d => !d.kmTotal.trim())
+    if (diaKmVazio >= 0) {
+      alert(`Preencha o Total KM do dia ${diaKmVazio + 1}.`)
+      scrollParaCampo('secao-dias')
+      return
+    }
+
     if (os?.ID_PPV && !todosRevisados) {
       alert(`Você precisa revisar todos os produtos do PPV antes de enviar.\n\n${ppvItems.filter(p => !p.revisado).length} produto(s) pendente(s).`)
       setPpvAberto(true)
@@ -1215,7 +1223,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       </div>
 
       {/* 4. DATAS / HORAS / DESLOCAMENTO */}
-      <div style={sectionStyle}>
+      <div id="secao-dias" style={sectionStyle}>
         {sectionTitle('Datas / Horas / Deslocamento', '#1E3A5F')}
         {dias[0]?.data && dias[0]?.horaInicio && (
           <div style={{

@@ -236,9 +236,9 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
   const fieldValue: React.CSSProperties = { fontSize: 14, fontWeight: 600, color: '#1F2937', marginBottom: 10 }
 
   const dias = []
-  if (registro.DataInicio) dias.push({ data: registro.DataInicio as string, hi: registro.InicioHora as string, hf: registro.FinalHora as string, ki: registro.InicioKm as string, kf: registro.FinalKm as string })
-  if (registro.AdicionarData2 && registro.DataInicio2) dias.push({ data: registro.DataInicio2 as string, hi: registro.InicioHora2 as string, hf: registro.FinalHora2 as string, ki: registro.InicioKm2 as string, kf: registro.FinalKm2 as string })
-  if (registro.AdicionarData3 && registro.DataInicio3) dias.push({ data: registro.DataInicio3 as string, hi: registro.InicioHora3 as string, hf: registro.FinaHora3 as string, ki: registro.InicioKm3 as string, kf: registro.FinalKm3 as string })
+  if (registro.DataInicio) dias.push({ data: registro.DataInicio as string, hi: registro.InicioHora as string, hf: registro.FinalHora as string, kmTotal: (registro.InicioKm as string) || '' })
+  if (registro.AdicionarData2 && registro.DataInicio2) dias.push({ data: registro.DataInicio2 as string, hi: registro.InicioHora2 as string, hf: registro.FinalHora2 as string, kmTotal: (registro.InicioKm2 as string) || '' })
+  if (registro.AdicionarData3 && registro.DataInicio3) dias.push({ data: registro.DataInicio3 as string, hi: registro.InicioHora3 as string, hf: registro.FinaHora3 as string, kmTotal: (registro.InicioKm3 as string) || '' })
 
   const fotos = [
     { label: 'Horímetro', url: registro.FotoHorimetro as string },
@@ -383,8 +383,7 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 16px', fontSize: 13 }}>
                 <div><span style={{ color: '#9CA3AF' }}>Hora início: </span><strong>{d.hi || '-'}</strong></div>
                 <div><span style={{ color: '#9CA3AF' }}>Hora fim: </span><strong>{d.hf || '-'}</strong></div>
-                <div><span style={{ color: '#9CA3AF' }}>KM início: </span><strong>{d.ki || '-'}</strong></div>
-                <div><span style={{ color: '#9CA3AF' }}>KM fim: </span><strong>{d.kf || '-'}</strong></div>
+                <div style={{ gridColumn: '1 / -1' }}><span style={{ color: '#9CA3AF' }}>Total KM: </span><strong>{d.kmTotal || '-'}</strong></div>
               </div>
             </div>
           ))}

@@ -1,22 +1,24 @@
 'use client'
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
-import { Home, Calendar, Wrench, ClipboardList, Users, Camera } from 'lucide-react'
+import { Home, Calendar, Wrench, ClipboardList, Users, ShieldAlert, Megaphone } from 'lucide-react'
 
 const tabs = [
   { href: '/admin', icon: Home, label: 'Painel' },
   { href: '/admin/agenda', icon: Calendar, label: 'Agenda' },
   { href: '/admin/os', icon: Wrench, label: 'Ordens' },
-  { href: '/admin/fotos', icon: Camera, label: 'Fotos' },
+  { href: '/admin/alertas', icon: ShieldAlert, label: 'Alertas' },
+  { href: '/admin/avisos', icon: Megaphone, label: 'Avisos' },
   { href: '/admin/requisicoes', icon: ClipboardList, label: 'Requisições' },
   { href: '/admin/tecnicos', icon: Users, label: 'Técnicos' },
 ]
 
 interface BottomNavProps {
   reqPendentes?: number
+  alertasPendentes?: number
 }
 
-export default function BottomNav({ reqPendentes = 0 }: BottomNavProps) {
+export default function BottomNav({ reqPendentes = 0, alertasPendentes = 0 }: BottomNavProps) {
   const pathname = usePathname()
 
   return (
@@ -30,7 +32,8 @@ export default function BottomNav({ reqPendentes = 0 }: BottomNavProps) {
       {tabs.map((tab) => {
         const isActive = tab.href === '/admin' ? pathname === '/admin' : pathname.startsWith(tab.href)
         const Icon = tab.icon
-        const showBadge = tab.href === '/admin/requisicoes' && reqPendentes > 0
+        const showBadge = (tab.href === '/admin/requisicoes' && reqPendentes > 0) || (tab.href === '/admin/alertas' && alertasPendentes > 0)
+        const badgeCount = tab.href === '/admin/alertas' ? alertasPendentes : reqPendentes
 
         return (
           <Link key={tab.href} href={tab.href} style={{
@@ -50,7 +53,7 @@ export default function BottomNav({ reqPendentes = 0 }: BottomNavProps) {
                   justifyContent: 'center', padding: '0 4px',
                   animation: 'pulse-alert 2s ease-in-out infinite',
                 }}>
-                  {reqPendentes}
+                  {badgeCount}
                 </span>
               )}
             </div>
