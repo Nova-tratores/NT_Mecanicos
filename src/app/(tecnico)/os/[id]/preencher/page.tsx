@@ -111,6 +111,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   // Assinaturas
   const [assCliente, setAssCliente] = useState('')
   const [assTecnico, setAssTecnico] = useState('')
+  const [erroValidacao, setErroValidacao] = useState('')
 
   const carregarProdutosPPV = async (idPPV: string, pecasAtuais?: PecaInfo[]) => {
     setLoadingPPV(true)
@@ -459,8 +460,16 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   }
 
   const scrollParaCampo = (id: string) => {
-    const el = document.getElementById(id)
-    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setTimeout(() => {
+      const el = document.getElementById(id)
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 100)
+  }
+
+  const mostrarErro = (msg: string, campoId: string) => {
+    setErroValidacao(msg)
+    scrollParaCampo(campoId)
+    setTimeout(() => setErroValidacao(''), 4000)
   }
 
   const enviar = async () => {
@@ -468,44 +477,37 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
     // Validar campos obrigatórios com scroll
     if (!chassis.trim()) {
-      alert('Preencha o campo Chassis.')
-      scrollParaCampo('campo-chassis')
+      mostrarErro('Preencha o campo Chassis.', 'campo-chassis')
       return
     }
     if (!marca.trim()) {
-      alert('Preencha o campo Marca.')
-      scrollParaCampo('campo-marca')
+      mostrarErro('Preencha o campo Marca.', 'campo-marca')
       return
     }
     if (!modelo.trim()) {
-      alert('Preencha o campo Modelo.')
-      scrollParaCampo('campo-modelo')
+      mostrarErro('Preencha o campo Modelo.', 'campo-modelo')
       return
     }
 
     if (!fazenda.trim()) {
-      alert('Preencha o nome da Fazenda.')
-      scrollParaCampo('campo-fazenda')
+      mostrarErro('Preencha o nome da Fazenda.', 'campo-fazenda')
       return
     }
     if (!cidadeLocal.trim()) {
-      alert('Preencha a Cidade.')
-      scrollParaCampo('campo-cidade')
+      mostrarErro('Preencha a Cidade.', 'campo-cidade')
       return
     }
 
     // Validar km total de cada dia
     const diaKmVazio = dias.findIndex(d => !d.kmTotal.trim())
     if (diaKmVazio >= 0) {
-      alert(`Preencha o Total KM do dia ${diaKmVazio + 1}.`)
-      scrollParaCampo('secao-dias')
+      mostrarErro(`Preencha o Total KM do dia ${diaKmVazio + 1}.`, 'secao-dias')
       return
     }
 
     if (os?.ID_PPV && !todosRevisados) {
-      alert(`Você precisa revisar todos os produtos do PPV antes de enviar.\n\n${ppvItems.filter(p => !p.revisado).length} produto(s) pendente(s).`)
+      mostrarErro(`Revise todos os produtos do PPV antes de enviar. ${ppvItems.filter(p => !p.revisado).length} produto(s) pendente(s).`, 'secao-ppv')
       setPpvAberto(true)
-      scrollParaCampo('secao-ppv')
       return
     }
 
@@ -518,22 +520,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     // Validar almoço — aceitar base64 (data:) como foto válida (salva offline)
     if (temAlmoco) {
       if (!valorAlmoco.trim()) {
-        alert('Informe o valor do almoço.')
-        scrollParaCampo('secao-almoco')
+        mostrarErro('Informe o valor do almoço.', 'secao-almoco')
         return
       }
       const fotoAlmocoValida = fotoAlmoco && !fotoAlmoco.startsWith('blob:')
       if (!fotoAlmocoValida) {
-        alert('Anexe a foto da nota do almoço.')
-        scrollParaCampo('secao-almoco')
+        mostrarErro('Anexe a foto da nota do almoço.', 'secao-almoco')
         return
       }
     }
 
     // Validar justificativa se tem peças extras
     if (manualItems.length > 0 && !justificativaPecaExtra.trim()) {
-      alert('Você adicionou peças/serviços extras. Por favor, justifique por que não avisou antes.')
-      scrollParaCampo('secao-extras')
+      mostrarErro('Você adicionou peças/serviços extras. Justifique por que não avisou antes.', 'secao-extras')
       return
     }
 
@@ -924,6 +923,21 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
   return (
     <div>
+      {erroValidacao && (
+        <div style={{
+          position: 'fixed', top: 16, left: '50%', transform: 'translateX(-50%)',
+          zIndex: 9999, background: '#DC2626', color: '#fff',
+          padding: '12px 20px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+          boxShadow: '0 4px 20px rgba(0,0,0,0.3)', maxWidth: '90vw', textAlign: 'center',
+          animation: 'fadeIn 0.2s ease',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <AlertTriangle size={18} />
+            {erroValidacao}
+          </div>
+        </div>
+      )}
+
       <Link href={`/os/${id}`} style={{
         display: 'inline-flex', alignItems: 'center', gap: 6,
         color: '#C41E2A', fontSize: 15, fontWeight: 600,
