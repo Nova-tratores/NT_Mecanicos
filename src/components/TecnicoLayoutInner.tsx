@@ -4,13 +4,13 @@ import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useNotificacoes } from '@/hooks/useNotificacoes'
 import { supabase } from '@/lib/supabase'
 import HeaderMobile from '@/components/HeaderMobile'
-import BottomNavTecnico from '@/components/BottomNavTecnico'
+// BottomNav removido — navegação agora via dashboard
 import OfflineSync from '@/components/OfflineSync'
 import { Megaphone } from 'lucide-react'
 
 export default function TecnicoLayoutInner({ children }: { children: React.ReactNode }) {
   const { user, loading } = useCurrentUser()
-  const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas } = useNotificacoes(user?.tecnico_nome ?? '')
+  const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '')
   const [avisosPendentes, setAvisosPendentes] = useState<{ id: number; titulo: string; mensagem: string; prioridade: string }[]>([])
   const [confirmando, setConfirmando] = useState(false)
 
@@ -65,20 +65,20 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   if (!user) return null
 
   return (
-    <div style={{ minHeight: '100vh', paddingBottom: 100 }}>
+    <div style={{ minHeight: '100vh', paddingBottom: 24 }}>
       <OfflineSync />
       <HeaderMobile
         notificacoes={notificacoes}
         naoLidas={naoLidas}
         onMarcarLida={marcarComoLida}
         onMarcarTodasLidas={marcarTodasComoLidas}
+        onLimparTodas={limparTodas}
         avatarUrl={user.avatar_url}
         userName={user.tecnico_nome}
       />
       <main style={{ padding: 16 }}>
         {children}
       </main>
-      <BottomNavTecnico />
 
       {/* Popup bloqueante de aviso */}
       {avisosPendentes.length > 0 && (

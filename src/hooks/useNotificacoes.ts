@@ -66,5 +66,12 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
     setNaoLidas(0)
   }, [tecnicoNome])
 
-  return { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas }
+  const limparTodas = useCallback(async () => {
+    if (!tecnicoNome) return
+    await supabase.from('mecanico_notificacoes').delete().eq('tecnico_nome', tecnicoNome)
+    setNotificacoes([])
+    setNaoLidas(0)
+  }, [tecnicoNome])
+
+  return { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, limparTodas }
 }

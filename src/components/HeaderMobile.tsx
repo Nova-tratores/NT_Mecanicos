@@ -1,7 +1,8 @@
 'use client'
 import { useState } from 'react'
-import { Bell, X } from 'lucide-react'
+import { Bell, X, Trash2 } from 'lucide-react'
 import Image from 'next/image'
+import Link from 'next/link'
 import type { MecanicoNotificacao } from '@/lib/types'
 
 interface HeaderMobileProps {
@@ -9,11 +10,12 @@ interface HeaderMobileProps {
   naoLidas: number
   onMarcarLida: (id: number) => void
   onMarcarTodasLidas: () => void
+  onLimparTodas: () => void
   avatarUrl?: string | null
   userName?: string | null
 }
 
-export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onMarcarTodasLidas, avatarUrl, userName }: HeaderMobileProps) {
+export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onMarcarTodasLidas, onLimparTodas, avatarUrl, userName }: HeaderMobileProps) {
   const [showNotifs, setShowNotifs] = useState(false)
 
   return (
@@ -40,7 +42,9 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
               </span>
             )}
           </div>
-          <Image src="/Logo_Nova.png" alt="Nova Tratores" width={120} height={42} style={{ objectFit: 'contain', filter: 'brightness(0) invert(1)' }} />
+          <Link href="/">
+            <Image src="/Logo_Nova.png" alt="Nova Tratores" width={120} height={42} style={{ objectFit: 'contain', filter: 'brightness(0) invert(1)' }} />
+          </Link>
         </div>
 
         <button onClick={() => setShowNotifs(!showNotifs)} style={{
@@ -79,13 +83,22 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             }}>
               <span style={{ fontWeight: 700, fontSize: 16 }}>Notificações</span>
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 {naoLidas > 0 && (
                   <button onClick={onMarcarTodasLidas} style={{
                     background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff',
                     fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
                   }}>
                     Marcar todas
+                  </button>
+                )}
+                {notificacoes.length > 0 && (
+                  <button onClick={() => { onLimparTodas(); setShowNotifs(false) }} style={{
+                    background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff',
+                    fontSize: 11, padding: '4px 8px', borderRadius: 6, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 4,
+                  }}>
+                    <Trash2 size={12} /> Limpar
                   </button>
                 )}
                 <button onClick={() => setShowNotifs(false)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>
