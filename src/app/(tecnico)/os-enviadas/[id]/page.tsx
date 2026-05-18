@@ -256,6 +256,7 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
     { label: 'Peça Nova 2', url: registro.FotoPecaNova2 as string },
     { label: 'Peça Instalada 1', url: registro.FotoPecaInstalada1 as string },
     { label: 'Peça Instalada 2', url: registro.FotoPecaInstalada2 as string },
+    { label: 'Nota Alimentação', url: registro.FotoAlmoco as string },
   ].filter(f => f.url)
 
   return (

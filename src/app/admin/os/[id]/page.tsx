@@ -43,7 +43,7 @@ export default function OSDetailPage() {
       const [{ data: osData }, { data: execData }, { data: osTec }, { data: reqData }] = await Promise.all([
         supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
         supabase.from('os_tecnico_execucao').select('*').eq('id_ordem', id).order('created_at', { ascending: false }),
-        supabase.from('Ordem_Servico_Tecnicos').select('JustificativaAtraso, Status, TemAlmoco, ValorAlmoco, FotoAlmoco, Fazenda, Cidade').eq('Ordem_Servico', id).maybeSingle(),
+        supabase.from('Ordem_Servico_Tecnicos').select('JustificativaAtraso, Status, TemAlmoco, ValorAlmoco, FotoAlmoco, Fazenda, Cidade, FotoHorimetro, FotoChassis, FotoFrente, FotoDireita, FotoEsquerda, FotoTraseira, FotoVolante, FotoFalha1, FotoFalha2, FotoFalha3, FotoFalha4, FotoPecaNova1, FotoPecaNova2, FotoPecaInstalada1, FotoPecaInstalada2').eq('Ordem_Servico', id).maybeSingle(),
         supabase.from('Requisicao').select('id, titulo, tipo, solicitante, data, status, valor_despeza, Chassis_Modelo, ordem_servico').eq('ordem_servico', id).order('data', { ascending: false }),
       ])
       setOs(osData)
@@ -367,6 +367,52 @@ export default function OSDetailPage() {
           </div>
         </div>
       )}
+
+      {/* Fotos */}
+      {osTecnica && (() => {
+        const fotosOS = [
+          { label: 'Horímetro', url: osTecnica.FotoHorimetro as string },
+          { label: 'Chassis', url: osTecnica.FotoChassis as string },
+          { label: 'Frente', url: osTecnica.FotoFrente as string },
+          { label: 'Direita', url: osTecnica.FotoDireita as string },
+          { label: 'Esquerda', url: osTecnica.FotoEsquerda as string },
+          { label: 'Traseira', url: osTecnica.FotoTraseira as string },
+          { label: 'Volante', url: osTecnica.FotoVolante as string },
+          { label: 'Falha 1', url: osTecnica.FotoFalha1 as string },
+          { label: 'Falha 2', url: osTecnica.FotoFalha2 as string },
+          { label: 'Falha 3', url: osTecnica.FotoFalha3 as string },
+          { label: 'Falha 4', url: osTecnica.FotoFalha4 as string },
+          { label: 'Peça Nova 1', url: osTecnica.FotoPecaNova1 as string },
+          { label: 'Peça Nova 2', url: osTecnica.FotoPecaNova2 as string },
+          { label: 'Peça Instalada 1', url: osTecnica.FotoPecaInstalada1 as string },
+          { label: 'Peça Instalada 2', url: osTecnica.FotoPecaInstalada2 as string },
+          { label: 'Nota Alimentação', url: osTecnica.FotoAlmoco as string },
+        ].filter(f => f.url)
+        if (fotosOS.length === 0) return null
+        return (
+          <div style={{
+            background: '#fff', borderRadius: 14, padding: 16, marginBottom: 16,
+            boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>
+              Fotos ({fotosOS.length})
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              {fotosOS.map((f, i) => (
+                <div key={i}>
+                  <div style={{ fontSize: 10, color: '#6B7280', marginBottom: 4 }}>{f.label}</div>
+                  <a href={f.url} target="_blank" rel="noopener noreferrer">
+                    <img src={f.url} alt={f.label} style={{
+                      width: '100%', borderRadius: 8, objectFit: 'cover',
+                      aspectRatio: '4/3', background: '#F3F4F6',
+                    }} />
+                  </a>
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Almoço */}
       {osTecnica && (osTecnica.TemAlmoco as boolean) && (
