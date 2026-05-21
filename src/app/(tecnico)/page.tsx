@@ -3,12 +3,11 @@ import { useState } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
 import { supabase } from '@/lib/supabase'
-import { offlineWrite } from '@/lib/offlineWrite'
 import type { OrdemServico } from '@/lib/types'
 import {
   Wrench, ClipboardList, User, Megaphone, Camera,
-  Calendar, Route, Navigation, MapPin, Clock, FileText,
-  X, Loader2, ChevronRight, ChevronDown, AlertTriangle,
+  Calendar, Navigation, Clock,
+  ChevronDown, AlertTriangle,
 } from 'lucide-react'
 import Link from 'next/link'
 import { PageSpinner } from '@/components/ui'
@@ -167,72 +166,6 @@ export default function TecnicoHome() {
     return next
   })
 
-  // Modal novo caminho
-  const [showModal, setShowModal] = useState(false)
-  const [camCliente, setCamCliente] = useState('')
-  const [camCidade, setCamCidade] = useState('')
-  const [camDescricao, setCamDescricao] = useState('')
-  const [camTempoEstimado, setCamTempoEstimado] = useState('')
-  const [camSaving, setCamSaving] = useState(false)
-
-  const horaAtual = () => new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-
-  const salvarCaminho = async () => {
-    if (!camCliente.trim()) return
-    if (!camCidade.trim()) return
-    setCamSaving(true)
-    const hoje = new Date().toISOString().split('T')[0]
-    const hora = horaAtual()
-    const diarioData = {
-      tecnico_nome: nome,
-      data: hoje,
-      id_ordem: null,
-      cliente: camCliente.trim(),
-      cidade_cliente: camCidade.trim(),
-      descricao: camDescricao.trim() || null,
-      status: 'em_rota',
-      hora_saida_origem: hora,
-      tempo_estimado_min: camTempoEstimado ? parseInt(camTempoEstimado) : null,
-    }
-    const res = await offlineWrite({ table: 'Diario_Tecnico', action: 'insert', data: diarioData })
-    if (!res.ok) { setCamSaving(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
-    await offlineWrite({
-      table: 'agenda_visao', action: 'insert',
-      data: {
-        data: hoje, tecnico_nome: nome, id_ordem: null,
-        cliente: camCliente.trim(),
-        servico: camDescricao.trim() || 'Visita avulsa',
-        cidade: camCidade.trim(), endereco: camCidade.trim(),
-        qtd_horas: camTempoEstimado ? Math.ceil(parseInt(camTempoEstimado) / 60) : 1,
-        status: 'em_rota',
-        observacoes: `Caminho registrado pelo tecnico as ${hora}`,
-        hora_inicio: hora,
-      },
-    })
-    if (navigator.onLine) {
-      const { data: permissoes } = await supabase
-        .from('portal_permissoes')
-        .select('user_id, is_admin, modulos_permitidos')
-      const usuarios = (permissoes || []).filter(
-        (p: { is_admin: boolean; modulos_permitidos: string[] | null }) =>
-          p.is_admin || (p.modulos_permitidos && p.modulos_permitidos.includes('painel-mecanicos'))
-      )
-      if (usuarios.length > 0) {
-        await supabase.from('portal_notificacoes').insert(
-          usuarios.map((u: { user_id: string }) => ({
-            user_id: u.user_id,
-            tipo: 'caminho_tecnico',
-            titulo: `Novo caminho - ${nome.split(' ')[0]}`,
-            descricao: `${nome} saiu para ${camCliente.trim()} em ${camCidade.trim()}`,
-            link: '/pos/painel-mecanicos',
-          }))
-        )
-      }
-    }
-    setCamSaving(false)
-    setCamCliente(''); setCamCidade(''); setCamDescricao(''); setCamTempoEstimado('')
-    setShowModal(false)
-  }
 
   if (loading) return <PageSpinner />
 
@@ -658,89 +591,6 @@ export default function TecnicoHome() {
         </Link>
       </div>
 
-      {/* ═══ BOTAO: NOVO CAMINHO ═══ */}
-      <button onClick={() => setShowModal(true)} style={{
-        width: '100%', background: colors.success, color: '#fff',
-        borderRadius: 20, padding: '18px 20px', border: 'none', cursor: 'pointer',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-        fontSize: 16, fontWeight: 700, boxShadow: shadow.sm,
-      }}>
-        <Route size={20} /> Novo Caminho
-      </button>
-
-      {/* Modal Novo Caminho */}
-      {showModal && (
-        <div style={{
-          position: 'fixed', inset: 0, zIndex: 1000,
-          background: 'rgba(0,0,0,0.45)',
-          display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
-        }} onClick={() => setShowModal(false)}>
-          <div onClick={e => e.stopPropagation()} style={{
-            background: '#fff', borderRadius: '20px 20px 0 0', padding: '20px 20px 32px',
-            width: '100%', maxWidth: 480,
-            boxShadow: '0 -10px 40px rgba(0,0,0,0.15)',
-            maxHeight: '90vh', overflowY: 'auto',
-          }}>
-            <div style={{ width: 36, height: 4, borderRadius: 2, background: '#D1D5DB', margin: '0 auto 16px' }} />
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 10, background: colors.successBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <Route size={18} color={colors.success} />
-                </div>
-                <div>
-                  <h2 style={{ fontSize: 17, fontWeight: 700, color: colors.text, margin: 0 }}>Novo Caminho</h2>
-                  <div style={{ fontSize: 12, color: colors.textMuted }}>{new Date().toLocaleDateString('pt-BR')} - {horaAtual()}</div>
-                </div>
-              </div>
-              <button onClick={() => setShowModal(false)} style={{ background: colors.surface, border: 'none', cursor: 'pointer', padding: 6, borderRadius: 8 }}>
-                <X size={18} color={colors.textMuted} />
-              </button>
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
-                  <User size={12} /> Cliente
-                </label>
-                <input value={camCliente} onChange={e => setCamCliente(e.target.value)} placeholder="Nome do cliente ou empresa"
-                  style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1.5px solid ${colors.border}`, fontSize: 14, outline: 'none', boxSizing: 'border-box', background: '#FAFAFA' }} />
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
-                  <MapPin size={12} /> Destino (Cidade)
-                </label>
-                <input value={camCidade} onChange={e => setCamCidade(e.target.value)} placeholder="Ex: Piraju, Avare..."
-                  style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1.5px solid ${colors.border}`, fontSize: 14, outline: 'none', boxSizing: 'border-box', background: '#FAFAFA' }} />
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
-                  <Clock size={12} /> Tempo estimado (minutos)
-                </label>
-                <input type="number" value={camTempoEstimado} onChange={e => setCamTempoEstimado(e.target.value)} placeholder="Ex: 120"
-                  style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1.5px solid ${colors.border}`, fontSize: 14, outline: 'none', boxSizing: 'border-box', background: '#FAFAFA' }} />
-              </div>
-              <div>
-                <label style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, display: 'flex', alignItems: 'center', gap: 4, marginBottom: 6 }}>
-                  <FileText size={12} /> Descricao do servico
-                </label>
-                <textarea value={camDescricao} onChange={e => setCamDescricao(e.target.value)} placeholder="Descreva brevemente o motivo da visita..."
-                  rows={3} style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1.5px solid ${colors.border}`, fontSize: 14, outline: 'none', boxSizing: 'border-box', resize: 'vertical', background: '#FAFAFA', lineHeight: 1.5 }} />
-              </div>
-              <button onClick={salvarCaminho} disabled={camSaving || !camCliente.trim() || !camCidade.trim()} style={{
-                width: '100%', padding: '13px 0', borderRadius: 12, marginTop: 4,
-                background: (!camCliente.trim() || !camCidade.trim()) ? '#E5E7EB' : colors.accent,
-                color: (!camCliente.trim() || !camCidade.trim()) ? '#9CA3AF' : '#fff',
-                fontSize: 15, fontWeight: 700, border: 'none',
-                cursor: camSaving ? 'not-allowed' : 'pointer',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                opacity: camSaving ? 0.7 : 1,
-              }}>
-                {camSaving ? <Loader2 size={18} className="spinner" /> : <Navigation size={18} />}
-                {camSaving ? 'Registrando...' : 'Iniciar Caminho'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
