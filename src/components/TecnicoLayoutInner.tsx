@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase'
 import HeaderMobile from '@/components/HeaderMobile'
 // BottomNav removido — navegação agora via dashboard
 import OfflineSync from '@/components/OfflineSync'
+import CheckinDiario from '@/components/CheckinDiario'
 import { Megaphone } from 'lucide-react'
 
 export default function TecnicoLayoutInner({ children }: { children: React.ReactNode }) {
@@ -13,6 +14,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '')
   const [avisosPendentes, setAvisosPendentes] = useState<{ id: number; titulo: string; mensagem: string; prioridade: string }[]>([])
   const [confirmando, setConfirmando] = useState(false)
+  const [checkinFeito, setCheckinFeito] = useState<boolean | null>(null)
 
   const carregarAvisosPendentes = useCallback(async () => {
     if (!user?.tecnico_nome) return
@@ -33,6 +35,23 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     const confirmSet = new Set((confirmados || []).map((c: any) => c.aviso_id))
     setAvisosPendentes(avisos.filter(a => !confirmSet.has(a.id)))
   }, [user?.tecnico_nome])
+
+  // Verificar check-in diario
+  const verificarCheckin = useCallback(async () => {
+    if (!user?.tecnico_nome) return
+    const hoje = new Date().toISOString().split('T')[0]
+    const { data } = await supabase
+      .from('checkin_diario')
+      .select('id')
+      .eq('tecnico_nome', user.tecnico_nome)
+      .eq('data', hoje)
+      .limit(1)
+    setCheckinFeito((data && data.length > 0) ? true : false)
+  }, [user?.tecnico_nome])
+
+  useEffect(() => {
+    verificarCheckin()
+  }, [verificarCheckin])
 
   useEffect(() => {
     carregarAvisosPendentes()
@@ -63,6 +82,17 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   }
 
   if (!user) return null
+
+  // Check-in diario bloqueante (antes de tudo)
+  if (checkinFeito === false) {
+    return (
+      <CheckinDiario
+        tecnicoNome={user.tecnico_nome}
+        nomeBusca={user.nome_pos || user.tecnico_nome}
+        onComplete={() => setCheckinFeito(true)}
+      />
+    )
+  }
 
   return (
     <div style={{ minHeight: '100vh', paddingBottom: 24 }}>
