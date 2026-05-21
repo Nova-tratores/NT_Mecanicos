@@ -62,6 +62,19 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
       .limit(5),
   ])
 
+  // Filtrar avisos já confirmados pelo técnico
+  let avisosFiltrados = (avisosRes.data || []) as AvisoGeral[]
+  if (avisosFiltrados.length > 0 && tecnicoNome) {
+    const ids = avisosFiltrados.map(a => a.id)
+    const { data: confirmados } = await supabase
+      .from('avisos_gerais_confirmados')
+      .select('aviso_id')
+      .eq('tecnico_nome', tecnicoNome)
+      .in('aviso_id', ids)
+    const confirmSet = new Set((confirmados || []).map((c: any) => c.aviso_id))
+    avisosFiltrados = avisosFiltrados.filter(a => !confirmSet.has(a.id))
+  }
+
   const todas = (osRes.data || []) as { Id_Ordem: string; Status: string; Previsao_Execucao: string | null }[]
 
   // Buscar status do tecnico (preenchida/enviada)
@@ -128,7 +141,7 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
     reqPendentes: reqPendRes.count || 0,
     reqEnviadas: reqEnvRes.count || 0,
     fotosCount,
-    avisos: (avisosRes.data || []) as AvisoGeral[],
+    avisos: avisosFiltrados,
   }
 }
 
