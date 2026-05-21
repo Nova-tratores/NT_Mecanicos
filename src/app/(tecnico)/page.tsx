@@ -31,6 +31,7 @@ interface DashboardData {
   reqEnviadas: number
   fotosCount: number
   avisos: AvisoGeral[]
+  avisosHistorico: AvisoGeral[]
 }
 
 async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<DashboardData> {
@@ -63,16 +64,19 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
   ])
 
   // Filtrar avisos já confirmados pelo técnico
-  let avisosFiltrados = (avisosRes.data || []) as AvisoGeral[]
-  if (avisosFiltrados.length > 0 && tecnicoNome) {
-    const ids = avisosFiltrados.map(a => a.id)
+  const todosAvisos = (avisosRes.data || []) as AvisoGeral[]
+  let avisosFiltrados = todosAvisos
+  let avisosHistorico: AvisoGeral[] = []
+  if (todosAvisos.length > 0 && tecnicoNome) {
+    const ids = todosAvisos.map(a => a.id)
     const { data: confirmados } = await supabase
       .from('avisos_gerais_confirmados')
       .select('aviso_id')
       .eq('tecnico_nome', tecnicoNome)
       .in('aviso_id', ids)
     const confirmSet = new Set((confirmados || []).map((c: any) => c.aviso_id))
-    avisosFiltrados = avisosFiltrados.filter(a => !confirmSet.has(a.id))
+    avisosFiltrados = todosAvisos.filter(a => !confirmSet.has(a.id))
+    avisosHistorico = todosAvisos.filter(a => confirmSet.has(a.id))
   }
 
   const todas = (osRes.data || []) as { Id_Ordem: string; Status: string; Previsao_Execucao: string | null }[]
@@ -142,6 +146,7 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
     reqEnviadas: reqEnvRes.count || 0,
     fotosCount,
     avisos: avisosFiltrados,
+    avisosHistorico,
   }
 }
 
@@ -233,8 +238,10 @@ export default function TecnicoHome() {
 
   const {
     osPendentes = 0, osAbertas = 0, osEnviadas = 0, osAtrasadas = 0,
-    reqPendentes = 0, reqEnviadas = 0, fotosCount = 0, avisos = [],
+    reqPendentes = 0, reqEnviadas = 0, fotosCount = 0, avisos = [], avisosHistorico = [],
   } = data || {}
+
+  const [showHistorico, setShowHistorico] = useState(false)
 
   const saudacao = () => {
     const h = new Date().getHours()
@@ -529,6 +536,44 @@ export default function TecnicoHome() {
               }}>
                 Tudo tranquilo por aqui
               </div>
+            )}
+
+            {avisosHistorico.length > 0 && (
+              <>
+                <button onClick={() => setShowHistorico(!showHistorico)} style={{
+                  width: '100%', marginTop: 12, padding: '10px 14px', borderRadius: 10,
+                  background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
+                  fontSize: 12, fontWeight: 600, color: colors.textSubtle, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                }}>
+                  <Clock size={13} />
+                  {showHistorico ? 'Ocultar historico' : `Ver historico (${avisosHistorico.length})`}
+                </button>
+                {showHistorico && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                    {avisosHistorico.map((av) => (
+                      <div key={av.id} style={{
+                        background: colors.surfaceAlt, borderRadius: 14, padding: '12px 16px',
+                        border: `1px solid ${colors.border}`, opacity: 0.7,
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontSize: 13, fontWeight: 600, color: colors.textMuted }}>{av.titulo}</span>
+                          <span style={{
+                            fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 5,
+                            background: colors.successBg, color: colors.success,
+                          }}>LIDO</span>
+                        </div>
+                        <div style={{ fontSize: 11, color: colors.textSubtle, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                          {av.mensagem.length > 100 ? av.mensagem.slice(0, 100) + '...' : av.mensagem}
+                        </div>
+                        <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 4 }}>
+                          {new Date(av.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
