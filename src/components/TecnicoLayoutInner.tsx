@@ -15,7 +15,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '')
   const [avisosPendentes, setAvisosPendentes] = useState<{ id: number; titulo: string; mensagem: string; prioridade: string }[]>([])
   const [confirmando, setConfirmando] = useState(false)
-  const [checkinFeito, setCheckinFeito] = useState<boolean | null>(null)
+  const [checkinFeito, setCheckinFeito] = useState<boolean | null>(true) // temporario: desativado para debug
 
   const carregarAvisosPendentes = useCallback(async () => {
     if (!user?.tecnico_nome) return
