@@ -6,7 +6,8 @@ import { supabase } from '@/lib/supabase'
 import HeaderMobile from '@/components/HeaderMobile'
 // BottomNav removido — navegação agora via dashboard
 import OfflineSync from '@/components/OfflineSync'
-import CheckinDiario from '@/components/CheckinDiario'
+import dynamic from 'next/dynamic'
+const CheckinDiario = dynamic(() => import('@/components/CheckinDiario'), { ssr: false })
 import { Megaphone } from 'lucide-react'
 
 export default function TecnicoLayoutInner({ children }: { children: React.ReactNode }) {
@@ -36,17 +37,22 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     setAvisosPendentes(avisos.filter(a => !confirmSet.has(a.id)))
   }, [user?.tecnico_nome])
 
-  // Verificar check-in diario
+  // Verificar check-in diario (fail-open: se erro, libera o app)
   const verificarCheckin = useCallback(async () => {
     if (!user?.tecnico_nome) return
-    const hoje = new Date().toISOString().split('T')[0]
-    const { data } = await supabase
-      .from('checkin_diario')
-      .select('id')
-      .eq('tecnico_nome', user.tecnico_nome)
-      .eq('data', hoje)
-      .limit(1)
-    setCheckinFeito((data && data.length > 0) ? true : false)
+    try {
+      const hoje = new Date().toISOString().split('T')[0]
+      const { data, error } = await supabase
+        .from('checkin_diario')
+        .select('id')
+        .eq('tecnico_nome', user.tecnico_nome)
+        .eq('data', hoje)
+        .limit(1)
+      if (error) { setCheckinFeito(true); return }
+      setCheckinFeito((data && data.length > 0) ? true : false)
+    } catch {
+      setCheckinFeito(true)
+    }
   }, [user?.tecnico_nome])
 
   useEffect(() => {
