@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import { Car, MapPin, Navigation, Loader2, Clock, Route } from 'lucide-react'
+import { Car, MapPin, Navigation, Loader2, Clock, Route, Wrench } from 'lucide-react'
 import { colors } from '@/lib/ui'
 
 const OFICINA_LAT = parseFloat(process.env.NEXT_PUBLIC_OFICINA_LAT || '-23.6533')
@@ -91,7 +91,7 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
 
   // Carregar rota quando ordem selecionada
   useEffect(() => {
-    if (!ordemId) {
+    if (!ordemId || ordemId === 'OFICINA') {
       setRota(null)
       setErroRota('')
       return
@@ -215,7 +215,8 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
 
   const confirmar = async () => {
     setSaving(true)
-    const ordem = ordens.find((o) => o.Id_Ordem === ordemId)
+    const isOficina = ordemId === 'OFICINA'
+    const ordem = isOficina ? null : ordens.find((o) => o.Id_Ordem === ordemId)
     const hoje = new Date().toISOString().split('T')[0]
 
     await supabase.from('checkin_diario').upsert(
@@ -223,13 +224,13 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
         tecnico_nome: tecnicoNome,
         data: hoje,
         placa,
-        id_ordem: ordemId,
-        cliente: ordem?.Os_Cliente || '',
-        destino: ordem?.Endereco_Cliente || '',
-        lat_destino: ordem?.lat,
-        lng_destino: ordem?.lng,
-        distancia_km: rota?.distancia_km,
-        tempo_estimado_min: rota?.tempo_min,
+        id_ordem: isOficina ? 'OFICINA' : ordemId,
+        cliente: isOficina ? 'Oficina' : (ordem?.Os_Cliente || ''),
+        destino: isOficina ? 'Oficina - Servico interno' : (ordem?.Endereco_Cliente || ''),
+        lat_destino: isOficina ? OFICINA_LAT : (ordem?.lat || null),
+        lng_destino: isOficina ? OFICINA_LNG : (ordem?.lng || null),
+        distancia_km: isOficina ? 0 : (rota?.distancia_km || null),
+        tempo_estimado_min: isOficina ? 0 : (rota?.tempo_min || null),
       },
       { onConflict: 'tecnico_nome,data' },
     )
@@ -311,7 +312,8 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
               color: ordemId ? colors.text : '#9CA3AF',
             }}
           >
-            <option value="">Selecione a ordem...</option>
+            <option value="">Selecione o destino...</option>
+            <option value="OFICINA">Oficina - Servico interno</option>
             {ordens.map((o) => (
               <option key={o.Id_Ordem} value={o.Id_Ordem}>
                 OS {o.Id_Ordem} - {o.Os_Cliente}
@@ -321,7 +323,25 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
         </div>
 
         {/* Info do destino */}
-        {ordemSelecionada && (
+        {ordemId === 'OFICINA' && (
+          <div style={{
+            background: colors.successBg, borderRadius: 12, padding: '16px 14px',
+            border: `1px solid ${colors.successBorder}`,
+            display: 'flex', alignItems: 'center', gap: 12,
+          }}>
+            <div style={{
+              width: 44, height: 44, borderRadius: 12, background: '#fff',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}>
+              <Wrench size={22} color={colors.success} />
+            </div>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>Servico na Oficina</div>
+              <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>Sem deslocamento - trabalho interno</div>
+            </div>
+          </div>
+        )}
+        {ordemSelecionada && ordemId !== 'OFICINA' && (
           <div style={{
             background: colors.surfaceAlt, borderRadius: 12, padding: '12px 14px',
             border: `1px solid ${colors.border}`,

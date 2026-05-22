@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase'
 import type { OrdemServico } from '@/lib/types'
 import {
   Wrench, ClipboardList, User, Megaphone, Camera,
-  Calendar, Navigation, Clock,
+  Calendar, Navigation, Clock, MapPin,
   ChevronDown, AlertTriangle,
 } from 'lucide-react'
 import Link from 'next/link'
@@ -587,6 +587,25 @@ export default function TecnicoHome() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Diario</div>
             <div style={{ fontSize: 11, color: colors.textMuted }}>Registros</div>
+          </div>
+        </Link>
+
+        <Link href="/mapa" style={{
+          background: colors.surface, borderRadius: 20, padding: '20px 16px',
+          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
+          display: 'flex', alignItems: 'center', gap: 14,
+          gridColumn: '1 / -1',
+        }}>
+          <div style={{
+            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
+            background: colors.dangerBg,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <MapPin size={22} color={colors.danger} />
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Mapa de Veiculos</div>
+            <div style={{ fontSize: 11, color: colors.textMuted }}>Ver quem esta perto</div>
           </div>
         </Link>
       </div>
