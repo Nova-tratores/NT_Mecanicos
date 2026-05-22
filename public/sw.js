@@ -1,10 +1,8 @@
-const CACHE_NAME = 'nt-mecanicos-v11';
+const CACHE_NAME = 'nt-mecanicos-v12';
 const OFFLINE_URL = '/';
 
 // Apenas assets que sempre retornam 200 (sem autenticação)
 const PRECACHE_URLS = [
-  '/',
-  '/login',
   '/manifest.json',
   '/capa_app.png',
   '/Logo_Nova.png',
@@ -20,12 +18,12 @@ const CACHE_FIRST_PATTERNS = [
 // URLs do Supabase — não cachear no SW (dados ficam no IndexedDB)
 const API_PATTERNS = [
   /supabase\.co/,
+  /\/api\//,
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then(async (cache) => {
-      // Cachear cada URL individualmente para não quebrar se alguma falhar
       for (const url of PRECACHE_URLS) {
         try {
           await cache.add(url);
@@ -42,20 +40,27 @@ self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
       Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-    )
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
-  const url = new URL(event.request.url);
-
-  // Ignorar requests do Supabase (dados gerenciados pelo IndexedDB)
+  // Ignorar requests de API (Supabase, /api/*)
   if (API_PATTERNS.some((p) => p.test(event.request.url))) return;
 
-  // Cache-first para assets estáticos
+  // Navegação (HTML pages) — SEMPRE network, sem cache
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(() =>
+        caches.match(OFFLINE_URL).then((cached) => cached || new Response('Offline', { status: 503 }))
+      )
+    );
+    return;
+  }
+
+  // Cache-first para assets estáticos (imagens, fonts, JS/CSS chunks)
   if (CACHE_FIRST_PATTERNS.some((p) => p.test(event.request.url))) {
     event.respondWith(
       caches.match(event.request).then((cached) => {
@@ -66,31 +71,13 @@ self.addEventListener('fetch', (event) => {
             caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
           }
           return response;
-        }).catch(() => caches.match(OFFLINE_URL));
+        }).catch(() => new Response('', { status: 404 }));
       })
     );
     return;
   }
 
-  // Navegação (HTML pages) — network-first, fallback para app shell
-  if (event.request.mode === 'navigate') {
-    event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          if (response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() =>
-          caches.match(event.request).then((cached) => cached || caches.match(OFFLINE_URL))
-        )
-    );
-    return;
-  }
-
-  // Outros requests (JS chunks, CSS, etc.) — network-first com cache fallback
+  // Outros requests — network-first
   event.respondWith(
     fetch(event.request)
       .then((response) => {
@@ -100,7 +87,7 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       })
-      .catch(() => caches.match(event.request))
+      .catch(() => caches.match(event.request).then((c) => c || new Response('', { status: 404 })))
   );
 });
 
@@ -129,7 +116,6 @@ self.addEventListener('notificationclick', (event) => {
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
-      // Se já tem uma aba aberta, foca nela e navega
       for (const client of clients) {
         if ('focus' in client) {
           client.focus();
@@ -137,7 +123,6 @@ self.addEventListener('notificationclick', (event) => {
           return;
         }
       }
-      // Senão abre uma nova aba
       return self.clients.openWindow(url);
     })
   );

@@ -49,7 +49,21 @@ export default function ServiceWorkerRegister() {
     navigator.serviceWorker
       .register('/sw.js')
       .then((reg) => {
+        // Forçar atualização imediata do SW
+        reg.update();
         setInterval(() => reg.update(), 60 * 60 * 1000);
+
+        // Quando novo SW instalado, ativa imediatamente e recarrega
+        reg.addEventListener('updatefound', () => {
+          const newWorker = reg.installing;
+          if (newWorker) {
+            newWorker.addEventListener('statechange', () => {
+              if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
+                window.location.reload();
+              }
+            });
+          }
+        });
 
         // Subscribir ao push quando o técnico estiver logado
         if (user?.tecnico_nome && VAPID_PUBLIC_KEY) {
