@@ -1,8 +1,14 @@
 import { NextResponse } from 'next/server'
+import { createClient } from '@supabase/supabase-js'
 
 const API_URL = process.env.ROTAEXATA_API_URL || 'https://api.rotaexata.com.br'
 const EMAIL = process.env.ROTAEXATA_EMAIL || ''
 const PASSWORD = process.env.ROTAEXATA_PASSWORD || ''
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+)
 
 let tokenCache: { token: string; expiresAt: number } | null = null
 
@@ -27,8 +33,26 @@ export async function GET() {
 
   try {
     const token = await getToken()
+    const hoje = new Date().toISOString().split('T')[0]
 
-    // 1. Buscar lista de veiculos (adesoes)
+    // Buscar checkins de hoje (para enriquecer com motorista/cliente)
+    const { data: checkins } = await supabase
+      .from('checkin_diario')
+      .select('tecnico_nome, placa, cliente, id_ordem')
+      .eq('data', hoje)
+
+    const checkinMap = new Map<string, { motorista: string; cliente: string; id_ordem: string }>()
+    if (checkins) {
+      for (const c of checkins) {
+        checkinMap.set(c.placa, {
+          motorista: c.tecnico_nome,
+          cliente: c.cliente || '',
+          id_ordem: c.id_ordem || '',
+        })
+      }
+    }
+
+    // Buscar todos os veiculos (adesoes)
     const adesRes = await fetch(`${API_URL}/adesoes?limit=200&page=0`, {
       headers: { Authorization: token },
     })
@@ -38,35 +62,60 @@ export async function GET() {
 
     if (adesoes.length === 0) return NextResponse.json([])
 
-    // 2. Buscar ultima posicao de cada veiculo (em paralelo, max 5 simultaneos)
-    const hoje = new Date().toISOString().split('T')[0]
-    const veiculos: any[] = []
+    // Buscar ultima posicao de cada veiculo (ultimos 30min para pegar a mais recente)
+    const agora = new Date()
+    const trintaAtras = new Date(agora.getTime() - 30 * 60 * 1000)
 
-    // Processar em lotes de 5 para nao sobrecarregar
+    const veiculos: any[] = []
     const BATCH = 5
     for (let i = 0; i < adesoes.length; i += BATCH) {
       const batch = adesoes.slice(i, i + BATCH)
       const results = await Promise.all(
         batch.map(async (a: any) => {
           const id = a.id || a._id
+          const placaRota = a.vei_placa || ''
           try {
-            const where = encodeURIComponent(JSON.stringify({
+            // Buscar ultimos 30min primeiro (posicao mais recente)
+            let where = encodeURIComponent(JSON.stringify({
               adesao_id: id,
-              dt_posicao: { $gte: `${hoje}T00:00:00.000-03:00`, $lte: `${hoje}T23:59:59.999-03:00` },
+              dt_posicao: { $gte: trintaAtras.toISOString(), $lte: agora.toISOString() },
             }))
-            const posRes = await fetch(
+            let posRes = await fetch(
               `${API_URL}/posicoes?where=${where}&limit=1&page=0`,
               { headers: { Authorization: token } },
             )
-            if (!posRes.ok || posRes.status === 404) return null
-            const posData = await posRes.json()
-            const posArr = Array.isArray(posData.data) ? posData.data : []
+            let posData = posRes.ok ? await posRes.json() : { data: [] }
+            let posArr = Array.isArray(posData.data) ? posData.data : []
+
+            // Se nao achou nos ultimos 30min, tenta o dia todo
+            if (posArr.length === 0 || (posArr.length === 1 && typeof posArr[0]?.data === 'string')) {
+              where = encodeURIComponent(JSON.stringify({
+                adesao_id: id,
+                dt_posicao: { $gte: `${hoje}T00:00:00.000-03:00`, $lte: `${hoje}T23:59:59.999-03:00` },
+              }))
+              posRes = await fetch(
+                `${API_URL}/posicoes?where=${where}&limit=1&page=0`,
+                { headers: { Authorization: token } },
+              )
+              if (!posRes.ok) return null
+              posData = await posRes.json()
+              posArr = Array.isArray(posData.data) ? posData.data : []
+            }
+
+            // Checar resultado vazio da API
+            if (posArr.length === 0 || (posArr.length === 1 && typeof posArr[0]?.data === 'string')) return null
             const p = posArr[0]
             if (!p || !p.latitude || !p.longitude) return null
 
+            // Buscar info de checkin pela placa
+            const checkinInfo = [...checkinMap.entries()].find(
+              ([pc]) => placaRota.includes(pc) || pc.includes(placaRota)
+            )
+            const info = checkinInfo ? checkinInfo[1] : null
+
             return {
               id,
-              placa: a.vei_placa || '',
+              placa: placaRota,
               descricao: a.vei_descricao || '',
               modelo: a.vei_modelo || '',
               lat: p.latitude,
@@ -74,6 +123,9 @@ export async function GET() {
               velocidade: p.velocidade || 0,
               ignicao: p.ignicao || 0,
               dt_posicao: p.dt_posicao || null,
+              motorista: info?.motorista || '',
+              cliente: info?.cliente || '',
+              id_ordem: info?.id_ordem || '',
             }
           } catch {
             return null
