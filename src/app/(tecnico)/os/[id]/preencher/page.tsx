@@ -12,6 +12,9 @@ import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, ChevronDown, 
 import Link from 'next/link'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
 import { notificarPortalOS } from '@/lib/notificarPortal'
+import { criarGarantia } from '@/lib/garantias/client'
+import type { PecaOS } from '@/lib/garantias/types'
+import { ShieldCheck, CheckCircle2 } from 'lucide-react'
 
 const TIPOS_SERVICO = ['Manutenção', 'Revisão', 'Montagem Implemento', 'Garantia', 'Entrega Técnica', 'Inspeção Pré Entrega']
 const HORAS_REVISAO = ['50', '300', '600', '900', '1200', '1500', '1800', '2100', '2400', '2700', '3000']
@@ -85,6 +88,10 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [ppvAberto, setPpvAberto] = useState(false)
   const [ppvRevisado, setPpvRevisado] = useState(false)
   const [justificativaPecaExtra, setJustificativaPecaExtra] = useState('')
+
+  // Garantia — peças solicitadas (índices em `pecas` que entram na requisição de garantia)
+  const [pecasGarantia, setPecasGarantia] = useState<Set<number>>(new Set())
+  const [garantiaObs, setGarantiaObs] = useState('')
 
   // Fotos
   const [fotoHorimetro, setFotoHorimetro] = useState('')
@@ -800,6 +807,36 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       console.error('Erro ao gerar/enviar PDF:', err)
     }
 
+    // Cria a requisição de garantia se for o caso (best-effort — não bloqueia o envio da OS)
+    if (tipoServico === 'Garantia' && pecasGarantia.size > 0) {
+      try {
+        const ppvIdsStr = String(os?.ID_PPV || '')
+        const primeiroPPV = ppvIdsStr.split(',').map(s => s.trim()).filter(Boolean)[0] || null
+        const pecasParaGarantia: PecaOS[] = [...pecasGarantia].map((i) => {
+          const p = pecas[i]
+          return {
+            cod_produto: p.codigo || null,
+            descricao: p.descricao,
+            quantidade: Number(p.qtdUsada) || 1,
+            preco_unitario: 0,
+            origem: p.origem === 'ppv' ? 'ppv' : 'pecasinfo_manual',
+            fonte_ppv_id: p.origem === 'ppv' ? primeiroPPV : null,
+          }
+        })
+        const res = await criarGarantia({
+          id_ordem: id,
+          tecnico_nome: user?.nome_pos || user?.tecnico_nome || tecResp1,
+          tecnico_horas: calcTotalHoras(),
+          tecnico_km: calcTotalKm(),
+          tecnico_obs: garantiaObs || undefined,
+          pecas: pecasParaGarantia,
+        })
+        if (res.erro) console.warn('[garantia] criação falhou:', res.erro)
+      } catch (err) {
+        console.error('[garantia] erro ao criar requisição:', err)
+      }
+    }
+
     setSaving(false)
     setSucesso(true)
     clearBackup()
@@ -1375,9 +1412,96 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         </div>
       </div>
 
-      {/* 7. FOTOS GARANTIA (só aparece se tipo = Garantia) */}
+      {/* 7. GARANTIA — Peças solicitadas + Fotos (só aparece se tipo = Garantia) */}
       {tipoServico === 'Garantia' && (
         <>
+          {/* Seleção de peças que entram na requisição de garantia */}
+          <div style={{ ...sectionStyle, borderLeft: '4px solid #C41E2A' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <ShieldCheck size={18} color="#C41E2A" />
+              <h3 style={{ margin: 0, fontSize: 15, fontWeight: 700, color: '#1F2937' }}>
+                Peças solicitadas em garantia
+              </h3>
+            </div>
+            <p style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 10 }}>
+              Marque quais peças que você usou nesta OS devem ir para análise da fábrica.
+            </p>
+            {(() => {
+              const candidatas = pecas
+                .map((p, i) => ({ p, i }))
+                .filter(({ p }) => !p.naoUsada && p.descricao)
+              if (candidatas.length === 0) {
+                return (
+                  <p style={{ fontSize: 12, color: '#9CA3AF', textAlign: 'center', padding: '12px 0', margin: 0 }}>
+                    Nenhuma peça usada nesta OS — adicione/marque as peças acima antes de solicitar garantia.
+                  </p>
+                )
+              }
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {candidatas.map(({ p, i }) => {
+                    const sel = pecasGarantia.has(i)
+                    return (
+                      <button
+                        key={`gpeca-${i}`}
+                        type="button"
+                        onClick={() => {
+                          setPecasGarantia(prev => {
+                            const n = new Set(prev)
+                            if (n.has(i)) n.delete(i); else n.add(i)
+                            return n
+                          })
+                        }}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 10,
+                          padding: '10px 12px', borderRadius: 10,
+                          border: `2px solid ${sel ? '#C41E2A' : '#E5E7EB'}`,
+                          background: sel ? '#FEF2F2' : '#fff',
+                          cursor: 'pointer', textAlign: 'left',
+                        }}
+                      >
+                        <div
+                          style={{
+                            width: 22, height: 22, borderRadius: 6,
+                            border: `2px solid ${sel ? '#C41E2A' : '#CBD5E1'}`,
+                            background: sel ? '#C41E2A' : '#fff',
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            flexShrink: 0,
+                          }}
+                        >
+                          {sel && <CheckCircle2 size={14} color="#fff" />}
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: '#1F2937' }}>
+                            {p.codigo ? `${p.codigo} · ` : ''}{p.descricao}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#9CA3AF' }}>
+                            Qtd usada: {p.qtdUsada || '—'} · {p.origem === 'ppv' ? 'PPV' : 'Manual'}
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                  <textarea
+                    value={garantiaObs}
+                    onChange={(e) => setGarantiaObs(e.target.value)}
+                    placeholder="Observações para o garantista (opcional)"
+                    rows={2}
+                    style={{
+                      width: '100%', padding: '10px 12px', borderRadius: 10,
+                      border: '2px solid #E5E7EB', fontSize: 13, outline: 'none',
+                      background: '#fff', boxSizing: 'border-box', resize: 'vertical',
+                      fontFamily: 'inherit', marginTop: 4,
+                    }}
+                  />
+                  <p style={{ fontSize: 11, color: '#6B7280', margin: 0 }}>
+                    A requisição de garantia será criada automaticamente quando você enviar a OS.
+                  </p>
+                </div>
+              )
+            })()}
+          </div>
+
           <div style={sectionStyle}>
             {sectionTitle('Fotos do Equipamento', '#1E3A5F')}
             <p style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 10 }}>Obrigatório para garantia</p>

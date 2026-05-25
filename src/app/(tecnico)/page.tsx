@@ -6,7 +6,7 @@ import { supabase } from '@/lib/supabase'
 import type { OrdemServico } from '@/lib/types'
 import {
   Wrench, ClipboardList, User, Megaphone, Camera,
-  Calendar, Navigation, Clock, MapPin,
+  Calendar, Navigation, Clock, MapPin, ShieldCheck,
   ChevronDown, AlertTriangle,
 } from 'lucide-react'
 import Link from 'next/link'
@@ -29,6 +29,8 @@ interface DashboardData {
   reqPendentes: number
   reqEnviadas: number
   fotosCount: number
+  garantiasPendentes: number
+  garantiasAbertas: number
   avisos: AvisoGeral[]
   avisosHistorico: AvisoGeral[]
 }
@@ -136,6 +138,26 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
     fotosCount = count || 0
   }
 
+  // Garantias do técnico: pendentes (B.O./fábrica devolveu) e abertas (em andamento)
+  let garantiasPendentes = 0
+  let garantiasAbertas = 0
+  if (tecnicoNome) {
+    const [pendRes, abertasRes] = await Promise.all([
+      supabase
+        .from('garantias')
+        .select('id', { count: 'exact', head: true })
+        .eq('tecnico_nome', tecnicoNome)
+        .in('status', ['bo_tecnico', 'info_pendente']),
+      supabase
+        .from('garantias')
+        .select('id', { count: 'exact', head: true })
+        .eq('tecnico_nome', tecnicoNome)
+        .not('status', 'in', '("aprovada","rejeitada")'),
+    ])
+    garantiasPendentes = pendRes.count || 0
+    garantiasAbertas = abertasRes.count || 0
+  }
+
   return {
     osPendentes,
     osAbertas,
@@ -144,6 +166,8 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
     reqPendentes: reqPendRes.count || 0,
     reqEnviadas: reqEnvRes.count || 0,
     fotosCount,
+    garantiasPendentes,
+    garantiasAbertas,
     avisos: avisosFiltrados,
     avisosHistorico,
   }
@@ -160,6 +184,7 @@ export default function TecnicoHome() {
   )
 
   const [openCards, setOpenCards] = useState<Set<string>>(new Set())
+  const [showHistorico, setShowHistorico] = useState(false)
   const toggleCard = (key: string) => setOpenCards(prev => {
     const next = new Set(prev)
     next.has(key) ? next.delete(key) : next.add(key)
@@ -171,10 +196,10 @@ export default function TecnicoHome() {
 
   const {
     osPendentes = 0, osAbertas = 0, osEnviadas = 0, osAtrasadas = 0,
-    reqPendentes = 0, reqEnviadas = 0, fotosCount = 0, avisos = [], avisosHistorico = [],
+    reqPendentes = 0, reqEnviadas = 0, fotosCount = 0,
+    garantiasPendentes = 0, garantiasAbertas = 0,
+    avisos = [], avisosHistorico = [],
   } = data || {}
-
-  const [showHistorico, setShowHistorico] = useState(false)
 
   const saudacao = () => {
     const h = new Date().getHours()
@@ -587,6 +612,48 @@ export default function TecnicoHome() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Diario</div>
             <div style={{ fontSize: 11, color: colors.textMuted }}>Registros</div>
+          </div>
+        </Link>
+
+        <Link href="/garantias" style={{
+          background: garantiasPendentes > 0 ? colors.warningBg : colors.surface,
+          borderRadius: 20, padding: '20px 16px',
+          textDecoration: 'none',
+          border: `1px solid ${garantiasPendentes > 0 ? colors.warningBorder : colors.border}`,
+          boxShadow: shadow.sm,
+          display: 'flex', alignItems: 'center', gap: 14,
+        }}>
+          <div style={{
+            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
+            background: garantiasPendentes > 0 ? colors.warning : colors.successBg,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            position: 'relative',
+          }}>
+            <ShieldCheck size={22} color={garantiasPendentes > 0 ? '#fff' : colors.success} />
+            {garantiasPendentes > 0 && (
+              <span style={{
+                position: 'absolute', top: -4, right: -4,
+                background: colors.danger, color: '#fff', fontSize: 10,
+                fontWeight: 800, borderRadius: 10, minWidth: 20, height: 20,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
+                border: '2px solid #fff', boxShadow: shadow.sm,
+              }}>
+                {garantiasPendentes}
+              </span>
+            )}
+          </div>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Garantias</div>
+            <div style={{
+              fontSize: 11, fontWeight: garantiasPendentes > 0 ? 700 : 500,
+              color: garantiasPendentes > 0 ? colors.warning : colors.textMuted,
+            }}>
+              {garantiasPendentes > 0
+                ? `${garantiasPendentes} precisa${garantiasPendentes > 1 ? 'm' : ''} de resposta`
+                : garantiasAbertas > 0
+                  ? `${garantiasAbertas} em andamento`
+                  : 'Status e B.O.'}
+            </div>
           </div>
         </Link>
 
