@@ -62,9 +62,14 @@ export async function GET() {
 
     if (adesoes.length === 0) return NextResponse.json([])
 
-    // Buscar ultima posicao de cada veiculo (ultimos 30min para pegar a mais recente)
+    // Buscar ultima posicao de cada veiculo usando janelas de tempo progressivas
     const agora = new Date()
-    const trintaAtras = new Date(agora.getTime() - 30 * 60 * 1000)
+    // Janelas: 10min, 2h, 12h (cada uma cabe em 500 resultados)
+    const janelas = [
+      10 * 60 * 1000,
+      2 * 60 * 60 * 1000,
+      12 * 60 * 60 * 1000,
+    ]
 
     const veiculos: any[] = []
     const BATCH = 5
@@ -75,36 +80,27 @@ export async function GET() {
           const id = a.id || a._id
           const placaRota = a.vei_placa || ''
           try {
-            // Buscar ultimos 30min primeiro (posicao mais recente)
-            let where = encodeURIComponent(JSON.stringify({
-              adesao_id: id,
-              dt_posicao: { $gte: trintaAtras.toISOString(), $lte: agora.toISOString() },
-            }))
-            let posRes = await fetch(
-              `${API_URL}/posicoes?where=${where}&limit=1&page=0`,
-              { headers: { Authorization: token } },
-            )
-            let posData = posRes.ok ? await posRes.json() : { data: [] }
-            let posArr = Array.isArray(posData.data) ? posData.data : []
-
-            // Se nao achou nos ultimos 30min, tenta o dia todo
-            if (posArr.length === 0 || (posArr.length === 1 && typeof posArr[0]?.data === 'string')) {
-              where = encodeURIComponent(JSON.stringify({
+            // Tentar janelas progressivas: 10min -> 2h -> 12h
+            // API retorna do mais antigo pro mais recente, entao pega o ULTIMO do array
+            let p: any = null
+            for (const janela of janelas) {
+              const desde = new Date(agora.getTime() - janela)
+              const where = encodeURIComponent(JSON.stringify({
                 adesao_id: id,
-                dt_posicao: { $gte: `${hoje}T00:00:00.000-03:00`, $lte: `${hoje}T23:59:59.999-03:00` },
+                dt_posicao: { $gte: desde.toISOString(), $lte: agora.toISOString() },
               }))
-              posRes = await fetch(
-                `${API_URL}/posicoes?where=${where}&limit=1&page=0`,
+              const posRes = await fetch(
+                `${API_URL}/posicoes?where=${where}&limit=500&page=0`,
                 { headers: { Authorization: token } },
               )
-              if (!posRes.ok) return null
-              posData = await posRes.json()
-              posArr = Array.isArray(posData.data) ? posData.data : []
+              if (!posRes.ok) continue
+              const posData = await posRes.json()
+              const posArr = Array.isArray(posData.data) ? posData.data : []
+              if (posArr.length === 0 || (posArr.length === 1 && typeof posArr[0]?.data === 'string')) continue
+              p = posArr[posArr.length - 1] // ULTIMO = mais recente
+              break
             }
 
-            // Checar resultado vazio da API
-            if (posArr.length === 0 || (posArr.length === 1 && typeof posArr[0]?.data === 'string')) return null
-            const p = posArr[0]
             if (!p || !p.latitude || !p.longitude) return null
 
             // Buscar info de checkin pela placa
