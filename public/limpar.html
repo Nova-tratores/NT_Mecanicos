@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Limpando app...</title>
+<title>Atualizando app...</title>
 <style>
   body { font-family: system-ui; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #111; color: #fff; text-align: center; }
   .box { padding: 32px; }
@@ -11,40 +11,48 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   h2 { font-size: 20px; margin: 0 0 8px; }
   p { font-size: 14px; color: #999; margin: 0 0 20px; }
-  #status { font-size: 13px; color: #C41E2A; }
+  #status { font-size: 13px; color: #C41E2A; min-height: 20px; }
+  .btn { display: none; margin: 20px auto 0; padding: 16px 32px; background: #C41E2A; color: #fff; border: none; border-radius: 12px; font-size: 16px; font-weight: 700; cursor: pointer; text-decoration: none; }
+  .btn.show { display: inline-block; }
 </style>
 </head>
 <body>
 <div class="box">
-  <div class="spinner"></div>
-  <h2>Atualizando app...</h2>
-  <p>Isso leva poucos segundos</p>
+  <div class="spinner" id="spin"></div>
+  <h2 id="title">Atualizando app...</h2>
+  <p id="desc">Isso leva poucos segundos</p>
   <div id="status">Limpando cache...</div>
+  <a href="/" class="btn" id="btn">Abrir App</a>
 </div>
 <script>
 (async function() {
   var s = document.getElementById('status');
+  var btn = document.getElementById('btn');
+  var spin = document.getElementById('spin');
+  var title = document.getElementById('title');
+  var desc = document.getElementById('desc');
   try {
-    // 1. Desregistrar todos os Service Workers
     if ('serviceWorker' in navigator) {
       var regs = await navigator.serviceWorker.getRegistrations();
       for (var r of regs) { await r.unregister(); }
       s.textContent = 'Service Workers removidos (' + regs.length + ')';
     }
-    // 2. Limpar todos os caches
     if ('caches' in window) {
       var keys = await caches.keys();
       for (var k of keys) { await caches.delete(k); }
       s.textContent = 'Caches limpos (' + keys.length + ')';
     }
-    // 3. Limpar localStorage
     try { localStorage.clear(); } catch(e) {}
 
-    s.textContent = 'Pronto! Redirecionando...';
-    // 4. Redirecionar para o app
-    setTimeout(function() { window.location.href = '/?t=' + Date.now(); }, 1000);
+    spin.style.display = 'none';
+    title.textContent = 'App atualizado!';
+    desc.textContent = 'Toque no botao abaixo para abrir';
+    s.textContent = '';
+    btn.className = 'btn show';
   } catch(e) {
-    s.textContent = 'Erro: ' + e.message + '. Tente limpar dados do site manualmente.';
+    spin.style.display = 'none';
+    s.textContent = 'Erro: ' + e.message;
+    btn.className = 'btn show';
   }
 })();
 </script>
