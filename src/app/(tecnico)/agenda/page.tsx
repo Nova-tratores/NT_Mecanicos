@@ -2,6 +2,8 @@
 import { useEffect, useState, useMemo, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
+import { STATUS_AGENDA, TURNOS } from '@/lib/constants'
+import type { AgendaItem } from '@/lib/types'
 import {
   ChevronLeft,
   ChevronRight,
@@ -16,7 +18,6 @@ import {
   Send,
   Wrench,
   Package,
-  Truck,
   StickyNote,
 } from 'lucide-react'
 
@@ -38,26 +39,6 @@ interface RequisicaoOS {
   status: string
 }
 
-interface AgendaRow {
-  id: number
-  data: string
-  tecnico_nome: string
-  id_ordem: string | null
-  cliente: string
-  servico: string
-  endereco: string
-  cidade: string
-  coordenadas: { lat: number; lng: number } | null
-  tempo_ida_min: number
-  distancia_ida_km: number
-  tempo_volta_min: number
-  distancia_volta_km: number
-  qtd_horas: number
-  ordem_sequencia: number
-  status: string
-  observacoes: string
-}
-
 interface OsDetalhes {
   Tipo_Servico?: string | null
   Projeto?: string | null
@@ -71,8 +52,7 @@ interface OsDetalhes {
 
 export default function AgendaTecnicoPage() {
   const { user, loading: userLoading } = useCurrentUser()
-  const [items, setItems] = useState<AgendaRow[]>([])
-  const [notas, setNotas] = useState<Record<string, string>>({})
+  const [items, setItems] = useState<AgendaItem[]>([])
   const [loading, setLoading] = useState(true)
   const [semanaOffset, setSemanaOffset] = useState(0)
   const [diaSelecionado, setDiaSelecionado] = useState<string>('')
@@ -94,7 +74,7 @@ export default function AgendaTecnicoPage() {
 
   const hojeStr = new Date().toISOString().split('T')[0]
 
-  // Semana de segunda a sábado (igual ao portal BlocoAgenda)
+  // Semana de segunda a sábado
   const semana = useMemo(() => {
     const hoje = new Date()
     const day = hoje.getDay()
@@ -130,37 +110,29 @@ export default function AgendaTecnicoPage() {
       const inicio = semana[0].toISOString().split('T')[0]
       const fim = semana[semana.length - 1].toISOString().split('T')[0]
 
-      // Agenda (espelho do painel mecânicos do portal)
       const { data: agendaData } = await supabase
-        .from('agenda_visao')
+        .from('agenda_tecnico')
         .select('*')
         .eq('tecnico_nome', nome)
-        .gte('data', inicio)
-        .lte('data', fim)
-        .order('data')
-        .order('ordem_sequencia')
+        .gte('data_agendada', inicio)
+        .lte('data_agendada', fim)
+        .order('data_agendada')
+        .order('hora_inicio')
 
-      // Notas do dia (por técnico)
-      const { data: notasData } = await supabase
-        .from('agenda_notas')
-        .select('data, nota')
-        .eq('tecnico_nome', nome)
-        .gte('data', inicio)
-        .lte('data', fim)
-
-      const notasMap: Record<string, string> = {}
-      for (const n of (notasData || [])) {
-        if (n.nota) notasMap[n.data] = n.nota
-      }
-
-      setItems((agendaData || []) as AgendaRow[])
-      setNotas(notasMap)
+      setItems((agendaData || []) as AgendaItem[])
       setLoading(false)
     }
     carregar()
+
+    // Realtime: atualizar quando admin mudar a agenda
+    const ch = supabase.channel('agenda_tec_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'agenda_tecnico' }, () => carregar())
+      .subscribe()
+
+    return () => { supabase.removeChannel(ch) }
   }, [semana, user])
 
-  const toggleExpand = useCallback(async (item: AgendaRow) => {
+  const toggleExpand = useCallback(async (item: AgendaItem) => {
     if (expandedId === item.id) {
       setExpandedId(null)
       return
@@ -170,7 +142,6 @@ export default function AgendaTecnicoPage() {
     if (!item.id_ordem) return
     setLoadingDetails(item.id)
 
-    // Detalhes da OS
     if (!osCache[item.id_ordem]) {
       const { data: os } = await supabase
         .from('Ordem_Servico')
@@ -189,7 +160,6 @@ export default function AgendaTecnicoPage() {
       }
     }
 
-    // Requisições vinculadas
     if (!reqCache[item.id_ordem]) {
       const { data: reqs } = await supabase
         .from('mecanico_requisicoes')
@@ -266,19 +236,15 @@ export default function AgendaTecnicoPage() {
 
   const diasNomes = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SAB']
 
-  // Itens filtrados pelo dia selecionado
   const itensDoDia = useMemo(() => {
     if (!diaSelecionado) return []
-    return items.filter(i => i.data === diaSelecionado).sort((a, b) => a.ordem_sequencia - b.ordem_sequencia)
+    return items.filter(i => i.data_agendada === diaSelecionado)
   }, [items, diaSelecionado])
 
-  const notaDoDia = diaSelecionado ? notas[diaSelecionado] : ''
-
-  // Contagem de itens por dia
   const contagemPorDia = useMemo(() => {
     const map: Record<string, number> = {}
     for (const item of items) {
-      map[item.data] = (map[item.data] || 0) + 1
+      map[item.data_agendada] = (map[item.data_agendada] || 0) + 1
     }
     return map
   }, [items])
@@ -294,7 +260,7 @@ export default function AgendaTecnicoPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
 
-      {/* ── Header ── */}
+      {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <h1 style={{ fontSize: 20, fontWeight: 700, color: '#1F2937', margin: 0 }}>Agenda</h1>
         <button
@@ -320,12 +286,11 @@ export default function AgendaTecnicoPage() {
         </div>
       )}
 
-      {/* ── Navegação da semana ── */}
+      {/* Navegacao da semana */}
       <div style={{
         background: '#fff', borderRadius: 16, padding: '12px 8px',
         boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
       }}>
-        {/* Mês + setas */}
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           marginBottom: 12, padding: '0 8px',
@@ -361,7 +326,7 @@ export default function AgendaTecnicoPage() {
           </button>
         </div>
 
-        {/* Dias da semana (seg-sáb) */}
+        {/* Dias da semana */}
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 4 }}>
           {semana.map((d) => {
             const dStr = d.toISOString().split('T')[0]
@@ -406,7 +371,7 @@ export default function AgendaTecnicoPage() {
         </div>
       </div>
 
-      {/* ── Itens do dia selecionado ── */}
+      {/* Itens do dia selecionado */}
       <div>
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -421,18 +386,6 @@ export default function AgendaTecnicoPage() {
             {itensDoDia.length} {itensDoDia.length === 1 ? 'item' : 'itens'}
           </span>
         </div>
-
-        {/* Nota do dia (vinda do painel) */}
-        {notaDoDia && (
-          <div style={{
-            background: '#EEF2FF', borderRadius: 12, padding: '10px 14px',
-            marginBottom: 10, display: 'flex', alignItems: 'flex-start', gap: 8,
-            border: '1px solid #C7D2FE',
-          }}>
-            <StickyNote size={14} color="#6366F1" style={{ marginTop: 2, flexShrink: 0 }} />
-            <div style={{ fontSize: 13, color: '#4338CA', lineHeight: 1.4 }}>{notaDoDia}</div>
-          </div>
-        )}
 
         {loading ? (
           <div style={{ textAlign: 'center', padding: 40 }}>
@@ -450,12 +403,14 @@ export default function AgendaTecnicoPage() {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {itensDoDia.map((item) => {
+            {itensDoDia.map((item, idx) => {
               const isExpanded = expandedId === item.id
               const isLoadingThis = loadingDetails === item.id
               const os = item.id_ordem ? osCache[item.id_ordem] : undefined
               const pecas = os?.ID_PPV ? (pecasCache[os.ID_PPV] || []) : []
               const requisicoes = item.id_ordem ? (reqCache[item.id_ordem] || []) : []
+              const st = STATUS_AGENDA[item.status as keyof typeof STATUS_AGENDA]
+              const turnoInfo = TURNOS[item.turno as keyof typeof TURNOS]
 
               return (
                 <div
@@ -463,6 +418,7 @@ export default function AgendaTecnicoPage() {
                   style={{
                     background: '#fff', borderRadius: 16, overflow: 'hidden',
                     boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+                    borderLeft: `4px solid ${st?.color || '#9CA3AF'}`,
                   }}
                 >
                   {/* Card principal */}
@@ -473,14 +429,14 @@ export default function AgendaTecnicoPage() {
                       display: 'flex', alignItems: 'center', gap: 12,
                     }}
                   >
-                    {/* Badge de sequência */}
+                    {/* Badge de sequencia */}
                     <div style={{
                       width: 34, height: 34, borderRadius: 10, flexShrink: 0,
                       background: '#FEF2F2', color: '#C41E2A',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
                       fontSize: 15, fontWeight: 800,
                     }}>
-                      {item.ordem_sequencia + 1}
+                      {idx + 1}
                     </div>
 
                     {/* Info */}
@@ -491,13 +447,12 @@ export default function AgendaTecnicoPage() {
                             {item.id_ordem}
                           </span>
                         )}
-                        {item.qtd_horas > 0 && (
+                        {st && (
                           <span style={{
                             fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 6,
-                            background: '#F3F4F6', color: '#4B5563',
-                            display: 'flex', alignItems: 'center', gap: 3,
+                            background: st.bg, color: st.color,
                           }}>
-                            <Clock size={10} /> {item.qtd_horas}h
+                            {st.label}
                           </span>
                         )}
                       </div>
@@ -505,22 +460,24 @@ export default function AgendaTecnicoPage() {
                         fontSize: 14, fontWeight: 600, color: '#1F2937',
                         marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                       }}>
-                        {item.cliente || 'Serviço'}
+                        {item.cliente || 'Servico'}
                       </div>
-                      {item.servico && (
+                      {item.descricao && (
                         <div style={{ fontSize: 12, color: '#6B7280', marginBottom: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {item.servico}
+                          {item.descricao}
                         </div>
                       )}
                       <div style={{ fontSize: 12, color: '#9CA3AF', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-                        {(item.cidade || item.endereco) && (
+                        {item.endereco && (
                           <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                            <MapPin size={11} /> {item.cidade || item.endereco}
+                            <MapPin size={11} /> {item.endereco}
                           </span>
                         )}
-                        {item.tempo_ida_min > 0 && (
+                        {turnoInfo && (
                           <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}>
-                            <Truck size={11} /> {item.tempo_ida_min} min · {item.distancia_ida_km.toFixed(0)} km
+                            <Clock size={11} /> {turnoInfo.label}
+                            {item.hora_inicio ? ` ${item.hora_inicio}` : ''}
+                            {item.hora_fim ? ` - ${item.hora_fim}` : ''}
                           </span>
                         )}
                       </div>
@@ -535,7 +492,7 @@ export default function AgendaTecnicoPage() {
                     </div>
                   </div>
 
-                  {/* ── Expandido ── */}
+                  {/* Expandido */}
                   {isExpanded && (
                     <div style={{
                       padding: '0 16px 16px',
@@ -547,21 +504,7 @@ export default function AgendaTecnicoPage() {
                         </div>
                       )}
 
-                      {/* Observação do painel */}
-                      {item.observacoes && (
-                        <div style={{
-                          background: '#FFFBEB', borderRadius: 10, padding: '10px 12px',
-                          marginTop: 12, border: '1px solid #FDE68A',
-                          display: 'flex', alignItems: 'flex-start', gap: 8,
-                        }}>
-                          <StickyNote size={13} color="#D97706" style={{ marginTop: 2, flexShrink: 0 }} />
-                          <div style={{ fontSize: 12, color: '#92400E', lineHeight: 1.4 }}>
-                            {item.observacoes}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Grid de info */}
+                      {/* Grid de info da OS */}
                       <div style={{
                         display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px 16px',
                         padding: '14px 0', fontSize: 13,
@@ -602,19 +545,11 @@ export default function AgendaTecnicoPage() {
                             <div style={{ fontWeight: 600, color: '#1F2937' }}>{os.Qtd_KM} km</div>
                           </div>
                         )}
-                        {item.tempo_volta_min > 0 && (
-                          <div>
-                            <div style={{ fontSize: 11, color: '#9CA3AF', marginBottom: 2 }}>Volta</div>
-                            <div style={{ fontWeight: 600, color: '#1F2937' }}>
-                              {item.tempo_volta_min} min · {item.distancia_volta_km.toFixed(0)} km
-                            </div>
-                          </div>
-                        )}
                         {item.endereco && (
                           <div style={{ gridColumn: '1 / -1' }}>
                             <div style={{ fontSize: 11, color: '#9CA3AF', marginBottom: 2 }}>Endereço</div>
                             <div style={{ fontWeight: 500, color: '#374151', display: 'flex', alignItems: 'center', gap: 4 }}>
-                              <MapPin size={12} /> {item.endereco}{item.cidade ? `, ${item.cidade}` : ''}
+                              <MapPin size={12} /> {item.endereco}
                             </div>
                           </div>
                         )}
@@ -628,7 +563,7 @@ export default function AgendaTecnicoPage() {
                         )}
                       </div>
 
-                      {/* Peças */}
+                      {/* Pecas */}
                       {pecas.length > 0 && (
                         <div style={{
                           background: '#FFF7ED', borderRadius: 12, padding: 14, marginTop: 8,
@@ -637,11 +572,11 @@ export default function AgendaTecnicoPage() {
                             display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10,
                             fontSize: 11, fontWeight: 700, color: '#C2410C', textTransform: 'uppercase',
                           }}>
-                            <Package size={13} /> Peças ({pecas.length})
+                            <Package size={13} /> Pecas ({pecas.length})
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                            {pecas.map((p, idx) => (
-                              <div key={idx} style={{
+                            {pecas.map((p, pidx) => (
+                              <div key={pidx} style={{
                                 background: '#fff', borderRadius: 8, padding: '8px 10px',
                                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                                 border: '1px solid #FED7AA', fontSize: 13,
@@ -649,17 +584,17 @@ export default function AgendaTecnicoPage() {
                                 <div>
                                   <div style={{ fontWeight: 600, color: '#1F2937' }}>{p.Descricao || p.CodProduto}</div>
                                   {p.CodProduto && p.Descricao && (
-                                    <div style={{ fontSize: 11, color: '#9CA3AF' }}>Cód: {p.CodProduto}</div>
+                                    <div style={{ fontSize: 11, color: '#9CA3AF' }}>Cod: {p.CodProduto}</div>
                                   )}
                                 </div>
-                                <span style={{ fontWeight: 700, color: '#C2410C' }}>×{p.Qtde}</span>
+                                <span style={{ fontWeight: 700, color: '#C2410C' }}>x{p.Qtde}</span>
                               </div>
                             ))}
                           </div>
                         </div>
                       )}
 
-                      {/* Requisições */}
+                      {/* Requisicoes */}
                       {requisicoes.length > 0 && (
                         <div style={{
                           background: '#F0F9FF', borderRadius: 12, padding: 14, marginTop: 8,
@@ -668,7 +603,7 @@ export default function AgendaTecnicoPage() {
                             display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10,
                             fontSize: 11, fontWeight: 700, color: '#0369A1', textTransform: 'uppercase',
                           }}>
-                            <Wrench size={13} /> Requisições ({requisicoes.length})
+                            <Wrench size={13} /> Requisicoes ({requisicoes.length})
                           </div>
                           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                             {requisicoes.map((r) => (
@@ -705,7 +640,7 @@ export default function AgendaTecnicoPage() {
         )}
       </div>
 
-      {/* ── Modal Solicitar Agendamento ── */}
+      {/* Modal Solicitar Agendamento */}
       {showForm && (
         <div
           style={{
@@ -759,9 +694,9 @@ export default function AgendaTecnicoPage() {
               </div>
 
               <div>
-                <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>Descrição do serviço *</label>
+                <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>Descricao do servico *</label>
                 <textarea value={descricao} onChange={(e) => setDescricao(e.target.value)}
-                  placeholder="Descreva o serviço a ser realizado" rows={2}
+                  placeholder="Descreva o servico a ser realizado" rows={2}
                   style={{
                     width: '100%', padding: '12px 14px', borderRadius: 12,
                     border: '2px solid #E5E7EB', fontSize: 15, outline: 'none',
@@ -790,7 +725,7 @@ export default function AgendaTecnicoPage() {
                 <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>Turno</label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8 }}>
                   {[
-                    { value: 'manha', label: 'Manhã' },
+                    { value: 'manha', label: 'Manha' },
                     { value: 'tarde', label: 'Tarde' },
                     { value: 'integral', label: 'Integral' },
                   ].map((t) => (
@@ -812,7 +747,7 @@ export default function AgendaTecnicoPage() {
               </div>
 
               <div>
-                <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>Urgência</label>
+                <label style={{ fontSize: 13, fontWeight: 600, color: '#374151', marginBottom: 6, display: 'block' }}>Urgencia</label>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                   <button type="button" onClick={() => setUrgencia('normal')}
                     style={{
@@ -852,7 +787,7 @@ export default function AgendaTecnicoPage() {
                 {submitting ? (
                   <><div className="spinner" style={{ width: 18, height: 18 }} /> Enviando...</>
                 ) : (
-                  <><Send size={16} /> Enviar Solicitação</>
+                  <><Send size={16} /> Enviar Solicitacao</>
                 )}
               </button>
             </div>

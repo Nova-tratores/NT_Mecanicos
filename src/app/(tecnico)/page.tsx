@@ -597,7 +597,7 @@ export default function TecnicoHome() {
           </div>
         </Link>
 
-        <Link href="/diario" style={{
+        <Link href="/jornada" style={{
           background: colors.surface, borderRadius: 20, padding: '20px 16px',
           textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
           display: 'flex', alignItems: 'center', gap: 14,
@@ -610,8 +610,8 @@ export default function TecnicoHome() {
             <Navigation size={22} color={colors.info} />
           </div>
           <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Diario</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>Registros</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Jornada</div>
+            <div style={{ fontSize: 11, color: colors.textMuted }}>Deslocamentos</div>
           </div>
         </Link>
 

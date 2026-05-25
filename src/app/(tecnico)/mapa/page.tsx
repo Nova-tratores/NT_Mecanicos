@@ -1,7 +1,10 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
-import { WifiOff, RefreshCw, Car, MapPin, Loader2 } from 'lucide-react'
+import {
+  WifiOff, RefreshCw, Car, MapPin, Loader2, ArrowLeft,
+  User, Briefcase, Search, ChevronUp, ChevronDown, Route, X,
+} from 'lucide-react'
 import { colors } from '@/lib/ui'
 import { PageSpinner } from '@/components/ui'
 import Link from 'next/link'
@@ -16,6 +19,17 @@ interface Veiculo {
   velocidade: number
   ignicao: number
   dt_posicao: string | null
+  motorista: string
+  cliente: string
+  id_ordem: string
+}
+
+interface PontoRota {
+  lat: number
+  lng: number
+  velocidade: number
+  ignicao: number
+  dt_posicao: string
 }
 
 export default function MapaPage() {
@@ -26,16 +40,24 @@ export default function MapaPage() {
   const [offline, setOffline] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [selectedVeiculo, setSelectedVeiculo] = useState<Veiculo | null>(null)
+
+  // Painel de busca
+  const [painelAberto, setPainelAberto] = useState(false)
+  const [abaAtiva, setAbaAtiva] = useState<'veiculos' | 'tecnicos'>('tecnicos')
+  const [busca, setBusca] = useState('')
+
+  // Rota do veiculo
+  const [rotaVeiculoId, setRotaVeiculoId] = useState<number | null>(null)
+  const [loadingRota, setLoadingRota] = useState(false)
+
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
   const markersRef = useRef<any[]>([])
+  const rotaLayerRef = useRef<any>(null)
+  const leafletRef = useRef<any>(null)
 
   const carregarVeiculos = useCallback(async (silencioso = false) => {
-    if (!navigator.onLine) {
-      setOffline(true)
-      setLoading(false)
-      return
-    }
+    if (!navigator.onLine) { setOffline(true); setLoading(false); return }
     setOffline(false)
     if (!silencioso) setLoading(true)
     else setRefreshing(true)
@@ -49,16 +71,13 @@ export default function MapaPage() {
     } catch (e: any) {
       setErro(e.message || 'Erro ao carregar veiculos')
     }
-
     setLoading(false)
     setRefreshing(false)
   }, [])
 
   useEffect(() => {
     carregarVeiculos()
-    // Auto-refresh a cada 60s
     const interval = setInterval(() => carregarVeiculos(true), 60000)
-    // Detectar online/offline
     const onOnline = () => { setOffline(false); carregarVeiculos(true) }
     const onOffline = () => setOffline(true)
     window.addEventListener('online', onOnline)
@@ -70,14 +89,87 @@ export default function MapaPage() {
     }
   }, [carregarVeiculos])
 
-  // Renderizar/atualizar mapa
+  // Focar no veiculo no mapa
+  const focarVeiculo = useCallback((v: Veiculo) => {
+    setSelectedVeiculo(v)
+    setPainelAberto(false)
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.setView([v.lat, v.lng], 15, { animate: true })
+    }
+  }, [])
+
+  // Focar no tecnico (acha o veiculo dele)
+  const focarTecnico = useCallback((motorista: string) => {
+    const v = veiculos.find(x => x.motorista === motorista)
+    if (v) focarVeiculo(v)
+  }, [veiculos, focarVeiculo])
+
+  // Carregar rota do veiculo
+  const carregarRota = useCallback(async (v: Veiculo) => {
+    if (rotaVeiculoId === v.id) {
+      // Toggle off
+      if (rotaLayerRef.current) { rotaLayerRef.current.remove(); rotaLayerRef.current = null }
+      setRotaVeiculoId(null)
+      return
+    }
+
+    setLoadingRota(true)
+    setRotaVeiculoId(v.id)
+    if (rotaLayerRef.current) { rotaLayerRef.current.remove(); rotaLayerRef.current = null }
+
+    try {
+      const res = await fetch(`/api/veiculos-mapa/rota?adesaoId=${v.id}`)
+      if (!res.ok) throw new Error('Erro')
+      const pontos: PontoRota[] = await res.json()
+
+      if (pontos.length > 1 && mapInstanceRef.current && leafletRef.current) {
+        const L = leafletRef.current
+        const map = mapInstanceRef.current
+
+        const latlngs = pontos.map(p => [p.lat, p.lng] as [number, number])
+
+        const group = L.layerGroup()
+
+        // Linha da rota
+        L.polyline(latlngs, { color: '#1E3A5F', weight: 3, opacity: 0.7 }).addTo(group)
+
+        // Marcador inicio (verde)
+        const primeiro = pontos[0]
+        L.circleMarker([primeiro.lat, primeiro.lng], {
+          radius: 7, fillColor: '#22C55E', fillOpacity: 1, color: '#fff', weight: 2,
+        }).addTo(group).bindTooltip(
+          `Inicio: ${new Date(primeiro.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+          { permanent: false, direction: 'top' },
+        )
+
+        // Marcador fim (vermelho)
+        const ultimo = pontos[pontos.length - 1]
+        L.circleMarker([ultimo.lat, ultimo.lng], {
+          radius: 7, fillColor: '#DC2626', fillOpacity: 1, color: '#fff', weight: 2,
+        }).addTo(group).bindTooltip(
+          `Atual: ${new Date(ultimo.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+          { permanent: false, direction: 'top' },
+        )
+
+        group.addTo(map)
+        rotaLayerRef.current = group
+
+        // Ajustar zoom para a rota
+        map.fitBounds(L.latLngBounds(latlngs), { padding: [50, 50] })
+      }
+    } catch { /* ignore */ }
+
+    setLoadingRota(false)
+  }, [rotaVeiculoId])
+
+  // Renderizar mapa
   useEffect(() => {
     if (!mapRef.current || veiculos.length === 0) return
 
     import('leaflet').then((L) => {
       if (!mapRef.current) return
+      leafletRef.current = L
 
-      // Criar mapa se nao existe
       if (!mapInstanceRef.current) {
         const map = L.map(mapRef.current, { zoomControl: false })
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -88,16 +180,12 @@ export default function MapaPage() {
       }
 
       const map = mapInstanceRef.current
-
-      // Limpar marcadores antigos
       markersRef.current.forEach((m) => m.remove())
       markersRef.current = []
 
-      // Adicionar marcadores dos veiculos
       const bounds: [number, number][] = []
       veiculos.forEach((v) => {
         bounds.push([v.lat, v.lng])
-
         const isOn = v.ignicao === 1
         const isMoving = v.velocidade > 0
 
@@ -108,7 +196,8 @@ export default function MapaPage() {
           html: `<div style="
             width:36px;height:36px;border-radius:50%;
             background:${isOn ? (isMoving ? '#22C55E' : '#F59E0B') : '#9CA3AF'};
-            border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.3);
+            border:3px solid ${rotaVeiculoId === v.id ? '#1E3A5F' : '#fff'};
+            box-shadow:0 2px 8px rgba(0,0,0,0.3);
             display:flex;align-items:center;justify-content:center;
             font-size:10px;font-weight:800;color:#fff;
           ">${v.placa.slice(-4)}</div>`,
@@ -116,39 +205,55 @@ export default function MapaPage() {
 
         const marker = L.marker([v.lat, v.lng], { icon })
           .addTo(map)
-          .on('click', () => setSelectedVeiculo(v))
+          .on('click', () => {
+            setSelectedVeiculo(v)
+            setPainelAberto(false)
+          })
 
         const tempoAtras = v.dt_posicao
-          ? Math.round((Date.now() - new Date(v.dt_posicao).getTime()) / 60000)
-          : null
+          ? Math.round((Date.now() - new Date(v.dt_posicao).getTime()) / 60000) : null
 
-        marker.bindTooltip(
-          `<b>${v.placa}</b><br/>${v.descricao || v.modelo}` +
-          `<br/>${isOn ? (isMoving ? `${v.velocidade} km/h` : 'Parado (ligado)') : 'Desligado'}` +
-          (tempoAtras !== null ? `<br/><small>${tempoAtras < 2 ? 'Agora' : `${tempoAtras}min atras`}</small>` : ''),
-          { direction: 'top', offset: [0, -20] },
-        )
+        const tooltipLines = [
+          `<b>${v.placa}</b>`,
+          v.motorista ? `<span style="color:#1E3A5F">${v.motorista}</span>` : '',
+          v.cliente ? `<small>${v.cliente}</small>` : '',
+          isOn ? (isMoving ? `${v.velocidade} km/h` : 'Parado (ligado)') : 'Desligado',
+          tempoAtras !== null ? `<small>${tempoAtras < 2 ? 'Agora' : `${tempoAtras}min atras`}</small>` : '',
+        ].filter(Boolean)
 
+        marker.bindTooltip(tooltipLines.join('<br/>'), { direction: 'top', offset: [0, -20] })
         markersRef.current.push(marker)
       })
 
-      // Ajustar zoom para todos os veiculos (so na primeira carga)
-      if (bounds.length > 0 && !markersRef.current.some((m) => (m as any)._fitted)) {
+      if (bounds.length > 0 && !(markersRef.current as any)._fitted) {
         map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 })
         ;(markersRef.current as any)._fitted = true
       }
     })
-  }, [veiculos])
+  }, [veiculos, rotaVeiculoId])
 
-  // Cleanup mapa
   useEffect(() => {
     return () => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove()
-        mapInstanceRef.current = null
-      }
+      if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null }
     }
   }, [])
+
+  // Listas filtradas
+  const tecnicos = [...new Map(
+    veiculos.filter(v => v.motorista).map(v => [v.motorista, v])
+  ).values()]
+
+  const buscaLower = busca.toLowerCase()
+  const tecnicosFiltrados = tecnicos.filter(v =>
+    v.motorista.toLowerCase().includes(buscaLower) ||
+    v.placa.toLowerCase().includes(buscaLower) ||
+    v.cliente.toLowerCase().includes(buscaLower)
+  )
+  const veiculosFiltrados = veiculos.filter(v =>
+    v.placa.toLowerCase().includes(buscaLower) ||
+    v.motorista.toLowerCase().includes(buscaLower) ||
+    (v.descricao || v.modelo).toLowerCase().includes(buscaLower)
+  )
 
   if (offline) {
     return (
@@ -156,30 +261,19 @@ export default function MapaPage() {
         display: 'flex', flexDirection: 'column', alignItems: 'center',
         justifyContent: 'center', minHeight: '60vh', gap: 16, padding: 32, textAlign: 'center',
       }}>
-        <div style={{
-          width: 72, height: 72, borderRadius: '50%', background: colors.warningBg,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }}>
+        <div style={{ width: 72, height: 72, borderRadius: '50%', background: colors.warningBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <WifiOff size={32} color={colors.warning} />
         </div>
         <div style={{ fontSize: 18, fontWeight: 700, color: colors.text }}>Sem conexao</div>
-        <div style={{ fontSize: 14, color: colors.textMuted, lineHeight: 1.6 }}>
-          O mapa precisa de internet para mostrar a posicao dos veiculos em tempo real.
-        </div>
-        <button
-          onClick={() => carregarVeiculos()}
-          style={{
-            marginTop: 8, padding: '12px 24px', borderRadius: 12,
-            background: colors.primary, color: '#fff', border: 'none',
-            fontSize: 14, fontWeight: 700, cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 8,
-          }}
-        >
+        <div style={{ fontSize: 14, color: colors.textMuted, lineHeight: 1.6 }}>O mapa precisa de internet.</div>
+        <button onClick={() => carregarVeiculos()} style={{
+          marginTop: 8, padding: '12px 24px', borderRadius: 12,
+          background: colors.primary, color: '#fff', border: 'none',
+          fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
+        }}>
           <RefreshCw size={16} /> Tentar novamente
         </button>
-        <Link href="/" style={{ fontSize: 13, color: colors.textSubtle, marginTop: 8 }}>
-          Voltar ao inicio
-        </Link>
+        <Link href="/" style={{ fontSize: 13, color: colors.textSubtle, marginTop: 8 }}>Voltar</Link>
       </div>
     )
   }
@@ -188,96 +282,281 @@ export default function MapaPage() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 0, margin: -16 }}>
-      {/* Header da pagina */}
+      {/* Header */}
       <div style={{
-        padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        background: colors.surface, borderBottom: `1px solid ${colors.border}`,
+        padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        background: colors.surface, borderBottom: `1px solid ${colors.border}`, zIndex: 500,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <MapPin size={18} color={colors.primary} />
+          <Link href="/" style={{
+            width: 34, height: 34, borderRadius: 10,
+            background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            color: colors.textSubtle, textDecoration: 'none',
+          }}>
+            <ArrowLeft size={16} />
+          </Link>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: colors.text }}>Mapa de Veiculos</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>
-              {veiculos.length} veiculo{veiculos.length !== 1 ? 's' : ''} rastreado{veiculos.length !== 1 ? 's' : ''}
+            <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>Mapa de Veiculos</div>
+            <div style={{ fontSize: 10, color: colors.textMuted }}>
+              {veiculos.length} veiculo{veiculos.length !== 1 ? 's' : ''} · {tecnicos.length} tecnico{tecnicos.length !== 1 ? 's' : ''}
             </div>
           </div>
         </div>
-        <button
-          onClick={() => carregarVeiculos(true)}
-          disabled={refreshing}
-          style={{
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={() => { setPainelAberto(!painelAberto); setSelectedVeiculo(null) }} style={{
+            background: painelAberto ? colors.primary : colors.surfaceAlt,
+            border: `1px solid ${painelAberto ? colors.primary : colors.border}`,
+            borderRadius: 10, padding: '7px 10px', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600,
+            color: painelAberto ? '#fff' : colors.textSubtle,
+          }}>
+            <Search size={14} /> Buscar
+          </button>
+          <button onClick={() => carregarVeiculos(true)} disabled={refreshing} style={{
             background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
-            borderRadius: 10, padding: '8px 12px', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, color: colors.textSubtle,
-          }}
-        >
-          <RefreshCw size={14} className={refreshing ? 'spinner' : ''} />
-          {refreshing ? '' : 'Atualizar'}
-        </button>
+            borderRadius: 10, padding: '7px 10px', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', fontSize: 12, fontWeight: 600, color: colors.textSubtle,
+          }}>
+            <RefreshCw size={14} className={refreshing ? 'spinner' : ''} />
+          </button>
+        </div>
       </div>
 
       {erro && (
-        <div style={{
-          padding: '10px 16px', background: colors.dangerBg, color: colors.danger,
-          fontSize: 12, fontWeight: 600, textAlign: 'center',
-        }}>
+        <div style={{ padding: '8px 16px', background: colors.dangerBg, color: colors.danger, fontSize: 12, fontWeight: 600, textAlign: 'center' }}>
           {erro}
         </div>
       )}
 
       {/* Mapa */}
-      <div ref={mapRef} style={{ width: '100%', height: 'calc(100vh - 180px)', minHeight: 400 }} />
+      <div ref={mapRef} style={{ width: '100%', height: 'calc(100vh - 160px)', minHeight: 400 }} />
 
-      {/* Painel do veiculo selecionado */}
-      {selectedVeiculo && (
+      {/* Painel de Busca */}
+      {painelAberto && (
         <div style={{
           position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 1000,
-          background: '#fff', borderRadius: '16px 16px 0 0', padding: '16px 20px 24px',
+          background: '#fff', borderRadius: '16px 16px 0 0',
+          boxShadow: '0 -4px 20px rgba(0,0,0,0.15)',
+          maxHeight: '55vh', display: 'flex', flexDirection: 'column',
+        }}>
+          <div style={{ padding: '12px 16px 0', flexShrink: 0 }}>
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: '#D1D5DB', margin: '0 auto 10px' }} />
+
+            {/* Tabs */}
+            <div style={{ display: 'flex', gap: 0, marginBottom: 10, background: colors.surfaceAlt, borderRadius: 10, padding: 3 }}>
+              {(['tecnicos', 'veiculos'] as const).map((tab) => (
+                <button key={tab} onClick={() => setAbaAtiva(tab)} style={{
+                  flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', cursor: 'pointer',
+                  fontSize: 13, fontWeight: 700,
+                  background: abaAtiva === tab ? '#fff' : 'transparent',
+                  color: abaAtiva === tab ? colors.primary : colors.textSubtle,
+                  boxShadow: abaAtiva === tab ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                }}>
+                  {tab === 'tecnicos' ? `Tecnicos (${tecnicos.length})` : `Veiculos (${veiculos.length})`}
+                </button>
+              ))}
+            </div>
+
+            {/* Busca */}
+            <div style={{ position: 'relative', marginBottom: 8 }}>
+              <Search size={14} color={colors.textSubtle} style={{ position: 'absolute', left: 12, top: 10 }} />
+              <input
+                value={busca}
+                onChange={(e) => setBusca(e.target.value)}
+                placeholder={abaAtiva === 'tecnicos' ? 'Buscar tecnico...' : 'Buscar placa...'}
+                style={{
+                  width: '100%', padding: '9px 12px 9px 34px', borderRadius: 10,
+                  border: `1.5px solid ${colors.border}`, fontSize: 13, outline: 'none',
+                  background: '#FAFAFA', boxSizing: 'border-box',
+                }}
+              />
+              {busca && (
+                <button onClick={() => setBusca('')} style={{
+                  position: 'absolute', right: 10, top: 8, background: 'none', border: 'none', cursor: 'pointer',
+                }}>
+                  <X size={14} color={colors.textSubtle} />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Lista */}
+          <div style={{ flex: 1, overflow: 'auto', padding: '0 12px 16px' }}>
+            {abaAtiva === 'tecnicos' ? (
+              tecnicosFiltrados.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 13 }}>
+                  {tecnicos.length === 0 ? 'Nenhum tecnico com check-in hoje' : 'Nenhum resultado'}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {tecnicosFiltrados.map((v) => {
+                    const isOn = v.ignicao === 1
+                    const isMoving = v.velocidade > 0
+                    return (
+                      <button key={v.motorista} onClick={() => focarTecnico(v.motorista)} style={{
+                        display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+                        background: '#fff', borderRadius: 12, border: `1px solid ${colors.border}`,
+                        cursor: 'pointer', textAlign: 'left', width: '100%',
+                      }}>
+                        <div style={{
+                          width: 38, height: 38, borderRadius: 12,
+                          background: colors.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                        }}>
+                          <User size={18} color={colors.accent} />
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>{v.motorista}</div>
+                          <div style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                            <Car size={11} /> {v.placa}
+                            <span style={{ color: colors.border }}>|</span>
+                            {v.cliente || 'Sem destino'}
+                          </div>
+                        </div>
+                        <div style={{
+                          width: 10, height: 10, borderRadius: '50%', flexShrink: 0,
+                          background: isOn ? (isMoving ? '#22C55E' : '#F59E0B') : '#D1D5DB',
+                        }} />
+                      </button>
+                    )
+                  })}
+                </div>
+              )
+            ) : (
+              veiculosFiltrados.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 13 }}>Nenhum resultado</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {veiculosFiltrados.map((v) => {
+                    const isOn = v.ignicao === 1
+                    const isMoving = v.velocidade > 0
+                    const temRota = rotaVeiculoId === v.id
+                    return (
+                      <div key={v.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+                        background: temRota ? colors.accentBg : '#fff', borderRadius: 12,
+                        border: `1px solid ${temRota ? colors.accent : colors.border}`,
+                      }}>
+                        <button onClick={() => focarVeiculo(v)} style={{
+                          display: 'flex', alignItems: 'center', gap: 10, flex: 1,
+                          background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0,
+                        }}>
+                          <div style={{
+                            width: 38, height: 38, borderRadius: 12, flexShrink: 0,
+                            background: isOn ? (isMoving ? colors.successBg : colors.warningBg) : colors.surfaceAlt,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            <Car size={18} color={isOn ? (isMoving ? colors.success : colors.warning) : colors.textSubtle} />
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>{v.placa}</div>
+                            <div style={{ fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {v.motorista || v.descricao || v.modelo || 'Sem motorista'}
+                              {v.cliente ? ` · ${v.cliente}` : ''}
+                            </div>
+                          </div>
+                        </button>
+                        <button onClick={() => carregarRota(v)} disabled={loadingRota && rotaVeiculoId !== v.id} style={{
+                          padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                          background: temRota ? colors.accent : colors.surfaceAlt,
+                          color: temRota ? '#fff' : colors.textSubtle,
+                          fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
+                        }}>
+                          {loadingRota && rotaVeiculoId === v.id ? (
+                            <Loader2 size={12} className="spinner" />
+                          ) : (
+                            <><Route size={12} /> {temRota ? 'Ocultar' : 'Rota'}</>
+                          )}
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              )
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Painel do veiculo selecionado */}
+      {selectedVeiculo && !painelAberto && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 1000,
+          background: '#fff', borderRadius: '16px 16px 0 0', padding: '14px 20px 22px',
           boxShadow: '0 -4px 20px rgba(0,0,0,0.15)',
         }}>
-          <div style={{ width: 36, height: 4, borderRadius: 2, background: '#D1D5DB', margin: '0 auto 12px' }} />
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: '#D1D5DB', margin: '0 auto 10px' }} />
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
               <div style={{
-                width: 48, height: 48, borderRadius: 14,
+                width: 44, height: 44, borderRadius: 14,
                 background: selectedVeiculo.ignicao ? (selectedVeiculo.velocidade > 0 ? colors.successBg : colors.warningBg) : colors.surfaceAlt,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
-                <Car size={24} color={selectedVeiculo.ignicao ? (selectedVeiculo.velocidade > 0 ? colors.success : colors.warning) : colors.textSubtle} />
+                <Car size={22} color={selectedVeiculo.ignicao ? (selectedVeiculo.velocidade > 0 ? colors.success : colors.warning) : colors.textSubtle} />
               </div>
               <div>
                 <div style={{ fontSize: 16, fontWeight: 800, color: colors.text }}>{selectedVeiculo.placa}</div>
-                <div style={{ fontSize: 12, color: colors.textMuted }}>{selectedVeiculo.descricao || selectedVeiculo.modelo}</div>
+                <div style={{ fontSize: 11, color: colors.textMuted }}>{selectedVeiculo.descricao || selectedVeiculo.modelo}</div>
               </div>
             </div>
-            <button
-              onClick={() => setSelectedVeiculo(null)}
-              style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 20, color: colors.textSubtle, padding: 4 }}
-            >
-              x
-            </button>
+            <div style={{ display: 'flex', gap: 6 }}>
+              <button onClick={() => carregarRota(selectedVeiculo)} style={{
+                padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                background: rotaVeiculoId === selectedVeiculo.id ? colors.accent : colors.surfaceAlt,
+                color: rotaVeiculoId === selectedVeiculo.id ? '#fff' : colors.textSubtle,
+                fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4,
+              }}>
+                {loadingRota ? <Loader2 size={12} className="spinner" /> : <Route size={12} />}
+                {rotaVeiculoId === selectedVeiculo.id ? 'Ocultar rota' : 'Ver rota'}
+              </button>
+              <button onClick={() => setSelectedVeiculo(null)} style={{
+                background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: colors.textSubtle, padding: 4,
+              }}>x</button>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 12, marginTop: 14 }}>
+
+          {(selectedVeiculo.motorista || selectedVeiculo.cliente) && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+              {selectedVeiculo.motorista && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <User size={13} color={colors.primary} />
+                  <span style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{selectedVeiculo.motorista}</span>
+                </div>
+              )}
+              {selectedVeiculo.cliente && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <Briefcase size={13} color={colors.accent} />
+                  <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted }}>
+                    {selectedVeiculo.id_ordem && selectedVeiculo.id_ordem !== 'OFICINA' ? `OS ${selectedVeiculo.id_ordem} - ` : ''}
+                    {selectedVeiculo.cliente}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
             <div style={{
-              flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '10px 12px',
+              flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '8px 10px',
               textAlign: 'center', border: `1px solid ${colors.border}`,
             }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: selectedVeiculo.ignicao ? colors.success : colors.textSubtle }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: selectedVeiculo.ignicao ? colors.success : colors.textSubtle }}>
                 {selectedVeiculo.ignicao ? 'Ligado' : 'Desligado'}
               </div>
-              <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 2 }}>Ignicao</div>
+              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Ignicao</div>
             </div>
             <div style={{
-              flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '10px 12px',
+              flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '8px 10px',
               textAlign: 'center', border: `1px solid ${colors.border}`,
             }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: selectedVeiculo.velocidade > 0 ? colors.primary : colors.textSubtle }}>
+              <div style={{ fontSize: 16, fontWeight: 800, color: selectedVeiculo.velocidade > 0 ? colors.primary : colors.textSubtle }}>
                 {selectedVeiculo.velocidade} km/h
               </div>
-              <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 2 }}>Velocidade</div>
+              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Velocidade</div>
             </div>
             <div style={{
-              flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '10px 12px',
+              flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '8px 10px',
               textAlign: 'center', border: `1px solid ${colors.border}`,
             }}>
               <div style={{ fontSize: 14, fontWeight: 800, color: colors.textSubtle }}>
@@ -285,13 +564,12 @@ export default function MapaPage() {
                   ? new Date(selectedVeiculo.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
                   : '--'}
               </div>
-              <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 2 }}>Ultima pos.</div>
+              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Ultima pos.</div>
             </div>
           </div>
         </div>
       )}
 
-      {/* Leaflet CSS */}
       <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     </div>
   )

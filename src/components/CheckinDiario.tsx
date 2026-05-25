@@ -219,21 +219,18 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
     const ordem = isOficina ? null : ordens.find((o) => o.Id_Ordem === ordemId)
     const hoje = new Date().toISOString().split('T')[0]
 
-    await supabase.from('checkin_diario').upsert(
-      {
-        tecnico_nome: tecnicoNome,
-        data: hoje,
-        placa,
-        id_ordem: isOficina ? 'OFICINA' : ordemId,
-        cliente: isOficina ? 'Oficina' : (ordem?.Os_Cliente || ''),
-        destino: isOficina ? 'Oficina - Servico interno' : (ordem?.Endereco_Cliente || ''),
-        lat_destino: isOficina ? OFICINA_LAT : (ordem?.lat || null),
-        lng_destino: isOficina ? OFICINA_LNG : (ordem?.lng || null),
-        distancia_km: isOficina ? 0 : (rota?.distancia_km || null),
-        tempo_estimado_min: isOficina ? 0 : (rota?.tempo_min || null),
-      },
-      { onConflict: 'tecnico_nome,data' },
-    )
+    await supabase.from('checkin_diario').insert({
+      tecnico_nome: tecnicoNome,
+      data: hoje,
+      placa,
+      id_ordem: isOficina ? 'OFICINA' : ordemId,
+      cliente: isOficina ? 'Oficina' : (ordem?.Os_Cliente || ''),
+      destino: isOficina ? 'Oficina - Servico interno' : (ordem?.Endereco_Cliente || ''),
+      lat_destino: isOficina ? OFICINA_LAT : (ordem?.lat || null),
+      lng_destino: isOficina ? OFICINA_LNG : (ordem?.lng || null),
+      distancia_km: isOficina ? 0 : (rota?.distancia_km || null),
+      tempo_estimado_min: isOficina ? 0 : (rota?.tempo_min || null),
+    })
 
     setSaving(false)
     onComplete()
