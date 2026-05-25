@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nt-mecanicos-v12';
+const CACHE_NAME = 'nt-mecanicos-v13';
 const OFFLINE_URL = '/';
 
 // Apenas assets que sempre retornam 200 (sem autenticação)
