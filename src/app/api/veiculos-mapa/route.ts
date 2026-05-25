@@ -20,65 +20,70 @@ async function getToken(): Promise<string> {
   return data.token
 }
 
-async function fetchRotaExata(endpoint: string, params?: Record<string, string>) {
-  const token = await getToken()
-  let url = `${API_URL}${endpoint}`
-  if (params) {
-    url += '?' + Object.entries(params).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&')
-  }
-  const res = await fetch(url, { headers: { Authorization: token } })
-  if (!res.ok) throw new Error(`Rota Exata ${endpoint}: ${res.status}`)
-  return res.json()
-}
-
 export async function GET() {
   if (!EMAIL || !PASSWORD) {
     return NextResponse.json({ error: 'Credenciais Rota Exata nao configuradas' }, { status: 500 })
   }
 
   try {
-    // Buscar adesoes (veiculos cadastrados)
-    const adesoes = await fetchRotaExata('/adesoes')
-    const lista = Array.isArray(adesoes.data) ? adesoes.data : (Array.isArray(adesoes) ? adesoes : [])
+    const token = await getToken()
 
-    // Buscar ultima posicao de cada veiculo
-    const veiculos = await Promise.all(
-      lista.map(async (a: any) => {
-        try {
-          const hoje = new Date().toISOString().split('T')[0]
-          const pos = await fetchRotaExata('/posicoes', {
-            adesao_id: String(a.id || a._id),
-            data_inicial: `${hoje}T00:00:00`,
-            data_final: `${hoje}T23:59:59`,
-            limit: '1',
-          })
-          const posArr = Array.isArray(pos.data) ? pos.data : (Array.isArray(pos) ? pos : [])
-          const ultima = posArr[0] || null
+    // 1. Buscar lista de veiculos (adesoes)
+    const adesRes = await fetch(`${API_URL}/adesoes?limit=200&page=0`, {
+      headers: { Authorization: token },
+    })
+    if (!adesRes.ok) throw new Error(`Adesoes: ${adesRes.status}`)
+    const adesData = await adesRes.json()
+    const adesoes = Array.isArray(adesData.data) ? adesData.data : (Array.isArray(adesData) ? adesData : [])
 
-          return {
-            id: a.id || a._id,
-            placa: a.vei_placa || a.placa || '',
-            descricao: a.vei_descricao || a.descricao || '',
-            modelo: a.vei_modelo || a.modelo || '',
-            lat: ultima?.latitude || null,
-            lng: ultima?.longitude || null,
-            velocidade: ultima?.velocidade || 0,
-            ignicao: ultima?.ignicao || 0,
-            dt_posicao: ultima?.dt_posicao || null,
+    if (adesoes.length === 0) return NextResponse.json([])
+
+    // 2. Buscar ultima posicao de cada veiculo (em paralelo, max 5 simultaneos)
+    const hoje = new Date().toISOString().split('T')[0]
+    const veiculos: any[] = []
+
+    // Processar em lotes de 5 para nao sobrecarregar
+    const BATCH = 5
+    for (let i = 0; i < adesoes.length; i += BATCH) {
+      const batch = adesoes.slice(i, i + BATCH)
+      const results = await Promise.all(
+        batch.map(async (a: any) => {
+          const id = a.id || a._id
+          try {
+            const where = encodeURIComponent(JSON.stringify({
+              adesao_id: id,
+              dt_posicao: { $gte: `${hoje}T00:00:00.000-03:00`, $lte: `${hoje}T23:59:59.999-03:00` },
+            }))
+            const posRes = await fetch(
+              `${API_URL}/posicoes?where=${where}&limit=1&page=0`,
+              { headers: { Authorization: token } },
+            )
+            if (!posRes.ok || posRes.status === 404) return null
+            const posData = await posRes.json()
+            const posArr = Array.isArray(posData.data) ? posData.data : []
+            const p = posArr[0]
+            if (!p || !p.latitude || !p.longitude) return null
+
+            return {
+              id,
+              placa: a.vei_placa || '',
+              descricao: a.vei_descricao || '',
+              modelo: a.vei_modelo || '',
+              lat: p.latitude,
+              lng: p.longitude,
+              velocidade: p.velocidade || 0,
+              ignicao: p.ignicao || 0,
+              dt_posicao: p.dt_posicao || null,
+            }
+          } catch {
+            return null
           }
-        } catch {
-          return {
-            id: a.id || a._id,
-            placa: a.vei_placa || a.placa || '',
-            descricao: a.vei_descricao || a.descricao || '',
-            modelo: a.vei_modelo || a.modelo || '',
-            lat: null, lng: null, velocidade: 0, ignicao: 0, dt_posicao: null,
-          }
-        }
-      }),
-    )
+        }),
+      )
+      veiculos.push(...results.filter(Boolean))
+    }
 
-    return NextResponse.json(veiculos.filter((v) => v.lat && v.lng))
+    return NextResponse.json(veiculos)
   } catch (err: any) {
     return NextResponse.json({ error: err.message || 'Erro ao buscar veiculos' }, { status: 500 })
   }
