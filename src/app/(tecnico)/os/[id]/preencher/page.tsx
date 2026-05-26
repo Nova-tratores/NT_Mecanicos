@@ -12,7 +12,7 @@ import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, ChevronDown, 
 import Link from 'next/link'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
 import { notificarPortalOS } from '@/lib/notificarPortal'
-import { criarGarantia } from '@/lib/garantias/client'
+import { criarGarantia, listarPecasOS } from '@/lib/garantias/client'
 import type { PecaOS } from '@/lib/garantias/types'
 import { ShieldCheck, CheckCircle2 } from 'lucide-react'
 
@@ -810,17 +810,24 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     // Cria a requisição de garantia se for o caso (best-effort — não bloqueia o envio da OS)
     if (tipoServico === 'Garantia' && pecasGarantia.size > 0) {
       try {
+        // Busca os preços das peças via listarPecasOS (PPV/movimentacoes + PecasInfo)
+        const pecasComPreco = await listarPecasOS(id)
         const ppvIdsStr = String(os?.ID_PPV || '')
         const primeiroPPV = ppvIdsStr.split(',').map(s => s.trim()).filter(Boolean)[0] || null
+
         const pecasParaGarantia: PecaOS[] = [...pecasGarantia].map((i) => {
           const p = pecas[i]
+          // Tenta cruzar pelo código de produto, com fallback por descrição
+          const fonte = pecasComPreco.find(
+            (x) => (p.codigo && x.cod_produto === p.codigo) || x.descricao === p.descricao,
+          )
           return {
             cod_produto: p.codigo || null,
             descricao: p.descricao,
             quantidade: Number(p.qtdUsada) || 1,
-            preco_unitario: 0,
+            preco_unitario: fonte ? fonte.preco_unitario : 0,
             origem: p.origem === 'ppv' ? 'ppv' : 'pecasinfo_manual',
-            fonte_ppv_id: p.origem === 'ppv' ? primeiroPPV : null,
+            fonte_ppv_id: p.origem === 'ppv' ? (fonte?.fonte_ppv_id || primeiroPPV) : null,
           }
         })
         const res = await criarGarantia({
