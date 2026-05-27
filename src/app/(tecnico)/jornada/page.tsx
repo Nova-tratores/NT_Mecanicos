@@ -147,6 +147,15 @@ export default function JornadaPage() {
       await supabase.from('checkin_diario').insert(payload)
     }
 
+    // Sincronizar veiculo com Rota Exata (em background)
+    if (placa) {
+      fetch('/api/sync-veiculo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tecnico_nome: tecnicoNome, placa }),
+      }).catch(() => {})
+    }
+
     closeForm()
     setSaving(false)
     await carregar()

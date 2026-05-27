@@ -232,6 +232,15 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
       tempo_estimado_min: isOficina ? 0 : (rota?.tempo_min || null),
     })
 
+    // Sincronizar veiculo com Rota Exata (em background, nao bloqueia)
+    if (placa) {
+      fetch('/api/sync-veiculo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tecnico_nome: tecnicoNome, placa }),
+      }).catch(() => {})
+    }
+
     setSaving(false)
     onComplete()
   }
