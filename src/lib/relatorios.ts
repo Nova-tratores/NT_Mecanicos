@@ -39,11 +39,12 @@ export function cleanName(str: string | null | undefined): string | null {
     return 'PAULO MOTTA'
   }
   if (s === 'JOSE OLIVEIRA' || s === 'JOSE ANTONIO OLIVEIRA') return 'JOSE ANTONIO OLIVEIRA'
-  if (s === 'LUIZ FERNANDO' || (s.includes('LUIZ') && s.includes('FERNANDO') && !s.includes('SANCHES'))) {
-    return 'LUIZ FERNANDO SOUZA'
-  }
+  // "LUIZ FERNANDO" sozinho NÃO é unificado: pode ser Souza ou Sanches.
+  // Só identificamos quando vem com o sobrenome.
   if (s.includes('SANCHES')) return 'LUIZ FERNANDO SANCHES'
-  if (s === 'FERNANDO DIRETOR' || s === 'JOAQUIM FERNANDO' || s === 'JOAQUIM') return 'JOAQUIM FERNANDO LEME'
+  // "JOAQUIM" sozinho NÃO é unificado pois pode ser Paulo Joaquim (técnico),
+  // não o vendedor Joaquim Fernando Leme. Só normaliza quando vem com "FERNANDO".
+  if (s === 'FERNANDO DIRETOR' || s === 'JOAQUIM FERNANDO') return 'JOAQUIM FERNANDO LEME'
   if (s === 'MATHEUS DE MELO' || s === 'MATHEUS MELO') return 'MATHEUS MELO'
   if (s.includes('GABRIEL GOMES') || s.includes('GABRIEL MORAES')) return 'GABRIEL MORAES'
 
