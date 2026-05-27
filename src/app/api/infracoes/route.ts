@@ -255,13 +255,45 @@ export async function GET(req: NextRequest) {
   }
 
   if (pontos.length === 0) {
+    // Diagnóstico: quantos pontos existem no período (qualquer motorista)?
+    // Distingue "cron não rodou" de "seu nome não bate".
+    const { count: totalPeriodo } = await supabase
+      .from('rastreio_pontos_relatorio')
+      .select('id', { count: 'exact', head: true })
+      .gte('data', dataInicio)
+      .lte('data', dataFim)
+
+    let motivo: string
+    if (!totalPeriodo || totalPeriodo === 0) {
+      motivo = 'A tabela rastreio_pontos_relatorio está vazia para este período. ' +
+        'O cron do OMIE provavelmente não rodou ou ainda não sincronizou os dados de GPS.'
+    } else {
+      // Quantos motoristas distintos foram registrados (sem listar nomes — privacidade)
+      const { data: amostra } = await supabase
+        .from('rastreio_pontos_relatorio')
+        .select('motorista')
+        .gte('data', dataInicio)
+        .lte('data', dataFim)
+        .not('motorista', 'is', null)
+        .limit(2000)
+      const distintos = new Set<string>()
+      for (const r of (amostra || []) as { motorista: string | null }[]) {
+        const v = String(r.motorista || '').trim()
+        if (v) distintos.add(v)
+      }
+      motivo = `O período tem ${totalPeriodo.toLocaleString('pt-BR')} pontos GPS de ${distintos.size} motoristas distintos, ` +
+        `mas nenhum bateu com seu nome ("${motorista}"). Possível causa: o campo "motorista" em rastreio_pontos_relatorio ` +
+        'está vazio ou o nome registrado pela RotaExata tem grafia diferente da cadastrada no portal.'
+    }
+
     return NextResponse.json({
       infracoes: [],
       stats: {
         totalPontos: 0,
+        totalPontosNoPeriodo: totalPeriodo || 0,
         tilesConsultados: 0,
         infracoesDetectadas: 0,
-        motivo: 'Nenhum ponto GPS encontrado para esse motorista no período. Verifique se rastreio_pontos_relatorio está sendo populado pelo cron do OMIE e se o nome em "motorista" bate com o cadastro do técnico.',
+        motivo,
         estrategia,
       },
     })
