@@ -49,7 +49,9 @@ const TILE_TTL_MS = TILE_TTL_DAYS * 24 * 60 * 60 * 1000
 const TILE_SIZE_DEG = 0.01  // ~1.1km na latitude de Botucatu/Botucatu/Avaré
 const MIN_VEL_PARA_CHECAR = 30  // km/h — abaixo disso ignora (não há infração possível)
 const MAX_PONTOS_POR_REQ = 5000
-const RAIO_MATCHING_M = 60  // ponto GPS precisa estar a < 60m da via pra atribuir maxspeed
+const PAGE_SIZE = 1000           // PostgREST default cap
+const RAIO_MATCHING_M = 200      // ponto GPS pode estar a até 200m da reta da via
+                                  // (rodovias rurais têm vértices OSM esparsos)
 
 // Heurística de maxspeed por tipo de via quando OSM não tem o campo "maxspeed"
 // (cobre o caso comum no Brasil onde poucas vias têm maxspeed mapeado)
@@ -106,6 +108,29 @@ function distM(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const Δλ = ((lng2 - lng1) * Math.PI) / 180
   const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+// Distância ponto P a SEGMENTO AB (em metros). Em escala de centenas de metros
+// e baixa latitude variação, projetamos pra plano local (equirectangular) — erro
+// < 1% nessas distâncias, e muito mais fiel que medir só pros vértices.
+function distPontoSegmentoM(
+  plat: number, plng: number,
+  alat: number, alng: number,
+  blat: number, blng: number,
+): number {
+  const cosLat = Math.cos((plat * Math.PI) / 180)
+  const m_per_deg_lat = 111320
+  const m_per_deg_lng = 111320 * cosLat
+  const px = plng * m_per_deg_lng, py = plat * m_per_deg_lat
+  const ax = alng * m_per_deg_lng, ay = alat * m_per_deg_lat
+  const bx = blng * m_per_deg_lng, by = blat * m_per_deg_lat
+  const dx = bx - ax, dy = by - ay
+  const lenSq = dx * dx + dy * dy
+  if (lenSq === 0) return Math.hypot(px - ax, py - ay)
+  let t = ((px - ax) * dx + (py - ay) * dy) / lenSq
+  t = Math.max(0, Math.min(1, t))
+  const cx = ax + t * dx, cy = ay + t * dy
+  return Math.hypot(px - cx, py - cy)
 }
 
 // =========================================================
@@ -223,8 +248,12 @@ function matchViaMaisProxima(
   for (const v of vias) {
     const max = v.maxspeed || (v.highway ? MAXSPEED_POR_TIPO[v.highway] : null)
     if (!max) continue
-    for (const nd of v.geometry) {
-      const d = distM(lat, lng, nd.lat, nd.lon)
+    // Distância pra cada segmento (entre vértices consecutivos), não pros vértices.
+    // Isso pega o caso onde o ponto GPS está na reta entre 2 vértices muito espaçados.
+    for (let i = 0; i < v.geometry.length - 1; i++) {
+      const a = v.geometry[i]
+      const b = v.geometry[i + 1]
+      const d = distPontoSegmentoM(lat, lng, a.lat, a.lon, b.lat, b.lon)
       if (d < RAIO_MATCHING_M && (!melhor || d < melhor.dist)) {
         melhor = { maxspeed: max, via: v.name || v.highway || 'via', dist: d }
       }
@@ -259,14 +288,34 @@ export async function GET(req: NextRequest) {
     .gte('data', dataInicio)
     .lte('data', dataFim)
     .gt('velocidade', MIN_VEL_PARA_CHECAR)
-    .limit(MAX_PONTOS_POR_REQ)
+
+  // Pagina até pegar MAX_PONTOS_POR_REQ ou esgotar.
+  // PostgREST default cap por request é 1000; precisamos paginar manualmente
+  // com Range pra cobrir meses com muitos pontos.
+  // Recebe FACTORY (não instância) porque cada chamada precisa de builder fresh
+  // — o cliente Supabase JS muta o estado do builder a cada operação encadeada.
+  type QB = ReturnType<typeof baseQuery>
+  async function paginarTudo(factory: () => QB): Promise<Ponto[]> {
+    const all: Ponto[] = []
+    for (let from = 0; from < MAX_PONTOS_POR_REQ; from += PAGE_SIZE) {
+      const to = Math.min(from + PAGE_SIZE - 1, MAX_PONTOS_POR_REQ - 1)
+      const { data, error } = await factory().range(from, to)
+      if (error) {
+        console.warn('[infracoes] pagina', from, 'erro:', error.message)
+        break
+      }
+      const lote = (data || []) as Ponto[]
+      all.push(...lote)
+      if (lote.length < PAGE_SIZE) break
+    }
+    return all
+  }
 
   let pontos: Ponto[] = []
   let estrategia = ''
 
   if (placa) {
-    const { data } = await baseQuery().eq('placa', placa)
-    pontos = (data || []) as Ponto[]
+    pontos = await paginarTudo(() => baseQuery().eq('placa', placa))
     estrategia = `placa=${placa}`
   } else {
     const tecnicoCanon = cleanName(motorista)
@@ -274,8 +323,6 @@ export async function GET(req: NextRequest) {
 
     // 1ª passada: via frota_donos_relatorio (placa → dono).
     // PRIORITARIA porque o filtro por placa usa o índice idx_rastreio_placa_data.
-    // ILIKE em "motorista" (que tem JSON gigante) causa statement_timeout no
-    // PostgREST (~95k linhas no mês, sem índice utilizável).
     if (tecnicoCanon) {
       const { data: donosRows } = await supabase
         .from('frota_donos_relatorio')
@@ -288,35 +335,29 @@ export async function GET(req: NextRequest) {
         .filter(Boolean)
 
       if (placasNorm.length > 0) {
-        // Variantes prováveis: sem hífen (Mercosul) e com hífen tradicional
         const variantes: string[] = []
         for (const n of placasNorm) {
           variantes.push(n)
           if (n.length === 7) variantes.push(`${n.slice(0, 3)}-${n.slice(3)}`)
         }
 
-        const { data: d1 } = await baseQuery().in('placa', variantes)
-        pontos = (d1 || []) as Ponto[]
+        pontos = await paginarTudo(() => baseQuery().in('placa', variantes))
         estrategia = `via frota_donos: placas=[${variantes.join(', ')}]`
 
-        // Fallback: ILIKE com wildcard entre prefixo e sufixo (LLL%NNN)
         if (pontos.length === 0) {
           const orClause = placasNorm
             .map(n => `placa.ilike.${n.slice(0, 3)}%${n.slice(3)}`)
             .join(',')
-          const { data: d1b } = await baseQuery().or(orClause)
-          pontos = (d1b || []) as Ponto[]
+          pontos = await paginarTudo(() => baseQuery().or(orClause))
           estrategia = `via frota_donos ILIKE: ${orClause}`
         }
       }
     }
 
-    // 2ª passada: ILIKE direto no campo motorista (lento — pode dar timeout
-    // em tabela grande, mas funciona pra técnicos sem cadastro em frota_donos).
+    // 2ª passada: ILIKE direto no campo motorista (fallback pra técnicos
+    // sem cadastro em frota_donos — pode dar timeout em tabela grande).
     if (pontos.length === 0) {
-      const { data: d2, error: err2 } = await baseQuery().ilike('motorista', `%${motorista}%`)
-      if (err2) console.warn('[infracoes] 2a passada ILIKE motorista falhou:', err2.message)
-      pontos = (d2 || []) as Ponto[]
+      pontos = await paginarTudo(() => baseQuery().ilike('motorista', `%${motorista}%`))
       estrategia = `motorista ilike %${motorista}%`
     }
   }
@@ -390,12 +431,16 @@ export async function GET(req: NextRequest) {
 
   // ---- 3. Para cada tile: busca vias, depois checa cada ponto ----
   const infracoes: InfracaoItem[] = []
+  let pontosMatched = 0     // pontos atribuídos a alguma via com maxspeed
+  let pontosSemVia = 0      // pontos onde Overpass retornou vias mas nada bate
+  let tilesSemVias = 0      // tiles onde Overpass não trouxe nenhuma via
   for (const [tile, pontosNoTile] of pontosPorTile) {
     const vias = await getViasNoTile(tile)
-    if (vias.length === 0) continue
+    if (vias.length === 0) { tilesSemVias++; continue }
     for (const p of pontosNoTile) {
       const match = matchViaMaisProxima(p.latitude, p.longitude, vias)
-      if (!match) continue
+      if (!match) { pontosSemVia++; continue }
+      pontosMatched++
       if (p.velocidade > match.maxspeed) {
         const dt = new Date(p.dt_posicao)
         infracoes.push({
@@ -420,7 +465,11 @@ export async function GET(req: NextRequest) {
     stats: {
       totalPontos: pontos.length,
       tilesConsultados: pontosPorTile.size,
+      tilesSemVias,
+      pontosMatched,
+      pontosSemVia,
       infracoesDetectadas: infracoes.length,
+      estrategia,
     },
   })
 }
