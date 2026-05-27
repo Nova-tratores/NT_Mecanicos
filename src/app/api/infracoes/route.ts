@@ -250,13 +250,15 @@ export async function GET(req: NextRequest) {
 
   // ---- 1. Busca pontos GPS do período ----
   const baseSelect = 'id, placa, dt_posicao, latitude, longitude, velocidade'
+  // Sem .order() — coluna dt_posicao não tem índice, força sort completo na
+  // tabela (~95k linhas/mês) e causa statement_timeout. Ordem não importa pro
+  // algoritmo de detecção (cada ponto é avaliado independentemente).
   const baseQuery = () => supabase
     .from('rastreio_pontos_relatorio')
     .select(baseSelect)
     .gte('data', dataInicio)
     .lte('data', dataFim)
     .gt('velocidade', MIN_VEL_PARA_CHECAR)
-    .order('dt_posicao', { ascending: true })
     .limit(MAX_PONTOS_POR_REQ)
 
   let pontos: Ponto[] = []
@@ -267,112 +269,55 @@ export async function GET(req: NextRequest) {
     pontos = (data || []) as Ponto[]
     estrategia = `placa=${placa}`
   } else {
-    // 1ª passada: ILIKE com nome completo (rápido, casos óbvios)
-    const { data: d1 } = await baseQuery().ilike('motorista', `%${motorista}%`)
-    pontos = (d1 || []) as Ponto[]
-    estrategia = `motorista ilike %${motorista}%`
+    const tecnicoCanon = cleanName(motorista)
+    const normPlaca = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')
 
-    // 2ª passada: correlação canônica via campo "motorista" do GPS.
-    // O campo vem como JSON do RotaExata — extraímos só o "nome" antes de
-    // canonicalizar, senão o cleanName aplica em "id email cnh ..." junto.
-    if (pontos.length === 0) {
-      const tecnicoCanon = cleanName(motorista)
-      if (tecnicoCanon) {
-        const { data: amostra } = await supabase
-          .from('rastreio_pontos_relatorio')
-          .select('motorista')
-          .gte('data', dataInicio)
-          .lte('data', dataFim)
-          .not('motorista', 'is', null)
-          .limit(5000)
+    // 1ª passada: via frota_donos_relatorio (placa → dono).
+    // PRIORITARIA porque o filtro por placa usa o índice idx_rastreio_placa_data.
+    // ILIKE em "motorista" (que tem JSON gigante) causa statement_timeout no
+    // PostgREST (~95k linhas no mês, sem índice utilizável).
+    if (tecnicoCanon) {
+      const { data: donosRows } = await supabase
+        .from('frota_donos_relatorio')
+        .select('chave, dono')
+        .not('dono', 'is', null)
 
-        // Dedup por raw string e mantém só os onde extraímos um nome válido
-        type RawMot = { raw: string; nome: string }
-        const distintosMap = new Map<string, RawMot>()
-        for (const r of (amostra || []) as { motorista: string | null }[]) {
-          const raw = String(r.motorista || '').trim()
-          if (!raw || distintosMap.has(raw)) continue
-          const nome = extrairNomeMotorista(raw)
-          if (nome) distintosMap.set(raw, { raw, nome })
+      const placasNorm = (donosRows || [])
+        .filter(d => canonicoBate(tecnicoCanon, cleanName((d as { dono: string }).dono)))
+        .map(d => normPlaca(String((d as { chave: string }).chave || '')))
+        .filter(Boolean)
+
+      if (placasNorm.length > 0) {
+        // Variantes prováveis: sem hífen (Mercosul) e com hífen tradicional
+        const variantes: string[] = []
+        for (const n of placasNorm) {
+          variantes.push(n)
+          if (n.length === 7) variantes.push(`${n.slice(0, 3)}-${n.slice(3)}`)
         }
 
-        // Nomes únicos dos motoristas que bateram fuzzy (não usamos os JSONs raw:
-        // PostgREST .in() trata vírgula como separador e os JSONs têm vírgulas
-        // dentro, o que quebra a query e retorna vazio silenciosamente).
-        const nomesMatch = Array.from(new Set(
-          Array.from(distintosMap.values())
-            .filter(d => canonicoBate(tecnicoCanon, cleanName(d.nome)))
-            .map(d => d.nome),
-        ))
+        const { data: d1 } = await baseQuery().in('placa', variantes)
+        pontos = (d1 || []) as Ponto[]
+        estrategia = `via frota_donos: placas=[${variantes.join(', ')}]`
 
-        if (nomesMatch.length > 0) {
-          // Busca via ILIKE com cada nome (o JSON contém "nome":"FULANO", então
-          // %FULANO% pega). Remove vírgulas e parênteses pra não quebrar o or().
-          const orClause = nomesMatch
-            .map(n => `motorista.ilike.%${n.replace(/[,()]/g, '')}%`)
+        // Fallback: ILIKE com wildcard entre prefixo e sufixo (LLL%NNN)
+        if (pontos.length === 0) {
+          const orClause = placasNorm
+            .map(n => `placa.ilike.${n.slice(0, 3)}%${n.slice(3)}`)
             .join(',')
-          const { data: d2 } = await baseQuery().or(orClause)
-          pontos = (d2 || []) as Ponto[]
-          estrategia = `correlacao via nome extraido: [${nomesMatch.join(', ')}]`
+          const { data: d1b } = await baseQuery().or(orClause)
+          pontos = (d1b || []) as Ponto[]
+          estrategia = `via frota_donos ILIKE: ${orClause}`
         }
       }
     }
 
-    // 3ª passada: via frota_donos_relatorio (mapeamento manual placa → motorista
-    // mantido no projeto OMIE). Útil quando o campo "motorista" no GPS vem
-    // vazio ou com nome diferente, mas a placa é conhecidamente do técnico.
+    // 2ª passada: ILIKE direto no campo motorista (lento — pode dar timeout
+    // em tabela grande, mas funciona pra técnicos sem cadastro em frota_donos).
     if (pontos.length === 0) {
-      const tecnicoCanon = cleanName(motorista)
-      if (tecnicoCanon) {
-        const { data: donosRows } = await supabase
-          .from('frota_donos_relatorio')
-          .select('chave, dono')
-          .not('dono', 'is', null)
-
-        // Normaliza placa: SEMPRE uppercase ANTES do replace
-        // (regex [^A-Z0-9] é case-sensitive — "fhy-8d25" sem o toUpperCase()
-        // primeiro vira "825" e quebra todo o matching).
-        const normPlaca = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')
-
-        // Placas (chave normalizada) cujo dono casa com o técnico
-        const placasNorm = (donosRows || [])
-          .filter(d => canonicoBate(tecnicoCanon, cleanName((d as { dono: string }).dono)))
-          .map(d => normPlaca(String((d as { chave: string }).chave || '')))
-          .filter(Boolean)
-
-        if (placasNorm.length > 0) {
-          // Gera variantes prováveis de cada placa normalizada e busca direto.
-          // Evita ter que listar amostra de GPS (que poderia perder a placa em
-          // sample de 5k linhas num mês com 95k pontos).
-          // Formatos comuns:
-          //   "FHY8D25"  → sem hífen (Mercosul ou padrão moderno)
-          //   "FHY-8D25" → com hífen tradicional (LLL-NNNN, 7 chars)
-          //   "FHY8-D25" → algumas variações estranhas
-          const variantesDePlaca: string[] = []
-          for (const n of placasNorm) {
-            variantesDePlaca.push(n)
-            if (n.length === 7) {
-              // tradicional LLL-NNNN
-              variantesDePlaca.push(`${n.slice(0, 3)}-${n.slice(3)}`)
-            }
-          }
-
-          const { data: d3 } = await baseQuery().in('placa', variantesDePlaca)
-          pontos = (d3 || []) as Ponto[]
-          estrategia = `via frota_donos: placas variantes=[${variantesDePlaca.join(', ')}]`
-
-          // Se ainda nada, é provavel que o GPS use formato com caixa ou caractere
-          // diferente. Faz fallback com ILIKE em cada variante.
-          if (pontos.length === 0) {
-            const orClause = placasNorm
-              .map(n => `placa.ilike.${n.slice(0, 3)}%${n.slice(3)}`)
-              .join(',')
-            const { data: d3b } = await baseQuery().or(orClause)
-            pontos = (d3b || []) as Ponto[]
-            estrategia = `via frota_donos: ILIKE fallback ${orClause}`
-          }
-        }
-      }
+      const { data: d2, error: err2 } = await baseQuery().ilike('motorista', `%${motorista}%`)
+      if (err2) console.warn('[infracoes] 2a passada ILIKE motorista falhou:', err2.message)
+      pontos = (d2 || []) as Ponto[]
+      estrategia = `motorista ilike %${motorista}%`
     }
   }
 
