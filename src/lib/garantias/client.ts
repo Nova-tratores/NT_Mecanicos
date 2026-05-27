@@ -246,7 +246,7 @@ export interface CriarGarantiaInput {
 export async function criarGarantia(input: CriarGarantiaInput): Promise<{ garantia?: Garantia; erro?: string }> {
   const { id_ordem, tecnico_nome, pecas } = input
   if (!id_ordem || !tecnico_nome) return { erro: 'OS e técnico são obrigatórios.' }
-  if (!pecas || pecas.length === 0) return { erro: 'Selecione ao menos uma peça para a garantia.' }
+  // pecas opcional — garantia pode ser só de mão de obra/deslocamento.
 
   // Checa se já existe garantia ativa para essa OS (UI friendly check antes do índice)
   const { data: existente } = await supabase
@@ -296,18 +296,20 @@ export async function criarGarantia(input: CriarGarantiaInput): Promise<{ garant
     return { erro: 'Não foi possível criar a garantia.' }
   }
 
-  // Peças
-  await supabase.from('garantia_pecas').insert(
-    pecas.map((p) => ({
-      garantia_id: (garantia as any).id,
-      cod_produto: p.cod_produto,
-      descricao: p.descricao,
-      quantidade: p.quantidade,
-      preco_unitario: p.preco_unitario,
-      origem: p.origem,
-      fonte_ppv_id: p.fonte_ppv_id,
-    }))
-  )
+  // Peças (opcional — pode ser garantia só de mão de obra)
+  if (pecas && pecas.length > 0) {
+    await supabase.from('garantia_pecas').insert(
+      pecas.map((p) => ({
+        garantia_id: (garantia as any).id,
+        cod_produto: p.cod_produto,
+        descricao: p.descricao,
+        quantidade: p.quantidade,
+        preco_unitario: p.preco_unitario,
+        origem: p.origem,
+        fonte_ppv_id: p.fonte_ppv_id,
+      }))
+    )
+  }
 
   await registrarEvento((garantia as any).id, {
     tipo: 'criada',
