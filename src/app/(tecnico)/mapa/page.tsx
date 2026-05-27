@@ -71,6 +71,7 @@ export default function MapaPage() {
   const rotaLayerRef = useRef<any>(null)
   const leafletRef = useRef<any>(null)
   const infracaoMarkerRef = useRef<any>(null)
+  const rotaHistoricaRef = useRef<any>(null)
 
   // Deep-link: ?placa=X&data=YYYY-MM-DD&infracao=lat,lng — vem do relatório
   const searchParams = useSearchParams()
@@ -355,6 +356,92 @@ export default function MapaPage() {
       if (infracaoMarkerRef.current) {
         infracaoMarkerRef.current.remove()
         infracaoMarkerRef.current = null
+      }
+    }
+  }, [deeplink, veiculos])
+
+  // Deep-link com placa + data: carrega rota histórica + todas as infrações do dia
+  useEffect(() => {
+    if (!deeplink?.placa || !deeplink?.data || !mapInstanceRef.current || !leafletRef.current) return
+    const L = leafletRef.current
+    const map = mapInstanceRef.current
+    let cancelled = false
+
+    const carregar = async () => {
+      // Limpa layer anterior
+      if (rotaHistoricaRef.current) {
+        rotaHistoricaRef.current.remove()
+        rotaHistoricaRef.current = null
+      }
+
+      // Busca em paralelo: rota do dia + infrações do dia
+      const [rotaRes, infRes] = await Promise.all([
+        fetch(`/api/rota-historica?placa=${encodeURIComponent(deeplink.placa)}&data=${deeplink.data}`),
+        fetch(`/api/infracoes?placa=${encodeURIComponent(deeplink.placa)}&dataInicio=${deeplink.data}&dataFim=${deeplink.data}`),
+      ])
+      if (cancelled) return
+
+      const rotaJson = rotaRes.ok ? await rotaRes.json() : { pontos: [] }
+      const infJson = infRes.ok ? await infRes.json() : { infracoes: [] }
+      const pontos = (rotaJson.pontos || []) as { lat: number; lng: number; velocidade: number; ignicao: number; dt_posicao: string }[]
+      const infracoes = (infJson.infracoes || []) as { lat: number; lng: number; velocidade: number; maxspeed: number; excesso: number; via: string; hora: string }[]
+
+      if (pontos.length < 2) return
+
+      const group = L.layerGroup()
+
+      // Polyline da rota inteira (azul)
+      const latlngs = pontos.map(p => [p.lat, p.lng] as [number, number])
+      L.polyline(latlngs, { color: '#1E3A5F', weight: 3, opacity: 0.6 }).addTo(group)
+
+      // Marker de início (verde)
+      const ini = pontos[0]
+      L.circleMarker([ini.lat, ini.lng], {
+        radius: 7, fillColor: '#22C55E', fillOpacity: 1, color: '#fff', weight: 2,
+      }).addTo(group).bindTooltip(
+        `Início ${new Date(ini.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+        { permanent: false, direction: 'top' },
+      )
+
+      // Marker de fim (cinza escuro, pra não confundir com infrações vermelhas)
+      const fim = pontos[pontos.length - 1]
+      L.circleMarker([fim.lat, fim.lng], {
+        radius: 7, fillColor: '#374151', fillOpacity: 1, color: '#fff', weight: 2,
+      }).addTo(group).bindTooltip(
+        `Fim ${new Date(fim.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+        { permanent: false, direction: 'top' },
+      )
+
+      // Marcadores de TODAS as outras infrações do dia (pequenos, vermelhos).
+      // O ponto da infração clicada continua sendo o pulsante grande (outro useEffect).
+      const clickedKey = `${deeplink.lat.toFixed(5)},${deeplink.lng.toFixed(5)}`
+      for (const inf of infracoes) {
+        const key = `${inf.lat.toFixed(5)},${inf.lng.toFixed(5)}`
+        if (key === clickedKey) continue
+        L.circleMarker([inf.lat, inf.lng], {
+          radius: 5, fillColor: '#DC2626', fillOpacity: 0.85, color: '#fff', weight: 1.5,
+        }).addTo(group).bindTooltip(
+          `${inf.hora} — ${inf.velocidade}/${inf.maxspeed} km/h (+${inf.excesso}) · ${inf.via}`,
+          { direction: 'top' },
+        )
+      }
+
+      group.addTo(map)
+      rotaHistoricaRef.current = group
+
+      // NÃO chama fitBounds — o useEffect de infração já fez setView com zoom 17
+      // no ponto específico. Se mudássemos pra fitBounds aqui (que roda depois,
+      // por ser async), o usuário perderia o foco. A polyline da rota aparece
+      // ao redor; pra ver a rota inteira é só dar zoom-out manual.
+    }
+
+    carregar()
+
+    return () => {
+      cancelled = true
+      if (rotaHistoricaRef.current) {
+        rotaHistoricaRef.current.remove()
+        rotaHistoricaRef.current = null
       }
     }
   }, [deeplink, veiculos])
