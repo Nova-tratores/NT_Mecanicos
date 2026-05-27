@@ -592,13 +592,21 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
   listaReq.sort((a, b) => b.valor - a.valor)
   listaComb.sort((a, b) => b.valor - a.valor)
 
-  // Custo RH — busca config do próprio técnico via fuzzy match.
-  // Match exato pode falhar quando o config tem nome completo (ex: "PEDRO HENRIQUE
-  // MOTTA") e o login do app tem nome curto ("PEDRO MOTTA"). Bidirecional palavra
-  // a palavra resolve esses casos.
+  // Custo RH individual — busca SOMENTE entre cargos mecânicos/técnicos.
+  // Pessoas com cargo "Outros", "Vendedor", "Motorista", "Peças" etc. não devem
+  // ser candidatas ao matching de RH de técnico, mesmo se o nome canônico bater
+  // fuzzy (já tivemos caso real: Alexsander Victorino cargo "Outros" sendo
+  // colapsado com Danilo Souza por colisão de palavras).
   let custoRH: number | null = null
   let custoRHCadastro: string | null = null
   outer: for (const cfg of configRows) {
+    const cargoUpper = String(cfg.cargo || 'PADRAO').toUpperCase()
+    const ehMecanico =
+      cargoUpper === 'PADRAO' ||
+      cargoUpper.includes('TECNICO') ||
+      cargoUpper.includes('MECANICO')
+    if (!ehMecanico) continue
+
     const canonicoCfg = cleanName(cfg.nome)
     if (!canonicoCfg) continue
     for (const meu of meusCanonicos) {
