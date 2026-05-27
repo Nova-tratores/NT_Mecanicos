@@ -291,14 +291,21 @@ export async function GET(req: NextRequest) {
           .select('chave, dono')
           .not('dono', 'is', null)
 
-        // Placas (chave normalizada sem traço) cujo dono casa com o técnico
+        // Normaliza placa: SEMPRE uppercase ANTES do replace
+        // (regex [^A-Z0-9] é case-sensitive — "fhy-8d25" sem o toUpperCase()
+        // primeiro vira "825" e quebra todo o matching).
+        const normPlaca = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '')
+
+        // Placas (chave normalizada) cujo dono casa com o técnico
         const placasNorm = (donosRows || [])
           .filter(d => canonicoBate(tecnicoCanon, cleanName((d as { dono: string }).dono)))
-          .map(d => String((d as { chave: string }).chave || '').toUpperCase())
+          .map(d => normPlaca(String((d as { chave: string }).chave || '')))
+          .filter(Boolean)
 
         if (placasNorm.length > 0) {
-          // No GPS a placa pode estar com traço ("EPX-5475") ou sem ("EPX5475").
-          // Lista placas distintas do período e cruza com a versão normalizada.
+          // No GPS a placa pode estar com traço ("EPX-5475") ou sem ("EPX5475"),
+          // e pode estar em qualquer caixa. Lista placas distintas do período e
+          // cruza com a versão normalizada.
           const { data: placasGps } = await supabase
             .from('rastreio_pontos_relatorio')
             .select('placa')
@@ -309,11 +316,7 @@ export async function GET(req: NextRequest) {
           const placasRawDoTecnico = Array.from(new Set(
             (placasGps || [])
               .map(r => String((r as { placa: string }).placa || '').trim())
-              .filter(raw => {
-                if (!raw) return false
-                const norm = raw.replace(/[^A-Z0-9]/g, '').toUpperCase()
-                return placasNorm.includes(norm)
-              }),
+              .filter(raw => raw && placasNorm.includes(normPlaca(raw))),
           ))
 
           if (placasRawDoTecnico.length > 0) {
