@@ -201,10 +201,16 @@ way["highway"](${latMin},${lngMin},${latMax},${lngMax});
 out tags geom;`
 
   try {
+    // Overpass rejeita requests sem User-Agent (HTTP 406) — política anti-bot.
+    // Também aceita melhor o formato application/x-www-form-urlencoded com
+    // chave "data=" do que text/plain bruto.
     const res = await fetch(OVERPASS_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: query,
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'NT_Mecanicos/1.0 (https://github.com/Nova-tratores/NT_Mecanicos)',
+      },
+      body: `data=${encodeURIComponent(query)}`,
     })
     if (!res.ok) {
       console.warn('[infracoes] Overpass falhou', res.status, tileKey)
