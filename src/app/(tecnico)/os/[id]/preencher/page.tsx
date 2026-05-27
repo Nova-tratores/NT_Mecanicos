@@ -164,6 +164,13 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
   useEffect(() => {
     const carregar = async () => {
+      // Se offline, pular queries e deixar o restoreBackup preencher o form
+      if (!navigator.onLine) {
+        if (user) setTecResp1(user.tecnico_nome)
+        setLoading(false)
+        return
+      }
+
       const [{ data: osData }, { data: tecData }, { data: veicData }, { data: existing }] = await Promise.all([
         supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
         supabase.from('Tecnicos_Appsheet').select('UsuNome').order('UsuNome'),

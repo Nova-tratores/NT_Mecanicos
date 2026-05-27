@@ -24,7 +24,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="apple-touch-icon" href="/Logo_Nova.png" />
         <script dangerouslySetInnerHTML={{ __html: `
           (function(){
-            var SW_VERSION = 'v13';
+            var SW_VERSION = 'v14';
             var key = 'sw_ver';
             try {
               var stored = localStorage.getItem(key);

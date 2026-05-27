@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nt-mecanicos-v13';
+const CACHE_NAME = 'nt-mecanicos-v14';
 const OFFLINE_URL = '/';
 
 // Apenas assets que sempre retornam 200 (sem autenticação)
@@ -47,15 +47,43 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
-  // Ignorar requests de API (Supabase, /api/*)
+  // Ignorar requests de API (Supabase, /api/*) — dados ficam no IndexedDB
   if (API_PATTERNS.some((p) => p.test(event.request.url))) return;
 
-  // Navegação (HTML pages) — SEMPRE network, sem cache
+  // RSC payloads (Next.js app router) — network-first, cachear para offline
+  if (event.request.headers.get('RSC') === '1') {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request).then((c) => c || new Response('', { status: 404 })))
+    );
+    return;
+  }
+
+  // Navegação (HTML pages) — network-first, cachear para offline
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request).catch(() =>
-        caches.match(OFFLINE_URL).then((cached) => cached || new Response('Offline', { status: 503 }))
-      )
+      fetch(event.request)
+        .then((response) => {
+          if (response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() =>
+          caches.match(event.request).then((cached) => {
+            if (cached) return cached;
+            // Fallback: tentar a página inicial cacheada
+            return caches.match(OFFLINE_URL).then((home) => home || new Response('Offline', { status: 503 }));
+          })
+        )
     );
     return;
   }

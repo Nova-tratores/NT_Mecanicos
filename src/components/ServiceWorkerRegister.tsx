@@ -53,13 +53,14 @@ export default function ServiceWorkerRegister() {
         reg.update();
         setInterval(() => reg.update(), 60 * 60 * 1000);
 
-        // Quando novo SW instalado, ativa imediatamente e recarrega
+        // Quando novo SW instalado, ativa sem reload forçado
+        // (reload automático causava perda de dados preenchidos offline)
         reg.addEventListener('updatefound', () => {
           const newWorker = reg.installing;
           if (newWorker) {
             newWorker.addEventListener('statechange', () => {
               if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
-                window.location.reload();
+                console.log('[SW] Nova versão ativada. Será usada no próximo acesso.');
               }
             });
           }

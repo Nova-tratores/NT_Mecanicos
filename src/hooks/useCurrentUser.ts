@@ -50,8 +50,10 @@ export function useCurrentUser() {
         const { data: { session } } = await supabase.auth.getSession()
 
         if (!session) {
-          // Se offline e tem perfil cacheado, usa o cache
-          if (!navigator.onLine && getCachedProfile()) {
+          // Se sem internet (ou internet instável) e tem perfil cacheado, usa o cache
+          const cached = getCachedProfile()
+          if (cached) {
+            setUser(cached)
             setLoading(false)
             return
           }
