@@ -123,10 +123,18 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
   const carregarProdutosPPV = async (idPPV: string, pecasAtuais?: PecaInfo[]) => {
     setLoadingPPV(true)
-    const { data: movs } = await supabase
-      .from('movimentacoes')
-      .select('*')
-      .eq('Id_PPV', idPPV)
+    let movs: MovimentacaoPPV[] | null = null
+    try {
+      const res = await supabase
+        .from('movimentacoes')
+        .select('*')
+        .eq('Id_PPV', idPPV)
+      movs = res.data as MovimentacaoPPV[] | null
+    } catch {
+      // Offline — usar cache do prefetch
+      const cached = await getCachedPPV(idPPV)
+      movs = cached as MovimentacaoPPV[] | null
+    }
     const existentes = pecasAtuais || []
     const manuais = existentes.filter(p => p.origem === 'manual')
 

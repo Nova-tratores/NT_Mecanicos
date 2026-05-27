@@ -63,6 +63,7 @@ export async function prefetchAll(
       }
 
       // 3. Clientes (para cidade)
+      let clientesData: { cnpj_cpf: string; cidade: string }[] = []
       if (cnpjs.length > 0) {
         onProgress?.('Baixando clientes...')
         const { data: clientes } = await supabase
@@ -71,6 +72,7 @@ export async function prefetchAll(
           .in('cnpj_cpf', cnpjs)
 
         if (clientes) {
+          clientesData = clientes as { cnpj_cpf: string; cidade: string }[]
           for (const cli of clientes) {
             await offlineSet(`prefetch:cliente:${cli.cnpj_cpf}`, cli)
           }
@@ -111,6 +113,77 @@ export async function prefetchAll(
           }
         }
       }
+
+      // ── Salvar dados compostos com as keys do useCached ──
+      // Isso garante que páginas nunca visitadas funcionem offline
+      const preenchidas = new Set<string>()
+      const enviadas = new Set<string>()
+      const cidadeMap: Record<string, string> = {}
+      const agendaMap: Record<string, string[]> = {}
+
+      if (tecEntries) {
+        for (const e of tecEntries) {
+          preenchidas.add(String(e.Ordem_Servico))
+          if (e.Status === 'enviado') enviadas.add(String(e.Ordem_Servico))
+        }
+      }
+      const FASES_CONCLUIDAS = ['Relatorio Concluido', 'Relatório Concluído', 'Executada aguardando comercial']
+      for (const o of osList) {
+        if (FASES_CONCLUIDAS.includes(o.Status)) enviadas.add(String(o.Id_Ordem))
+      }
+      for (const c of clientesData) {
+        if (c.cidade) cidadeMap[c.cnpj_cpf] = c.cidade
+      }
+      if (agenda) {
+        for (const a of agenda) {
+          if (!agendaMap[a.id_ordem]) agendaMap[a.id_ordem] = []
+          agendaMap[a.id_ordem].push(a.data_agendada)
+        }
+      }
+
+      // Key do useCached na página /os
+      await offlineSet(`os:${nome}`, {
+        ordens: osList,
+        preenchidas: [...preenchidas],
+        enviadas: [...enviadas],
+        cidadeMap,
+        enviadasCount: enviadas.size,
+        agendaMap,
+      })
+
+      // Key do useCached no dashboard
+      const hojeStr = hoje // já declarado acima
+      let osPendentes = 0
+      let osAbertas = 0
+      let osAtrasadas = 0
+      for (const o of osList) {
+        const id = String(o.Id_Ordem)
+        if (enviadas.has(id)) continue
+        const prev = (o.Previsao_Execucao || '').trim()
+        if (o.Status === 'Aguardando ordem Técnico' && !preenchidas.has(id)) {
+          if (prev && prev < hojeStr) {
+            const diffDias = Math.floor((new Date(hojeStr + 'T00:00:00').getTime() - new Date(prev + 'T00:00:00').getTime()) / (1000 * 60 * 60 * 24))
+            if (diffDias > 1) { osAtrasadas++; continue }
+          }
+          osPendentes++
+        } else {
+          osAbertas++
+        }
+      }
+
+      await offlineSet(`dashboard:${nome}`, {
+        osPendentes,
+        osAbertas,
+        osEnviadas: enviadas.size,
+        osAtrasadas,
+        reqPendentes: 0,
+        reqEnviadas: 0,
+        fotosCount: 0,
+        garantiasPendentes: 0,
+        garantiasAbertas: 0,
+        avisos: [],
+        avisosHistorico: [],
+      })
     }
 
     // 6. Dados de referência (globais)
@@ -148,6 +221,10 @@ export async function prefetchAll(
 }
 
 // Helpers para ler dados cacheados offline
+export async function getCachedOSList() {
+  return offlineGet<Record<string, unknown>[]>('prefetch:os-list')
+}
+
 export async function getCachedOS(id: string) {
   return offlineGet<Record<string, unknown>>(`prefetch:os:${id}`)
 }

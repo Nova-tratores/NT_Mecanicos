@@ -174,7 +174,14 @@ export default function OrdensHub() {
   const [buscando, setBuscando] = useState(false)
   const [buscaCidadeMap, setBuscaCidadeMap] = useState<Record<string, string>>({})
 
-  const { ordens: ordensRaw = [], preenchidas = new Set<string>(), enviadas = new Set<string>(), cidadeMap = {}, enviadasCount = 0, agendaMap = {} } = data || {}
+  // preenchidas/enviadas podem ser Set (online) ou Array (do IndexedDB serializado)
+  const raw = data || {} as Partial<OsData>
+  const ordensRaw = raw.ordens || []
+  const preenchidas = raw.preenchidas instanceof Set ? raw.preenchidas : new Set<string>(raw.preenchidas as unknown as string[] || [])
+  const enviadas = raw.enviadas instanceof Set ? raw.enviadas : new Set<string>(raw.enviadas as unknown as string[] || [])
+  const cidadeMap = raw.cidadeMap || {}
+  const enviadasCount = raw.enviadasCount || 0
+  const agendaMap = raw.agendaMap || {}
 
   const hoje = getHoje()
 
