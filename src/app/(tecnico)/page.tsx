@@ -7,7 +7,7 @@ import type { OrdemServico } from '@/lib/types'
 import {
   Wrench, ClipboardList, User, Megaphone, Camera,
   Calendar, Navigation, Clock, MapPin, ShieldCheck,
-  ChevronDown, AlertTriangle,
+  ChevronDown, AlertTriangle, BarChart3,
 } from 'lucide-react'
 import Link from 'next/link'
 import { PageSpinner } from '@/components/ui'
@@ -612,6 +612,24 @@ export default function TecnicoHome() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Jornada</div>
             <div style={{ fontSize: 11, color: colors.textMuted }}>Deslocamentos</div>
+          </div>
+        </Link>
+
+        <Link href="/relatorios" style={{
+          background: colors.surface, borderRadius: 20, padding: '20px 16px',
+          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
+          display: 'flex', alignItems: 'center', gap: 14,
+        }}>
+          <div style={{
+            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
+            background: colors.successBg,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <BarChart3 size={22} color={colors.success} />
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Relatórios</div>
+            <div style={{ fontSize: 11, color: colors.textMuted }}>Faturamento e custos</div>
           </div>
         </Link>
 

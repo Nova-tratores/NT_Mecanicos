@@ -1,9 +1,10 @@
 'use client'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import {
   WifiOff, RefreshCw, Car, MapPin, Loader2, ArrowLeft,
-  User, Briefcase, Search, ChevronUp, ChevronDown, Route, X,
+  User, Briefcase, Search, ChevronUp, ChevronDown, Route, X, AlertTriangle,
 } from 'lucide-react'
 import { colors } from '@/lib/ui'
 import { PageSpinner } from '@/components/ui'
@@ -55,6 +56,21 @@ export default function MapaPage() {
   const markersRef = useRef<any[]>([])
   const rotaLayerRef = useRef<any>(null)
   const leafletRef = useRef<any>(null)
+  const infracaoMarkerRef = useRef<any>(null)
+
+  // Deep-link: ?placa=X&data=YYYY-MM-DD&infracao=lat,lng — vem do relatório
+  const searchParams = useSearchParams()
+  const deeplink = useMemo(() => {
+    const placa = searchParams.get('placa')
+    const data = searchParams.get('data')
+    const inf = searchParams.get('infracao')
+    if (!inf) return null
+    const [latStr, lngStr] = inf.split(',')
+    const lat = parseFloat(latStr)
+    const lng = parseFloat(lngStr)
+    if (Number.isNaN(lat) || Number.isNaN(lng)) return null
+    return { placa: placa || '', data: data || '', lat, lng }
+  }, [searchParams])
 
   const carregarVeiculos = useCallback(async (silencioso = false) => {
     if (!navigator.onLine) { setOffline(true); setLoading(false); return }
@@ -238,6 +254,49 @@ export default function MapaPage() {
     }
   }, [])
 
+  // Deep-link de infração: foca no ponto + marker pulsante vermelho
+  useEffect(() => {
+    if (!deeplink || !mapInstanceRef.current || !leafletRef.current) return
+    const L = leafletRef.current
+    const map = mapInstanceRef.current
+
+    if (infracaoMarkerRef.current) infracaoMarkerRef.current.remove()
+
+    const icon = L.divIcon({
+      className: '',
+      iconSize: [40, 40],
+      iconAnchor: [20, 20],
+      html: `<div style="
+        width:40px;height:40px;border-radius:50%;
+        background:rgba(220,38,38,0.25);
+        display:flex;align-items:center;justify-content:center;
+        animation: pulse-infracao 1.5s ease-in-out infinite;
+      ">
+        <div style="
+          width:20px;height:20px;border-radius:50%;
+          background:#DC2626;border:3px solid #fff;
+          box-shadow:0 2px 8px rgba(0,0,0,0.4);
+        "></div>
+      </div>
+      <style>@keyframes pulse-infracao{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.4);opacity:0.6}}</style>`,
+    })
+
+    const marker = L.marker([deeplink.lat, deeplink.lng], { icon, zIndexOffset: 1000 })
+      .addTo(map)
+      .bindTooltip('Infração de velocidade aqui', { permanent: true, direction: 'top', offset: [0, -15] })
+    infracaoMarkerRef.current = marker
+
+    // Foca com zoom alto e atrasa pra dar tempo dos tiles carregarem
+    setTimeout(() => map.setView([deeplink.lat, deeplink.lng], 17, { animate: true }), 200)
+
+    return () => {
+      if (infracaoMarkerRef.current) {
+        infracaoMarkerRef.current.remove()
+        infracaoMarkerRef.current = null
+      }
+    }
+  }, [deeplink, veiculos])
+
   // Listas filtradas
   const tecnicos = [...new Map(
     veiculos.filter(v => v.motorista).map(v => [v.motorista, v])
@@ -326,6 +385,33 @@ export default function MapaPage() {
       {erro && (
         <div style={{ padding: '8px 16px', background: colors.dangerBg, color: colors.danger, fontSize: 12, fontWeight: 600, textAlign: 'center' }}>
           {erro}
+        </div>
+      )}
+
+      {deeplink && (
+        <div style={{
+          padding: '10px 16px', background: colors.dangerBg,
+          borderBottom: `1px solid ${colors.dangerBorder}`,
+          display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <AlertTriangle size={16} color={colors.danger} style={{ flexShrink: 0 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: colors.danger }}>
+              Visualizando infração
+            </div>
+            <div style={{ fontSize: 11, color: colors.textMuted }}>
+              {deeplink.placa && `Placa ${deeplink.placa}`}
+              {deeplink.data && ` · ${new Date(deeplink.data + 'T00:00:00').toLocaleDateString('pt-BR')}`}
+            </div>
+          </div>
+          <Link href="/relatorios" style={{
+            fontSize: 11, fontWeight: 700, color: colors.danger,
+            background: '#fff', padding: '5px 10px', borderRadius: 8,
+            border: `1px solid ${colors.dangerBorder}`, textDecoration: 'none',
+            flexShrink: 0,
+          }}>
+            Voltar
+          </Link>
         </div>
       )}
 

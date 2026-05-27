@@ -200,3 +200,76 @@ export interface MecanicoOcorrencia {
   admin_nome: string | null
   created_at: string
 }
+
+// ===== Relatórios financeiros (dados consolidados pelo projeto OMIE) =====
+
+export interface ResumoOficina {
+  receitaTotal: number
+  despesaTotal: number             // operacional + RH (custos reais da oficina no mês)
+  despesaOperacional: number       // soma de despesas_relatorio
+  custoRHTotal: number             // soma de (salário + encargos) de todos cadastrados
+  qtdOS: number
+  qtdPV: number
+  qtdDespesas: number
+}
+
+export interface RankingItem {
+  nome: string
+  valor: number
+  qtd: number
+  isMe: boolean
+}
+
+export interface OSItem {
+  numero: string
+  cliente: string
+  valor: number
+  data: string
+}
+
+export interface PVItem {
+  numero: string
+  cliente: string
+  valor: number
+  data: string
+}
+
+export interface ReqDespesaItem {
+  id: string
+  descricao: string
+  fornecedor: string
+  valor: number
+  data: string
+}
+
+export interface DesempenhoPessoal {
+  os: { qtd: number; valor: number; lista: OSItem[] }
+  pv: { qtd: number; valor: number; lista: PVItem[] }
+  requisicoes: { qtd: number; valor: number; lista: ReqDespesaItem[] }
+  combustivel: { qtd: number; valor: number; lista: ReqDespesaItem[] }
+  osInternas: { qtd: number; valor: number; lista: OSItem[] }  // cortesia / interno — custo absorvido
+  infracoes: { qtd: number; lista: InfracaoItem[] }
+  custoRH: number | null
+}
+
+export interface InfracaoItem {
+  id: number              // id em rastreio_pontos_relatorio (deep-link no mapa)
+  placa: string
+  dtPosicao: string       // ISO completo
+  data: string            // 'DD/MM'
+  hora: string            // 'HH:MM'
+  lat: number
+  lng: number
+  velocidade: number      // km/h registrado
+  maxspeed: number        // km/h permitido pela via
+  excesso: number         // velocidade - maxspeed
+  via: string             // nome da rua/rodovia (se OSM tiver) ou tipo (highway tag)
+}
+
+export interface RelatorioMes {
+  mes: string             // 'YYYY-MM'
+  oficina: ResumoOficina
+  ranking: RankingItem[]
+  pessoal: DesempenhoPessoal
+  ultimoSync: string | null
+}
