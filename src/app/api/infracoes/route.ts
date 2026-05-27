@@ -341,26 +341,35 @@ export async function GET(req: NextRequest) {
           .filter(Boolean)
 
         if (placasNorm.length > 0) {
-          // No GPS a placa pode estar com traço ("EPX-5475") ou sem ("EPX5475"),
-          // e pode estar em qualquer caixa. Lista placas distintas do período e
-          // cruza com a versão normalizada.
-          const { data: placasGps } = await supabase
-            .from('rastreio_pontos_relatorio')
-            .select('placa')
-            .gte('data', dataInicio)
-            .lte('data', dataFim)
-            .limit(5000)
+          // Gera variantes prováveis de cada placa normalizada e busca direto.
+          // Evita ter que listar amostra de GPS (que poderia perder a placa em
+          // sample de 5k linhas num mês com 95k pontos).
+          // Formatos comuns:
+          //   "FHY8D25"  → sem hífen (Mercosul ou padrão moderno)
+          //   "FHY-8D25" → com hífen tradicional (LLL-NNNN, 7 chars)
+          //   "FHY8-D25" → algumas variações estranhas
+          const variantesDePlaca: string[] = []
+          for (const n of placasNorm) {
+            variantesDePlaca.push(n)
+            if (n.length === 7) {
+              // tradicional LLL-NNNN
+              variantesDePlaca.push(`${n.slice(0, 3)}-${n.slice(3)}`)
+            }
+          }
 
-          const placasRawDoTecnico = Array.from(new Set(
-            (placasGps || [])
-              .map(r => String((r as { placa: string }).placa || '').trim())
-              .filter(raw => raw && placasNorm.includes(normPlaca(raw))),
-          ))
+          const { data: d3 } = await baseQuery().in('placa', variantesDePlaca)
+          pontos = (d3 || []) as Ponto[]
+          estrategia = `via frota_donos: placas variantes=[${variantesDePlaca.join(', ')}]`
 
-          if (placasRawDoTecnico.length > 0) {
-            const { data: d3 } = await baseQuery().in('placa', placasRawDoTecnico)
-            pontos = (d3 || []) as Ponto[]
-            estrategia = `via frota_donos: placas=[${placasRawDoTecnico.join(', ')}]`
+          // Se ainda nada, é provavel que o GPS use formato com caixa ou caractere
+          // diferente. Faz fallback com ILIKE em cada variante.
+          if (pontos.length === 0) {
+            const orClause = placasNorm
+              .map(n => `placa.ilike.${n.slice(0, 3)}%${n.slice(3)}`)
+              .join(',')
+            const { data: d3b } = await baseQuery().or(orClause)
+            pontos = (d3b || []) as Ponto[]
+            estrategia = `via frota_donos: ILIKE fallback ${orClause}`
           }
         }
       }
