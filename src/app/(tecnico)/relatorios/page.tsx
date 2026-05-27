@@ -31,7 +31,7 @@ export default function RelatoriosPage() {
 
   // Versão da chave: bump quando o shape de RelatorioMes muda, p/ invalidar IndexedDB stale
   const { data, loading, refreshing, refresh } = useCached<RelatorioMes>(
-    `relatorios:v8:${profile.tecnico_nome}:${mes}`,
+    `relatorios:v9:${profile.tecnico_nome}:${mes}`,
     () => fetchRelatorioMes(profile, mes),
     { skip: !user },
   )

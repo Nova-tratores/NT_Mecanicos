@@ -39,14 +39,11 @@ export function cleanName(str: string | null | undefined): string | null {
     return 'PAULO MOTTA'
   }
   if (s === 'JOSE OLIVEIRA' || s === 'JOSE ANTONIO OLIVEIRA') return 'JOSE ANTONIO OLIVEIRA'
-  // "LUIZ FERNANDO" sozinho NÃO é unificado: pode ser Souza ou Sanches.
-  // Só identificamos quando vem com o sobrenome.
-  if (s.includes('SANCHES')) return 'LUIZ FERNANDO SANCHES'
-  // "JOAQUIM" sozinho NÃO é unificado pois pode ser Paulo Joaquim (técnico),
-  // não o vendedor Joaquim Fernando Leme. Só normaliza quando vem com "FERNANDO".
-  if (s === 'FERNANDO DIRETOR' || s === 'JOAQUIM FERNANDO') return 'JOAQUIM FERNANDO LEME'
   if (s === 'MATHEUS DE MELO' || s === 'MATHEUS MELO') return 'MATHEUS MELO'
   if (s.includes('GABRIEL GOMES') || s.includes('GABRIEL MORAES')) return 'GABRIEL MORAES'
+  // Unificações de vendedor (SANCHES, JOAQUIM FERNANDO) e motorista (Souza)
+  // foram removidas — esses cargos não entram no dashboard de mecânicos.
+  // A identificação deles vira via fuzzy match contra config_vendedores_relatorio.
 
   if (s.length < 3) return null
   if (s.includes('FINALIZEI') || s.includes('TRANSFERENCIA') || s.includes('VIA API')) return null
@@ -351,40 +348,48 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
   // 2) Tecnicos_Appsheet — técnicos do POS/AppSheet
   // 3) config_vendedores_relatorio — config do OMIE (com cargo)
   // Vendedores (cargo=VENDEDOR no config) ficam de fora MESMO se aparecerem em outra fonte.
+  // Listas (não Sets) — vamos comparar via fuzzy bidirecional, não match exato
   const configByCanonico = new Map<string, ConfigVendedorRow>()
-  const tecnicosConhecidos = new Set<string>()
-  const vendedoresConhecidos = new Set<string>()
-  const motoristasConhecidos = new Set<string>()
+  const tecnicosConhecidos: string[] = []
+  const vendedoresConhecidos: string[] = []
+  const motoristasConhecidos: string[] = []
+
+  const pushUnique = (lista: string[], s: string) => {
+    if (!lista.includes(s)) lista.push(s)
+  }
 
   for (const c of configRows) {
     const canonico = cleanName(c.nome)
     if (!canonico) continue
     configByCanonico.set(canonico, c)
     const cargoUpper = String(c.cargo || '').toUpperCase()
-    // Motorista é técnico para fins de OS/PV, mas despesas vão pro comercial — registra separado
-    if (cargoUpper === 'MOTORISTA') motoristasConhecidos.add(canonico)
+    if (cargoUpper === 'MOTORISTA') pushUnique(motoristasConhecidos, canonico)
     if (ehCargoTecnico(c.cargo)) {
-      tecnicosConhecidos.add(canonico)
+      pushUnique(tecnicosConhecidos, canonico)
     } else if (cargoUpper === 'VENDEDOR') {
-      vendedoresConhecidos.add(canonico)
+      pushUnique(vendedoresConhecidos, canonico)
     }
   }
   for (const m of mecRows) {
     const canonico = cleanName(m.tecnico_nome)
-    if (canonico) tecnicosConhecidos.add(canonico)
+    if (canonico) pushUnique(tecnicosConhecidos, canonico)
   }
   for (const t of tecAppRows) {
     const canonico = cleanName(t.UsuNome)
-    if (canonico) tecnicosConhecidos.add(canonico)
+    if (canonico) pushUnique(tecnicosConhecidos, canonico)
   }
+
+  // Helper: nome canônico bate (fuzzy) com algum da lista?
+  const algumBate = (canonico: string, lista: string[]): boolean =>
+    lista.some(c => canonicoBate(canonico, c))
 
   // Decide se um nome canônico (extraído de uma OS) conta como técnico.
   // - Cargo VENDEDOR no config: NUNCA (corta o comercial do ranking).
   // - Em qualquer das 3 fontes de técnicos: SIM.
   // - Raw com prefixo "Técnico:/Técnicos:/Mecânico:/Motorista:" mas sem cadastro: SIM (heurística).
   function ehTecnico(canonico: string, temPrefixoTecnico: boolean): boolean {
-    if (vendedoresConhecidos.has(canonico)) return false
-    if (tecnicosConhecidos.has(canonico)) return true
+    if (algumBate(canonico, vendedoresConhecidos)) return false
+    if (algumBate(canonico, tecnicosConhecidos)) return true
     return temPrefixoTecnico
   }
 
@@ -412,9 +417,10 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
     const fase = String(d.fase || '').toUpperCase()
     if (['AGUARDANDO', 'COTACAO', 'COTAÇÃO', 'APROVACAO', 'APROVAÇÃO'].some(x => fase.includes(x))) return false
 
-    // Despesas de motoristas (cargo MOTORISTA no config) → não contam pra oficina
+    // Despesas de motoristas (cargo MOTORISTA no config) e vendedores → fora
     const canonico = cleanName(d.vendedor || '')
-    if (canonico && motoristasConhecidos.has(canonico)) return false
+    if (canonico && algumBate(canonico, motoristasConhecidos)) return false
+    if (canonico && algumBate(canonico, vendedoresConhecidos)) return false
 
     return true
   })
