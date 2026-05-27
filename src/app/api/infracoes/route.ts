@@ -296,14 +296,24 @@ export async function GET(req: NextRequest) {
           if (nome) distintosMap.set(raw, { raw, nome })
         }
 
-        const motoristasMatch = Array.from(distintosMap.values())
-          .filter(d => canonicoBate(tecnicoCanon, cleanName(d.nome)))
-          .map(d => d.raw)
+        // Nomes únicos dos motoristas que bateram fuzzy (não usamos os JSONs raw:
+        // PostgREST .in() trata vírgula como separador e os JSONs têm vírgulas
+        // dentro, o que quebra a query e retorna vazio silenciosamente).
+        const nomesMatch = Array.from(new Set(
+          Array.from(distintosMap.values())
+            .filter(d => canonicoBate(tecnicoCanon, cleanName(d.nome)))
+            .map(d => d.nome),
+        ))
 
-        if (motoristasMatch.length > 0) {
-          const { data: d2 } = await baseQuery().in('motorista', motoristasMatch)
+        if (nomesMatch.length > 0) {
+          // Busca via ILIKE com cada nome (o JSON contém "nome":"FULANO", então
+          // %FULANO% pega). Remove vírgulas e parênteses pra não quebrar o or().
+          const orClause = nomesMatch
+            .map(n => `motorista.ilike.%${n.replace(/[,()]/g, '')}%`)
+            .join(',')
+          const { data: d2 } = await baseQuery().or(orClause)
           pontos = (d2 || []) as Ponto[]
-          estrategia = `correlacao canonica matched=[${motoristasMatch.join(', ')}]`
+          estrategia = `correlacao via nome extraido: [${nomesMatch.join(', ')}]`
         }
       }
     }
@@ -359,10 +369,12 @@ export async function GET(req: NextRequest) {
 
   if (pontos.length === 0) {
     // Diagnóstico: quantos pontos existem no período (qualquer motorista)?
-    // Distingue "cron não rodou" de "seu nome não bate".
+    // count=exact dá HTTP 500 nessa tabela (~100k linhas, timeout no Postgres),
+    // então usamos count=planned (estimativa do planner — basta pra distinguir
+    // "vazio" de "tem dados").
     const { count: totalPeriodo } = await supabase
       .from('rastreio_pontos_relatorio')
-      .select('id', { count: 'exact', head: true })
+      .select('id', { count: 'planned', head: true })
       .gte('data', dataInicio)
       .lte('data', dataFim)
 
