@@ -251,9 +251,8 @@ export async function GET(req: NextRequest) {
     pontos = (d1 || []) as Ponto[]
     estrategia = `motorista ilike %${motorista}%`
 
-    // 2ª passada: correlação canônica. Lista TODOS os motoristas distintos
-    // do período e filtra os que batem no canônico (acento, prefixo "Técnico:",
-    // unificações de apelido, bidirecional palavra-a-palavra).
+    // 2ª passada: correlação canônica via campo "motorista" do GPS.
+    // Lista motoristas distintos no período, filtra os que batem no canônico.
     if (pontos.length === 0) {
       const tecnicoCanon = cleanName(motorista)
       if (tecnicoCanon) {
@@ -280,6 +279,51 @@ export async function GET(req: NextRequest) {
         }
       }
     }
+
+    // 3ª passada: via frota_donos_relatorio (mapeamento manual placa → motorista
+    // mantido no projeto OMIE). Útil quando o campo "motorista" no GPS vem
+    // vazio ou com nome diferente, mas a placa é conhecidamente do técnico.
+    if (pontos.length === 0) {
+      const tecnicoCanon = cleanName(motorista)
+      if (tecnicoCanon) {
+        const { data: donosRows } = await supabase
+          .from('frota_donos_relatorio')
+          .select('chave, dono')
+          .not('dono', 'is', null)
+
+        // Placas (chave normalizada sem traço) cujo dono casa com o técnico
+        const placasNorm = (donosRows || [])
+          .filter(d => canonicoBate(tecnicoCanon, cleanName((d as { dono: string }).dono)))
+          .map(d => String((d as { chave: string }).chave || '').toUpperCase())
+
+        if (placasNorm.length > 0) {
+          // No GPS a placa pode estar com traço ("EPX-5475") ou sem ("EPX5475").
+          // Lista placas distintas do período e cruza com a versão normalizada.
+          const { data: placasGps } = await supabase
+            .from('rastreio_pontos_relatorio')
+            .select('placa')
+            .gte('data', dataInicio)
+            .lte('data', dataFim)
+            .limit(5000)
+
+          const placasRawDoTecnico = Array.from(new Set(
+            (placasGps || [])
+              .map(r => String((r as { placa: string }).placa || '').trim())
+              .filter(raw => {
+                if (!raw) return false
+                const norm = raw.replace(/[^A-Z0-9]/g, '').toUpperCase()
+                return placasNorm.includes(norm)
+              }),
+          ))
+
+          if (placasRawDoTecnico.length > 0) {
+            const { data: d3 } = await baseQuery().in('placa', placasRawDoTecnico)
+            pontos = (d3 || []) as Ponto[]
+            estrategia = `via frota_donos: placas=[${placasRawDoTecnico.join(', ')}]`
+          }
+        }
+      }
+    }
   }
 
   if (pontos.length === 0) {
@@ -296,7 +340,6 @@ export async function GET(req: NextRequest) {
       motivo = 'A tabela rastreio_pontos_relatorio está vazia para este período. ' +
         'O cron do OMIE provavelmente não rodou ou ainda não sincronizou os dados de GPS.'
     } else {
-      // Quantos motoristas distintos foram registrados (sem listar nomes — privacidade)
       const { data: amostra } = await supabase
         .from('rastreio_pontos_relatorio')
         .select('motorista')
@@ -309,9 +352,21 @@ export async function GET(req: NextRequest) {
         const v = String(r.motorista || '').trim()
         if (v) distintos.add(v)
       }
+
+      // Verifica também se o técnico tem placa vinculada em frota_donos_relatorio
+      const { data: donosRows } = await supabase
+        .from('frota_donos_relatorio')
+        .select('dono')
+      const tecCanon = cleanName(motorista)
+      const temVinculoFrota = tecCanon && (donosRows || []).some(d =>
+        canonicoBate(tecCanon, cleanName((d as { dono: string }).dono)),
+      )
+
       motivo = `O período tem ${totalPeriodo.toLocaleString('pt-BR')} pontos GPS de ${distintos.size} motoristas distintos, ` +
-        `mas nenhum bateu com seu nome ("${motorista}"). Possível causa: o campo "motorista" em rastreio_pontos_relatorio ` +
-        'está vazio ou o nome registrado pela RotaExata tem grafia diferente da cadastrada no portal.'
+        `mas nenhum bateu com seu nome ("${motorista}"). ` +
+        (temVinculoFrota
+          ? 'Há um vínculo em frota_donos_relatorio, mas as placas dele não têm pontos no período.'
+          : 'Você não tem placa vinculada em frota_donos_relatorio — peça ao admin pra cadastrar a placa do seu veículo no projeto OMIE.')
     }
 
     return NextResponse.json({
