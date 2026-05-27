@@ -91,14 +91,16 @@ interface ProfileNomes {
 }
 
 // Compara dois nomes JÁ em forma canônica (cleanName aplicado).
-// Match exato OU bidirecional palavra-a-palavra — tolera 1 nome ter mais palavras
-// que outro (ex: "PEDRO MOTTA" casa com "PEDRO HENRIQUE MOTTA").
+// Match exato OU bidirecional palavra-a-palavra COM no mínimo 2 palavras
+// significativas em cada lado — evita que "Danilo" sozinho case com qualquer
+// "Danilo X". "PEDRO MOTTA" continua casando com "PEDRO HENRIQUE MOTTA"
+// porque ambos têm >= 2 palavras e um é subset do outro.
 function canonicoBate(a: string, b: string): boolean {
   if (!a || !b) return false
   if (a === b) return true
   const palA = a.split(' ').filter(w => w.length >= 3)
   const palB = b.split(' ').filter(w => w.length >= 3)
-  if (palA.length === 0 || palB.length === 0) return false
+  if (palA.length < 2 || palB.length < 2) return false
   return palA.every(w => palB.includes(w)) || palB.every(w => palA.includes(w))
 }
 
