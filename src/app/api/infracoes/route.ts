@@ -3,6 +3,27 @@ import { createClient } from '@supabase/supabase-js'
 import type { InfracaoItem } from '@/lib/types'
 import { cleanName } from '@/lib/relatorios'
 
+// O campo "motorista" em rastreio_pontos_relatorio vem do RotaExata como JSON
+// stringificado: {"id":64570,"nome":"DANILO SOUZA","email":"...","cnh":"..."}.
+// Esta função extrai SÓ o nome — sem isso, o cleanName aplicado no JSON inteiro
+// gera uma colcha de palavras (id, email, CNH, datas) que polui o fuzzy match
+// e fica impossível bater com "DANILO SOUZA" puro.
+function extrairNomeMotorista(raw: string | null | undefined): string {
+  if (!raw) return ''
+  const s = String(raw).trim()
+  if (s.startsWith('{')) {
+    try {
+      const obj = JSON.parse(s) as { nome?: string; name?: string }
+      return String(obj.nome || obj.name || '').trim()
+    } catch {
+      // Fallback se o JSON estiver malformado: regex direto
+      const m = /"nome"\s*:\s*"([^"]+)"/i.exec(s)
+      return m ? m[1] : ''
+    }
+  }
+  return s
+}
+
 // Match canônico bidirecional palavra-a-palavra (mesma lógica do relatorios.ts).
 // Exige no mínimo 2 palavras significativas em cada lado — evita que "Danilo"
 // sozinho case com qualquer "Danilo X". "PEDRO MOTTA" continua casando com
@@ -252,7 +273,8 @@ export async function GET(req: NextRequest) {
     estrategia = `motorista ilike %${motorista}%`
 
     // 2ª passada: correlação canônica via campo "motorista" do GPS.
-    // Lista motoristas distintos no período, filtra os que batem no canônico.
+    // O campo vem como JSON do RotaExata — extraímos só o "nome" antes de
+    // canonicalizar, senão o cleanName aplica em "id email cnh ..." junto.
     if (pontos.length === 0) {
       const tecnicoCanon = cleanName(motorista)
       if (tecnicoCanon) {
@@ -264,13 +286,19 @@ export async function GET(req: NextRequest) {
           .not('motorista', 'is', null)
           .limit(5000)
 
-        const distintos = Array.from(new Set(
-          (amostra || [])
-            .map(r => String((r as { motorista: string | null }).motorista || '').trim())
-            .filter(Boolean),
-        ))
+        // Dedup por raw string e mantém só os onde extraímos um nome válido
+        type RawMot = { raw: string; nome: string }
+        const distintosMap = new Map<string, RawMot>()
+        for (const r of (amostra || []) as { motorista: string | null }[]) {
+          const raw = String(r.motorista || '').trim()
+          if (!raw || distintosMap.has(raw)) continue
+          const nome = extrairNomeMotorista(raw)
+          if (nome) distintosMap.set(raw, { raw, nome })
+        }
 
-        const motoristasMatch = distintos.filter(m => canonicoBate(tecnicoCanon, cleanName(m)))
+        const motoristasMatch = Array.from(distintosMap.values())
+          .filter(d => canonicoBate(tecnicoCanon, cleanName(d.nome)))
+          .map(d => d.raw)
 
         if (motoristasMatch.length > 0) {
           const { data: d2 } = await baseQuery().in('motorista', motoristasMatch)
@@ -352,8 +380,8 @@ export async function GET(req: NextRequest) {
         .limit(2000)
       const distintos = new Set<string>()
       for (const r of (amostra || []) as { motorista: string | null }[]) {
-        const v = String(r.motorista || '').trim()
-        if (v) distintos.add(v)
+        const nome = extrairNomeMotorista(r.motorista)
+        if (nome) distintos.add(nome)
       }
 
       // Verifica também se o técnico tem placa vinculada em frota_donos_relatorio
