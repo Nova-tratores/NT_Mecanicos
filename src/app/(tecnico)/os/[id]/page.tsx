@@ -6,6 +6,7 @@ import { offlineWrite } from '@/lib/offlineWrite'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useFormBackup } from '@/hooks/useFormBackup'
 import type { OrdemServico } from '@/lib/types'
+import { getCachedOS, getCachedOSTec, getCachedCliente } from '@/lib/prefetch'
 import {
   ArrowLeft, ClipboardEdit, CheckCircle, MapPin, User, Wrench,
   Briefcase, Clock, Navigation, FileText, Hash, Plus, AlertTriangle, Save,
@@ -88,6 +89,27 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
 
   useEffect(() => {
     const carregar = async () => {
+      // Se offline, usar dados do prefetch
+      if (!navigator.onLine) {
+        const cachedOs = await getCachedOS(id)
+        const cachedTec = await getCachedOSTec(id)
+        if (cachedOs) {
+          setOs(cachedOs as unknown as OrdemServico)
+          if (cachedOs.Cnpj_Cliente) {
+            const cachedCli = await getCachedCliente(cachedOs.Cnpj_Cliente as string)
+            if (cachedCli?.cidade) setCidade(cachedCli.cidade)
+          }
+        }
+        if (cachedTec) {
+          setExistingId(cachedTec.IdOs as number)
+          setJaPreenchida(true)
+          setStatusPreench((cachedTec.Status as string) || '')
+          if (cachedTec.Data) setDataEnvio(cachedTec.Data as string)
+        }
+        setLoading(false)
+        return
+      }
+
       const [{ data: osData }, { data: preench }] = await Promise.all([
         supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
         supabase.from('Ordem_Servico_Tecnicos').select('*').eq('Ordem_Servico', id).maybeSingle(),

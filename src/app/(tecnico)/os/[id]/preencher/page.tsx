@@ -6,6 +6,7 @@ import { useFormBackup } from '@/hooks/useFormBackup'
 import { supabase } from '@/lib/supabase'
 import { offlineWrite } from '@/lib/offlineWrite'
 import type { OrdemServico } from '@/lib/types'
+import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV } from '@/lib/prefetch'
 import FotoUpload from '@/components/FotoUpload'
 import SignaturePad from '@/components/SignaturePad'
 import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, ChevronDown, ChevronUp, Package, AlertTriangle, FileDown } from 'lucide-react'
@@ -164,9 +165,64 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
   useEffect(() => {
     const carregar = async () => {
-      // Se offline, pular queries e deixar o restoreBackup preencher o form
+      // Se offline, carregar do cache prefetch + backup do form
       if (!navigator.onLine) {
-        if (user) setTecResp1(user.tecnico_nome)
+        const [cachedOs, cachedTec, cachedTecnicos, cachedVeiculos] = await Promise.all([
+          getCachedOS(id),
+          getCachedOSTec(id),
+          getCachedTecnicos(),
+          getCachedVeiculos(),
+        ])
+
+        if (cachedOs) {
+          setOs(cachedOs as unknown as OrdemServico)
+          if (cachedOs.Projeto) setProjeto(cachedOs.Projeto as string)
+          if (cachedOs.Tipo_Servico) setTipoServico(cachedOs.Tipo_Servico as string)
+        }
+        if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
+        if (cachedVeiculos) setVeiculos(cachedVeiculos)
+
+        if (cachedTec) {
+          setExistingId(cachedTec.IdOs as number)
+          setTecResp1((cachedTec.TecResp1 as string) || '')
+          setTemTec2((cachedTec.TemTec as boolean) || false)
+          setTecResp2((cachedTec.TecResp2 as string) || '')
+          setDiagnostico((cachedTec.Motivo as string) || '')
+          setServicoRealizado((cachedTec.ServicoRealizado as string) || '')
+          if (cachedTec.TipoServico) setTipoServico(cachedTec.TipoServico as string)
+          if (cachedTec.TipoRev) setTipoRev(cachedTec.TipoRev as string)
+          if (cachedTec.Projeto) setProjeto(cachedTec.Projeto as string)
+          setChassis((cachedTec.Chassis as string) || '')
+          setMarca((cachedTec.Marca as string) || '')
+          setModelo((cachedTec.Modelo as string) || '')
+          setHorimetro((cachedTec.Horimetro as string) || '')
+          setNumPlaca((cachedTec.NumPlaca as string) || '')
+          setNomResp((cachedTec.NomResp as string) || '')
+          setFazenda((cachedTec.Fazenda as string) || '')
+          setCidadeLocal((cachedTec.Cidade as string) || '')
+        } else if (user) {
+          setTecResp1(user.tecnico_nome)
+        }
+
+        // PPV offline
+        if (cachedOs?.ID_PPV) {
+          const cachedMovs = await getCachedPPV(cachedOs.ID_PPV as string)
+          if (cachedMovs && cachedMovs.length > 0) {
+            const pecasPPV = cachedMovs.map((m: Record<string, unknown>) => ({
+              descricao: (m.Descricao as string) || (m.CodProduto as string),
+              codigo: (m.CodProduto as string) || '',
+              qtdUsada: (m.Qtde as string) || '1',
+              devolvida: false,
+              qtdDevolvida: '',
+              origem: 'ppv' as const,
+              qtdOriginal: (m.Qtde as string) || '1',
+              naoUsada: false,
+              revisado: false,
+            }))
+            setPecas(pecasPPV)
+          }
+        }
+
         setLoading(false)
         return
       }

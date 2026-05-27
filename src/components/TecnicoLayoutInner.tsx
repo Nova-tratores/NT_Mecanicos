@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase'
 import HeaderMobile from '@/components/HeaderMobile'
 // BottomNav removido — navegação agora via dashboard
 import OfflineSync from '@/components/OfflineSync'
+import { prefetchAll } from '@/lib/prefetch'
 import dynamic from 'next/dynamic'
 const CheckinDiario = dynamic(() => import('@/components/CheckinDiario'), { ssr: false })
 import { Megaphone } from 'lucide-react'
@@ -58,6 +59,17 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   useEffect(() => {
     verificarCheckin()
   }, [verificarCheckin])
+
+  // Prefetch de dados para offline
+  useEffect(() => {
+    if (!user?.tecnico_nome) return
+    const nome = user.nome_pos || user.tecnico_nome
+    prefetchAll(nome, user.tecnico_nome)
+    // Também prefetcha quando volta online
+    const handleOnline = () => prefetchAll(nome, user.tecnico_nome)
+    window.addEventListener('online', handleOnline)
+    return () => window.removeEventListener('online', handleOnline)
+  }, [user?.tecnico_nome, user?.nome_pos])
 
   useEffect(() => {
     carregarAvisosPendentes()
