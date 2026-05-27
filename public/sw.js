@@ -1,5 +1,5 @@
-const CACHE_NAME = 'nt-mecanicos-v15';
-const OFFLINE_URL = '/';
+const CACHE_NAME = 'nt-mecanicos-v16';
+const APP_SHELL_KEY = 'nt-app-shell';
 
 // Apenas assets que sempre retornam 200 (sem autenticação)
 const PRECACHE_URLS = [
@@ -44,6 +44,29 @@ self.addEventListener('activate', (event) => {
   );
 });
 
+/**
+ * Salva a primeira resposta HTML de navegação como "app shell".
+ * Será usada como fallback para QUALQUER rota offline.
+ * (Todas as páginas são 'use client', o router client-side renderiza certo)
+ */
+async function saveAppShell(response) {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.put(APP_SHELL_KEY, response);
+  } catch (e) {
+    console.warn('[SW] Erro ao salvar app shell:', e);
+  }
+}
+
+async function getAppShell() {
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    return await cache.match(APP_SHELL_KEY);
+  } catch {
+    return null;
+  }
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
@@ -66,24 +89,75 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Navegação (HTML pages) — network-first, cachear para offline
+  // Navegação (HTML pages) — network-first, app shell como fallback offline
   if (event.request.mode === 'navigate') {
     event.respondWith(
       fetch(event.request)
         .then((response) => {
           if (response.ok) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+            // Cachear esta página específica
+            const clone1 = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone1));
+            // Salvar como app shell (qualquer página serve de shell)
+            const clone2 = response.clone();
+            saveAppShell(clone2);
           }
           return response;
         })
-        .catch(() =>
-          caches.match(event.request).then((cached) => {
-            if (cached) return cached;
-            // Fallback: tentar a página inicial cacheada
-            return caches.match(OFFLINE_URL).then((home) => home || new Response('Offline', { status: 503 }));
-          })
-        )
+        .catch(async () => {
+          // 1. Tentar cache exato desta URL
+          const exact = await caches.match(event.request);
+          if (exact) return exact;
+
+          // 2. Fallback: app shell (qualquer página HTML cacheada)
+          const shell = await getAppShell();
+          if (shell) return shell;
+
+          // 3. Último recurso: página offline mínima
+          return new Response(`
+            <!DOCTYPE html>
+            <html lang="pt-BR">
+            <head>
+              <meta charset="utf-8">
+              <meta name="viewport" content="width=device-width,initial-scale=1">
+              <title>NT Mecanicos - Offline</title>
+              <style>
+                *{margin:0;padding:0;box-sizing:border-box}
+                body{min-height:100vh;display:flex;align-items:center;justify-content:center;
+                  font-family:-apple-system,sans-serif;
+                  background:linear-gradient(180deg,#1E3A5F 0%,#0F1F33 100%);color:#fff;padding:32px}
+                .c{text-align:center;max-width:320px}
+                .icon{width:80px;height:80px;border-radius:22px;background:rgba(255,255,255,.1);
+                  display:flex;align-items:center;justify-content:center;margin:0 auto 24px}
+                h2{font-size:20px;font-weight:800;margin-bottom:8px}
+                p{font-size:14px;color:rgba(255,255,255,.7);line-height:1.7}
+                .btn{margin-top:24px;padding:14px 28px;border-radius:14px;border:none;
+                  background:rgba(255,255,255,.15);color:#F59E0B;font-size:14px;font-weight:700;cursor:pointer}
+              </style>
+            </head>
+            <body>
+              <div class="c">
+                <div class="icon">
+                  <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" stroke-width="2">
+                    <path d="M1 1l22 22"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/>
+                    <path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/>
+                    <path d="M10.71 5.05A16 16 0 0 1 22.56 9"/>
+                    <path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/>
+                    <path d="M8.53 16.11a6 6 0 0 1 6.95 0"/>
+                    <line x1="12" y1="20" x2="12.01" y2="20"/>
+                  </svg>
+                </div>
+                <h2>Sem conexao</h2>
+                <p>Conecte-se a internet para carregar esta pagina. Depois de baixar os dados, voce podera navegar offline.</p>
+                <button class="btn" onclick="location.reload()">Tentar novamente</button>
+              </div>
+            </body>
+            </html>
+          `, {
+            status: 200,
+            headers: { 'Content-Type': 'text/html; charset=utf-8' },
+          });
+        })
     );
     return;
   }
