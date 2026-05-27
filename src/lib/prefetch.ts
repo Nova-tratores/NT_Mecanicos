@@ -9,16 +9,25 @@ import { offlineSet, offlineGet } from './offlineCache'
 const PREFETCH_KEY = 'nt-prefetch-timestamp'
 const MIN_INTERVAL = 60_000 // no mínimo 1 min entre prefetches
 
-export async function prefetchAll(nome: string, tecnicoNome: string) {
-  if (!navigator.onLine) return
-  if (!nome) return
+/** Retorna true se já rodou pelo menos um prefetch com sucesso */
+export function hasPrefetchedBefore(): boolean {
+  return !!localStorage.getItem(PREFETCH_KEY)
+}
+
+export async function prefetchAll(
+  nome: string,
+  tecnicoNome: string,
+  onProgress?: (msg: string) => void,
+): Promise<boolean> {
+  if (!navigator.onLine) return false
+  if (!nome) return false
 
   // Evitar prefetch muito frequente
   const last = parseInt(localStorage.getItem(PREFETCH_KEY) || '0', 10)
-  if (Date.now() - last < MIN_INTERVAL) return
-  localStorage.setItem(PREFETCH_KEY, String(Date.now()))
+  if (Date.now() - last < MIN_INTERVAL) return true
 
   console.log('[prefetch] Carregando dados para offline...')
+  onProgress?.('Baixando ordens de servico...')
 
   try {
     // 1. Todas as OS do técnico (ativas)
@@ -41,6 +50,7 @@ export async function prefetchAll(nome: string, tecnicoNome: string) {
       const cnpjs = [...new Set(osList.map((o: { Cnpj_Cliente: string }) => o.Cnpj_Cliente).filter(Boolean))]
 
       // 2. OS_Tecnicos para todas as OS
+      onProgress?.('Baixando preenchimentos...')
       const { data: tecEntries } = await supabase
         .from('Ordem_Servico_Tecnicos')
         .select('*')
@@ -54,6 +64,7 @@ export async function prefetchAll(nome: string, tecnicoNome: string) {
 
       // 3. Clientes (para cidade)
       if (cnpjs.length > 0) {
+        onProgress?.('Baixando clientes...')
         const { data: clientes } = await supabase
           .from('Clientes')
           .select('cnpj_cpf, cidade')
@@ -67,6 +78,7 @@ export async function prefetchAll(nome: string, tecnicoNome: string) {
       }
 
       // 4. Agenda do técnico (próximos 30 dias)
+      onProgress?.('Baixando agenda...')
       const hoje = new Date().toISOString().split('T')[0]
       const fim = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]
       const { data: agenda } = await supabase
@@ -79,7 +91,6 @@ export async function prefetchAll(nome: string, tecnicoNome: string) {
 
       if (agenda) {
         await offlineSet('prefetch:agenda', agenda)
-        // Cache agenda por OS
         for (const ag of agenda) {
           await offlineSet(`prefetch:agenda:${ag.id_ordem}`, ag)
         }
@@ -87,19 +98,23 @@ export async function prefetchAll(nome: string, tecnicoNome: string) {
 
       // 5. Movimentações PPV para cada OS que tem PPV
       const osComPPV = osList.filter((o: { ID_PPV?: string }) => o.ID_PPV)
-      for (const os of osComPPV) {
-        const { data: movs } = await supabase
-          .from('movimentacoes')
-          .select('*')
-          .eq('Id_PPV', os.ID_PPV)
+      if (osComPPV.length > 0) {
+        onProgress?.('Baixando pecas...')
+        for (const os of osComPPV) {
+          const { data: movs } = await supabase
+            .from('movimentacoes')
+            .select('*')
+            .eq('Id_PPV', os.ID_PPV)
 
-        if (movs) {
-          await offlineSet(`prefetch:ppv:${os.ID_PPV}`, movs)
+          if (movs) {
+            await offlineSet(`prefetch:ppv:${os.ID_PPV}`, movs)
+          }
         }
       }
     }
 
     // 6. Dados de referência (globais)
+    onProgress?.('Baixando dados de referencia...')
     const [{ data: tecnicos }, { data: veiculos }] = await Promise.all([
       supabase.from('Tecnicos_Appsheet').select('UsuNome').order('UsuNome'),
       supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca'),
@@ -109,6 +124,7 @@ export async function prefetchAll(nome: string, tecnicoNome: string) {
     if (veiculos) await offlineSet('prefetch:veiculos', veiculos)
 
     // 7. OS enviadas do técnico
+    onProgress?.('Baixando OS enviadas...')
     const { data: osEnviadas } = await supabase
       .from('Ordem_Servico_Tecnicos')
       .select('*')
@@ -120,9 +136,14 @@ export async function prefetchAll(nome: string, tecnicoNome: string) {
       await offlineSet('prefetch:os-enviadas', osEnviadas)
     }
 
+    localStorage.setItem(PREFETCH_KEY, String(Date.now()))
     console.log('[prefetch] Dados offline carregados com sucesso')
+    onProgress?.('')
+    return true
   } catch (err) {
     console.warn('[prefetch] Erro (parcial ok):', err)
+    onProgress?.('')
+    return false
   }
 }
 

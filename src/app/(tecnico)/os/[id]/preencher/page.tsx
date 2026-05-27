@@ -330,7 +330,18 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
       setLoading(false)
     }
-    carregar()
+    carregar().catch(async () => {
+      // Rede falhou (onLine=true mas sem internet real) — fallback para cache
+      console.warn('[preencher] Rede falhou, tentando cache offline...')
+      const [cachedOs, cachedTecnicos, cachedVeiculos] = await Promise.all([
+        getCachedOS(id), getCachedTecnicos(), getCachedVeiculos(),
+      ])
+      if (cachedOs) setOs(cachedOs as unknown as OrdemServico)
+      if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
+      if (cachedVeiculos) setVeiculos(cachedVeiculos)
+      if (user) setTecResp1(user.tecnico_nome)
+      setLoading(false)
+    })
   }, [id, user])
 
   // Polling automático do PPV (a cada 30s)

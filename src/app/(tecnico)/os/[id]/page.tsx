@@ -165,7 +165,26 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       }
       setLoading(false)
     }
-    carregar()
+    carregar().catch(async () => {
+      // Rede falhou — fallback para cache
+      console.warn('[os-detalhe] Rede falhou, tentando cache offline...')
+      const cachedOs = await getCachedOS(id)
+      const cachedTec = await getCachedOSTec(id)
+      if (cachedOs) {
+        setOs(cachedOs as unknown as OrdemServico)
+        if (cachedOs.Cnpj_Cliente) {
+          const cachedCli = await getCachedCliente(cachedOs.Cnpj_Cliente as string)
+          if (cachedCli?.cidade) setCidade(cachedCli.cidade)
+        }
+      }
+      if (cachedTec) {
+        setExistingId(cachedTec.IdOs as number)
+        setJaPreenchida(true)
+        setStatusPreench((cachedTec.Status as string) || '')
+        if (cachedTec.Data) setDataEnvio(cachedTec.Data as string)
+      }
+      setLoading(false)
+    })
   }, [id])
 
   // Verificar se precisa justificar (atraso >= 2 dias após previsão)
@@ -295,7 +314,26 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
   }
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
-  if (!os) return <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>OS não encontrada</div>
+  if (!os) return (
+    <div style={{ padding: 40, textAlign: 'center' }}>
+      {!navigator.onLine ? (
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+          <div style={{ width: 64, height: 64, borderRadius: 18, background: '#FEF3C7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 1l22 22"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
+          </div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#1F2937' }}>Dados nao disponíveis offline</div>
+          <div style={{ fontSize: 13, color: '#6B7280', maxWidth: 280, lineHeight: 1.6 }}>
+            Conecte-se a internet para baixar os dados desta OS. Depois, ela ficara disponivel mesmo sem sinal.
+          </div>
+          <Link href="/os" style={{ marginTop: 8, fontSize: 14, fontWeight: 600, color: '#1E3A5F', textDecoration: 'none' }}>
+            ← Voltar para lista
+          </Link>
+        </div>
+      ) : (
+        <div style={{ color: '#9CA3AF' }}>OS nao encontrada</div>
+      )}
+    </div>
+  )
 
   const jaEnviada = jaPreenchida && statusPreench === 'enviado'
   const dentroPrazo48h = (() => {

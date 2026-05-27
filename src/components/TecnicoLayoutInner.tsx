@@ -6,10 +6,26 @@ import { supabase } from '@/lib/supabase'
 import HeaderMobile from '@/components/HeaderMobile'
 // BottomNav removido — navegação agora via dashboard
 import OfflineSync from '@/components/OfflineSync'
-import { prefetchAll } from '@/lib/prefetch'
+import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
 import dynamic from 'next/dynamic'
 const CheckinDiario = dynamic(() => import('@/components/CheckinDiario'), { ssr: false })
-import { Megaphone } from 'lucide-react'
+import { Megaphone, WifiOff, Download } from 'lucide-react'
+
+// ── Avisos confirmados: cache local para nunca mostrar de novo ──
+const AVISOS_CONFIRMADOS_KEY = 'nt-avisos-confirmados'
+
+function getAvisosConfirmadosLocal(): Set<number> {
+  try {
+    const raw = localStorage.getItem(AVISOS_CONFIRMADOS_KEY)
+    return raw ? new Set(JSON.parse(raw)) : new Set()
+  } catch { return new Set() }
+}
+
+function addAvisoConfirmadoLocal(id: number) {
+  const set = getAvisosConfirmadosLocal()
+  set.add(id)
+  localStorage.setItem(AVISOS_CONFIRMADOS_KEY, JSON.stringify([...set]))
+}
 
 export default function TecnicoLayoutInner({ children }: { children: React.ReactNode }) {
   const { user, loading } = useCurrentUser()
@@ -18,8 +34,13 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   const [confirmando, setConfirmando] = useState(false)
   const [checkinFeito, setCheckinFeito] = useState<boolean | null>(true) // temporario: desativado para debug
 
+  // ── Prefetch state ──
+  const [prefetchStatus, setPrefetchStatus] = useState<'idle' | 'loading' | 'done' | 'need-internet'>('idle')
+  const [prefetchMsg, setPrefetchMsg] = useState('')
+
   const carregarAvisosPendentes = useCallback(async () => {
     if (!user?.tecnico_nome) return
+    if (!navigator.onLine) return // não tentar carregar avisos offline
     const hoje = new Date().toISOString().split('T')[0]
     const { data: avisos } = await supabase
       .from('avisos_gerais')
@@ -28,6 +49,8 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
       .or(`expira_em.is.null,expira_em.gte.${hoje}`)
       .order('created_at', { ascending: true })
     if (!avisos || avisos.length === 0) { setAvisosPendentes([]); return }
+
+    // Filtrar por confirmados no servidor
     const ids = avisos.map(a => a.id)
     const { data: confirmados } = await supabase
       .from('avisos_gerais_confirmados')
@@ -35,12 +58,17 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
       .eq('tecnico_nome', user.tecnico_nome)
       .in('aviso_id', ids)
     const confirmSet = new Set((confirmados || []).map((c: any) => c.aviso_id))
-    setAvisosPendentes(avisos.filter(a => !confirmSet.has(a.id)))
+
+    // Também filtrar por confirmados localmente (proteção contra re-exibição)
+    const localSet = getAvisosConfirmadosLocal()
+
+    setAvisosPendentes(avisos.filter(a => !confirmSet.has(a.id) && !localSet.has(a.id)))
   }, [user?.tecnico_nome])
 
   // Verificar check-in diario (fail-open: se erro, libera o app)
   const verificarCheckin = useCallback(async () => {
     if (!user?.tecnico_nome) return
+    if (!navigator.onLine) { setCheckinFeito(true); return }
     try {
       const hoje = new Date().toISOString().split('T')[0]
       const { data, error } = await supabase
@@ -64,9 +92,29 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   useEffect(() => {
     if (!user?.tecnico_nome) return
     const nome = user.nome_pos || user.tecnico_nome
-    prefetchAll(nome, user.tecnico_nome)
-    // Também prefetcha quando volta online
-    const handleOnline = () => prefetchAll(nome, user.tecnico_nome)
+
+    if (!navigator.onLine && !hasPrefetchedBefore()) {
+      setPrefetchStatus('need-internet')
+      // Quando voltar online, rodar prefetch
+      const handleOnline = async () => {
+        setPrefetchStatus('loading')
+        const ok = await prefetchAll(nome, user.tecnico_nome, setPrefetchMsg)
+        setPrefetchStatus(ok ? 'done' : 'idle')
+      }
+      window.addEventListener('online', handleOnline)
+      return () => window.removeEventListener('online', handleOnline)
+    }
+
+    if (navigator.onLine) {
+      setPrefetchStatus('loading')
+      prefetchAll(nome, user.tecnico_nome, setPrefetchMsg).then(ok => {
+        setPrefetchStatus(ok ? 'done' : 'idle')
+      })
+    }
+
+    const handleOnline = () => {
+      prefetchAll(nome, user.tecnico_nome, setPrefetchMsg)
+    }
     window.addEventListener('online', handleOnline)
     return () => window.removeEventListener('online', handleOnline)
   }, [user?.tecnico_nome, user?.nome_pos])
@@ -83,11 +131,20 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     if (!user?.tecnico_nome || avisosPendentes.length === 0) return
     setConfirmando(true)
     const aviso = avisosPendentes[0]
-    await supabase.from('avisos_gerais_confirmados').upsert({
-      aviso_id: aviso.id,
-      tecnico_nome: user.tecnico_nome,
-    }, { onConflict: 'aviso_id,tecnico_nome' })
+
+    // Salvar localmente ANTES do upsert — garante que nunca re-aparece
+    addAvisoConfirmadoLocal(aviso.id)
     setAvisosPendentes(prev => prev.filter(a => a.id !== aviso.id))
+
+    // Persistir no servidor (fire-and-forget se offline)
+    try {
+      await supabase.from('avisos_gerais_confirmados').upsert({
+        aviso_id: aviso.id,
+        tecnico_nome: user.tecnico_nome,
+      }, { onConflict: 'aviso_id,tecnico_nome' })
+    } catch {
+      // Se falhar, o cache local já protege
+    }
     setConfirmando(false)
   }
 
@@ -100,6 +157,45 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   }
 
   if (!user) return null
+
+  // ── Tela bloqueante: precisa de internet para primeiro download ──
+  if (prefetchStatus === 'need-internet') {
+    return (
+      <div style={{
+        minHeight: '100vh', display: 'flex', flexDirection: 'column',
+        alignItems: 'center', justifyContent: 'center', padding: 32,
+        background: 'linear-gradient(180deg, #1E3A5F 0%, #0F1F33 100%)',
+      }}>
+        <div style={{
+          width: 100, height: 100, borderRadius: 28,
+          background: 'rgba(255,255,255,0.1)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          marginBottom: 28,
+        }}>
+          <WifiOff size={48} color="#F59E0B" />
+        </div>
+        <h2 style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginBottom: 8, textAlign: 'center' }}>
+          Sem internet
+        </h2>
+        <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.7)', textAlign: 'center', lineHeight: 1.7, maxWidth: 320 }}>
+          Para usar o app pela primeira vez, conecte-se a uma rede Wi-Fi ou dados moveis.
+          Vamos baixar suas ordens e informacoes para voce poder trabalhar offline depois.
+        </p>
+        <div style={{
+          marginTop: 32, padding: '14px 28px', borderRadius: 14,
+          background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)',
+        }}>
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10,
+            fontSize: 13, fontWeight: 600, color: '#F59E0B',
+          }}>
+            <Download size={18} />
+            Aguardando conexao...
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // Check-in diario bloqueante (antes de tudo)
   if (checkinFeito === false) {
@@ -115,6 +211,20 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   return (
     <div style={{ minHeight: '100vh', paddingBottom: 24 }}>
       <OfflineSync />
+
+      {/* Banner de prefetch em andamento */}
+      {prefetchStatus === 'loading' && prefetchMsg && (
+        <div style={{
+          position: 'fixed', bottom: 20, left: 16, right: 16, zIndex: 9998,
+          background: '#1E3A5F', color: '#fff', padding: '12px 18px',
+          borderRadius: 14, display: 'flex', alignItems: 'center', gap: 10,
+          fontSize: 13, fontWeight: 600, boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
+        }}>
+          <Download size={16} className="spinner" />
+          {prefetchMsg}
+        </div>
+      )}
+
       <HeaderMobile
         notificacoes={notificacoes}
         naoLidas={naoLidas}
