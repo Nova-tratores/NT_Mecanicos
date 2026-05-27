@@ -176,15 +176,21 @@ async function getViasNoTile(tileKey: string): Promise<ViaCache[]> {
   // 3. Query Overpass
   const vias = await queryOverpassTile(tileKey)
 
-  // 4. Persiste (se cache disponível)
-  if (supabaseCacheDisponivel !== false) {
+  // 4. Persiste — APENAS se trouxe vias. Resposta vazia geralmente significa
+  // que Overpass falhou (HTTP 406 anti-bot, timeout, rate limit, etc.) e não
+  // que aquela região realmente não tem vias. Cachear vazio "envenena" o
+  // tile por 30 dias e mascara o problema. Próxima consulta vai re-tentar.
+  if (supabaseCacheDisponivel !== false && vias.length > 0) {
     const { error: upsertErr } = await supabase
       .from('maxspeed_tile_cache')
       .upsert({ tile_key: tileKey, vias, updated_at: new Date().toISOString() })
     if (upsertErr && upsertErr.code === '42P01') supabaseCacheDisponivel = false
   }
 
-  memCache.set(tileKey, { vias, expiry: Date.now() + TILE_TTL_MS })
+  // Memória: cacheia mesmo vazio mas com TTL curto (1min) — evita martelar
+  // Overpass na mesma request quando 10 pontos próximos caem no mesmo tile.
+  const ttl = vias.length > 0 ? TILE_TTL_MS : 60 * 1000
+  memCache.set(tileKey, { vias, expiry: Date.now() + ttl })
   return vias
 }
 
