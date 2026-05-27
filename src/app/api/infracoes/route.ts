@@ -47,11 +47,13 @@ const OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
 const TILE_TTL_DAYS = 30
 const TILE_TTL_MS = TILE_TTL_DAYS * 24 * 60 * 60 * 1000
 const TILE_SIZE_DEG = 0.01  // ~1.1km na latitude de Botucatu/Botucatu/Avaré
-const MIN_VEL_PARA_CHECAR = 30  // km/h — abaixo disso ignora (não há infração possível)
-const MAX_PONTOS_POR_REQ = 5000
-const PAGE_SIZE = 1000           // PostgREST default cap
-const RAIO_MATCHING_M = 200      // ponto GPS pode estar a até 200m da reta da via
-                                  // (rodovias rurais têm vértices OSM esparsos)
+// Filtra pontos > 60 km/h (raramente há infração abaixo disso em vias urbanas/rodovias).
+// Subir o threshold reduz pontos pra processar — crítico enquanto o cache de tiles
+// não está cheio (cada tile novo = ~5s no Overpass, e meses cheios geram 200+ tiles).
+const MIN_VEL_PARA_CHECAR = 60
+const MAX_PONTOS_POR_REQ = 2000
+const PAGE_SIZE = 1000
+const RAIO_MATCHING_M = 200
 
 // Heurística de maxspeed por tipo de via quando OSM não tem o campo "maxspeed"
 // (cobre o caso comum no Brasil onde poucas vias têm maxspeed mapeado)
