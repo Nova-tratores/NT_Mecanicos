@@ -31,7 +31,7 @@ export default function RelatoriosPage() {
 
   // Versão da chave: bump quando o shape de RelatorioMes muda, p/ invalidar IndexedDB stale
   const { data, loading, refreshing, refresh } = useCached<RelatorioMes>(
-    `relatorios:v9:${profile.tecnico_nome}:${mes}`,
+    `relatorios:v10:${profile.tecnico_nome}:${mes}`,
     () => fetchRelatorioMes(profile, mes),
     { skip: !user },
   )
@@ -287,6 +287,7 @@ function SecaoPessoal({
     osInternas: data.pessoal?.osInternas ?? empty,
     infracoes: data.pessoal?.infracoes ?? { qtd: 0, lista: [] as never[] },
     custoRH: data.pessoal?.custoRH ?? null,
+    custoRHCadastro: data.pessoal?.custoRHCadastro ?? null,
   } as RelatorioMes['pessoal']
 
   const receita = pessoal.os.valor + pessoal.pv.valor
@@ -363,7 +364,7 @@ function SecaoPessoal({
         {custoOSInt > 0 && (
           <LinhaSaldo label="− OS internas / cortesia (sem retorno)" valor={custoOSInt} />
         )}
-        {pessoal.custoRH !== null && (
+        {pessoal.custoRH !== null && pessoal.custoRH > 0 && (
           <LinhaSaldo label="− Custo RH (salário + encargos)" valor={custoRH} />
         )}
 
@@ -389,7 +390,24 @@ function SecaoPessoal({
             alignItems: 'flex-start', gap: 6,
           }}>
             <Info size={12} style={{ marginTop: 2, flexShrink: 0 }} />
-            <span>Custo RH não computado — peça ao administrador para cadastrar seu salário no sistema.</span>
+            <span>
+              Você não foi encontrado no cadastro de salários
+              (<code style={{ fontSize: 10 }}>config_vendedores_relatorio</code>).
+              Peça ao administrador para cadastrar seu nome.
+            </span>
+          </div>
+        )}
+        {pessoal.custoRH !== null && pessoal.custoRH === 0 && (
+          <div style={{
+            marginTop: 10, fontSize: 11, color: colors.warning, display: 'flex',
+            alignItems: 'flex-start', gap: 6,
+          }}>
+            <Info size={12} style={{ marginTop: 2, flexShrink: 0 }} />
+            <span>
+              Cadastro encontrado{pessoal.custoRHCadastro ? ` como "${pessoal.custoRHCadastro}"` : ''},
+              mas <strong>sem salário/encargos preenchido</strong>. Peça ao admin pra atualizar
+              o registro em <code style={{ fontSize: 10 }}>config_vendedores_relatorio</code>.
+            </span>
           </div>
         )}
       </div>

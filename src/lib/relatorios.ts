@@ -595,12 +595,14 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
   // MOTTA") e o login do app tem nome curto ("PEDRO MOTTA"). Bidirecional palavra
   // a palavra resolve esses casos.
   let custoRH: number | null = null
+  let custoRHCadastro: string | null = null
   outer: for (const cfg of configRows) {
     const canonicoCfg = cleanName(cfg.nome)
     if (!canonicoCfg) continue
     for (const meu of meusCanonicos) {
       if (canonicoBate(meu, canonicoCfg)) {
         custoRH = Number(cfg.salario || 0) + Number(cfg.encargos || 0)
+        custoRHCadastro = cfg.nome
         break outer
       }
     }
@@ -617,6 +619,7 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
     osInternas: { qtd: listaOSInt.length, valor: valorOSInt, lista: listaOSInt },
     infracoes: { qtd: infRes.lista.length, lista: infRes.lista, motivoVazio: infRes.motivoVazio },
     custoRH,
+    custoRHCadastro,
   }
 
   const syncRow = (syncRes.data as { updated_at: string }[] | null)?.[0]

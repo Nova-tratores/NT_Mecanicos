@@ -247,9 +247,10 @@ export interface DesempenhoPessoal {
   pv: { qtd: number; valor: number; lista: PVItem[] }
   requisicoes: { qtd: number; valor: number; lista: ReqDespesaItem[] }
   combustivel: { qtd: number; valor: number; lista: ReqDespesaItem[] }
-  osInternas: { qtd: number; valor: number; lista: OSItem[] }  // cortesia / interno — custo absorvido
+  osInternas: { qtd: number; valor: number; lista: OSItem[] }
   infracoes: { qtd: number; lista: InfracaoItem[]; motivoVazio?: string }
   custoRH: number | null
+  custoRHCadastro: string | null     // nome no config que bateu (null = sem cadastro)
 }
 
 export interface InfracaoItem {
