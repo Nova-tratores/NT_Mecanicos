@@ -25,6 +25,15 @@ interface Veiculo {
   id_ordem: string
 }
 
+interface ClienteMapa {
+  id: number
+  nome: string
+  cidade: string
+  estado: string
+  lat: number
+  lng: number
+}
+
 interface PontoRota {
   lat: number
   lng: number
@@ -42,9 +51,13 @@ export default function MapaPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [selectedVeiculo, setSelectedVeiculo] = useState<Veiculo | null>(null)
 
+  // Clientes do mapeamento
+  const [clientes, setClientes] = useState<ClienteMapa[]>([])
+  const [showClientes, setShowClientes] = useState(true)
+
   // Painel de busca
   const [painelAberto, setPainelAberto] = useState(false)
-  const [abaAtiva, setAbaAtiva] = useState<'veiculos' | 'tecnicos'>('tecnicos')
+  const [abaAtiva, setAbaAtiva] = useState<'veiculos' | 'tecnicos' | 'clientes'>('tecnicos')
   const [busca, setBusca] = useState('')
 
   // Rota do veiculo
@@ -54,6 +67,7 @@ export default function MapaPage() {
   const mapRef = useRef<HTMLDivElement>(null)
   const mapInstanceRef = useRef<any>(null)
   const markersRef = useRef<any[]>([])
+  const clienteMarkersRef = useRef<any[]>([])
   const rotaLayerRef = useRef<any>(null)
   const leafletRef = useRef<any>(null)
   const infracaoMarkerRef = useRef<any>(null)
@@ -91,10 +105,22 @@ export default function MapaPage() {
     setRefreshing(false)
   }, [])
 
+  // Carregar clientes do mapeamento
+  const carregarClientes = useCallback(async () => {
+    if (!navigator.onLine) return
+    try {
+      const res = await fetch('/api/clientes-mapa')
+      if (!res.ok) return
+      const data = await res.json()
+      if (Array.isArray(data)) setClientes(data)
+    } catch { /* silent */ }
+  }, [])
+
   useEffect(() => {
     carregarVeiculos()
+    carregarClientes()
     const interval = setInterval(() => carregarVeiculos(true), 60000)
-    const onOnline = () => { setOffline(false); carregarVeiculos(true) }
+    const onOnline = () => { setOffline(false); carregarVeiculos(true); carregarClientes() }
     const onOffline = () => setOffline(true)
     window.addEventListener('online', onOnline)
     window.addEventListener('offline', onOffline)
@@ -103,7 +129,7 @@ export default function MapaPage() {
       window.removeEventListener('online', onOnline)
       window.removeEventListener('offline', onOffline)
     }
-  }, [carregarVeiculos])
+  }, [carregarVeiculos, carregarClientes])
 
   // Focar no veiculo no mapa
   const focarVeiculo = useCallback((v: Veiculo) => {
@@ -248,6 +274,42 @@ export default function MapaPage() {
     })
   }, [veiculos, rotaVeiculoId])
 
+  // Renderizar clientes no mapa
+  useEffect(() => {
+    if (!mapInstanceRef.current || !leafletRef.current) return
+
+    // Limpar markers anteriores
+    clienteMarkersRef.current.forEach((m) => m.remove())
+    clienteMarkersRef.current = []
+
+    if (!showClientes || clientes.length === 0) return
+
+    const L = leafletRef.current
+    const map = mapInstanceRef.current
+
+    clientes.forEach((c) => {
+      const icon = L.divIcon({
+        className: '',
+        iconSize: [12, 12],
+        iconAnchor: [6, 6],
+        html: `<div style="
+          width:12px;height:12px;border-radius:50%;
+          background:#3B82F6;border:2px solid #fff;
+          box-shadow:0 1px 4px rgba(0,0,0,0.3);
+        "></div>`,
+      })
+
+      const marker = L.marker([c.lat, c.lng], { icon, zIndexOffset: -100 })
+        .addTo(map)
+        .bindTooltip(
+          `<b>${c.nome}</b><br/><small>${c.cidade}${c.estado ? ` - ${c.estado}` : ''}</small>`,
+          { direction: 'top', offset: [0, -8] }
+        )
+
+      clienteMarkersRef.current.push(marker)
+    })
+  }, [clientes, showClientes])
+
   useEffect(() => {
     return () => {
       if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null }
@@ -313,6 +375,10 @@ export default function MapaPage() {
     v.motorista.toLowerCase().includes(buscaLower) ||
     (v.descricao || v.modelo).toLowerCase().includes(buscaLower)
   )
+  const clientesFiltrados = clientes.filter(c =>
+    c.nome.toLowerCase().includes(buscaLower) ||
+    c.cidade.toLowerCase().includes(buscaLower)
+  )
 
   if (offline) {
     return (
@@ -358,11 +424,20 @@ export default function MapaPage() {
           <div>
             <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>Mapa de Veiculos</div>
             <div style={{ fontSize: 10, color: colors.textMuted }}>
-              {veiculos.length} veiculo{veiculos.length !== 1 ? 's' : ''} · {tecnicos.length} tecnico{tecnicos.length !== 1 ? 's' : ''}
+              {veiculos.length} veiculo{veiculos.length !== 1 ? 's' : ''} · {tecnicos.length} tecnico{tecnicos.length !== 1 ? 's' : ''} · {clientes.length} cliente{clientes.length !== 1 ? 's' : ''}
             </div>
           </div>
         </div>
         <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={() => setShowClientes(!showClientes)} style={{
+            background: showClientes ? '#3B82F6' : colors.surfaceAlt,
+            border: `1px solid ${showClientes ? '#3B82F6' : colors.border}`,
+            borderRadius: 10, padding: '7px 10px', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600,
+            color: showClientes ? '#fff' : colors.textSubtle,
+          }}>
+            <MapPin size={14} /> Clientes
+          </button>
           <button onClick={() => { setPainelAberto(!painelAberto); setSelectedVeiculo(null) }} style={{
             background: painelAberto ? colors.primary : colors.surfaceAlt,
             border: `1px solid ${painelAberto ? colors.primary : colors.border}`,
@@ -431,15 +506,15 @@ export default function MapaPage() {
 
             {/* Tabs */}
             <div style={{ display: 'flex', gap: 0, marginBottom: 10, background: colors.surfaceAlt, borderRadius: 10, padding: 3 }}>
-              {(['tecnicos', 'veiculos'] as const).map((tab) => (
+              {(['tecnicos', 'veiculos', 'clientes'] as const).map((tab) => (
                 <button key={tab} onClick={() => setAbaAtiva(tab)} style={{
                   flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', cursor: 'pointer',
-                  fontSize: 13, fontWeight: 700,
+                  fontSize: 12, fontWeight: 700,
                   background: abaAtiva === tab ? '#fff' : 'transparent',
                   color: abaAtiva === tab ? colors.primary : colors.textSubtle,
                   boxShadow: abaAtiva === tab ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
                 }}>
-                  {tab === 'tecnicos' ? `Tecnicos (${tecnicos.length})` : `Veiculos (${veiculos.length})`}
+                  {tab === 'tecnicos' ? `Tec (${tecnicos.length})` : tab === 'veiculos' ? `Veic (${veiculos.length})` : `Cli (${clientes.length})`}
                 </button>
               ))}
             </div>
@@ -469,7 +544,47 @@ export default function MapaPage() {
 
           {/* Lista */}
           <div style={{ flex: 1, overflow: 'auto', padding: '0 12px 16px' }}>
-            {abaAtiva === 'tecnicos' ? (
+            {abaAtiva === 'clientes' ? (
+              clientesFiltrados.length === 0 ? (
+                <div style={{ textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 13 }}>
+                  {clientes.length === 0 ? 'Carregando clientes...' : 'Nenhum resultado'}
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {clientesFiltrados.slice(0, 50).map((c) => (
+                    <button key={c.id} onClick={() => {
+                      if (mapInstanceRef.current) {
+                        mapInstanceRef.current.setView([c.lat, c.lng], 15, { animate: true })
+                        setPainelAberto(false)
+                        if (!showClientes) setShowClientes(true)
+                      }
+                    }} style={{
+                      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+                      background: '#fff', borderRadius: 12, border: `1px solid ${colors.border}`,
+                      cursor: 'pointer', textAlign: 'left', width: '100%',
+                    }}>
+                      <div style={{
+                        width: 38, height: 38, borderRadius: 12,
+                        background: '#DBEAFE', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                      }}>
+                        <MapPin size={18} color="#3B82F6" />
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.nome}</div>
+                        <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+                          {c.cidade}{c.estado ? ` - ${c.estado}` : ''}
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                  {clientesFiltrados.length > 50 && (
+                    <div style={{ textAlign: 'center', padding: 8, color: colors.textSubtle, fontSize: 11 }}>
+                      Mostrando 50 de {clientesFiltrados.length} — use a busca para filtrar
+                    </div>
+                  )}
+                </div>
+              )
+            ) : abaAtiva === 'tecnicos' ? (
               tecnicosFiltrados.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 13 }}>
                   {tecnicos.length === 0 ? 'Nenhum tecnico com check-in hoje' : 'Nenhum resultado'}
