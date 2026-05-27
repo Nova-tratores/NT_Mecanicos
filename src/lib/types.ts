@@ -248,7 +248,7 @@ export interface DesempenhoPessoal {
   requisicoes: { qtd: number; valor: number; lista: ReqDespesaItem[] }
   combustivel: { qtd: number; valor: number; lista: ReqDespesaItem[] }
   osInternas: { qtd: number; valor: number; lista: OSItem[] }  // cortesia / interno — custo absorvido
-  infracoes: { qtd: number; lista: InfracaoItem[] }
+  infracoes: { qtd: number; lista: InfracaoItem[]; motivoVazio?: string }
   custoRH: number | null
 }
 

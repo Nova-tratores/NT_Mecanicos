@@ -92,6 +92,18 @@ interface ProfileNomes {
   tecnico_nome: string
 }
 
+// Compara dois nomes JÁ em forma canônica (cleanName aplicado).
+// Match exato OU bidirecional palavra-a-palavra — tolera 1 nome ter mais palavras
+// que outro (ex: "PEDRO MOTTA" casa com "PEDRO HENRIQUE MOTTA").
+function canonicoBate(a: string, b: string): boolean {
+  if (!a || !b) return false
+  if (a === b) return true
+  const palA = a.split(' ').filter(w => w.length >= 3)
+  const palB = b.split(' ').filter(w => w.length >= 3)
+  if (palA.length === 0 || palB.length === 0) return false
+  return palA.every(w => palB.includes(w)) || palB.every(w => palA.includes(w))
+}
+
 function nomesCanonicosUsuario(profile: ProfileNomes): Set<string> {
   const set = new Set<string>()
   const a = cleanName(profile.nome_pos || '')
@@ -571,18 +583,24 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
   listaReq.sort((a, b) => b.valor - a.valor)
   listaComb.sort((a, b) => b.valor - a.valor)
 
-  // Custo RH — busca config do próprio técnico pelo canônico
+  // Custo RH — busca config do próprio técnico via fuzzy match.
+  // Match exato pode falhar quando o config tem nome completo (ex: "PEDRO HENRIQUE
+  // MOTTA") e o login do app tem nome curto ("PEDRO MOTTA"). Bidirecional palavra
+  // a palavra resolve esses casos.
   let custoRH: number | null = null
-  for (const canonicoMeu of meusCanonicos) {
-    const cfg = configByCanonico.get(canonicoMeu)
-    if (cfg) {
-      custoRH = Number(cfg.salario || 0) + Number(cfg.encargos || 0)
-      break
+  outer: for (const cfg of configRows) {
+    const canonicoCfg = cleanName(cfg.nome)
+    if (!canonicoCfg) continue
+    for (const meu of meusCanonicos) {
+      if (canonicoBate(meu, canonicoCfg)) {
+        custoRH = Number(cfg.salario || 0) + Number(cfg.encargos || 0)
+        break outer
+      }
     }
   }
 
   // Infrações de trânsito (Overpass API server-side, com cache de tiles)
-  const infracoesLista = await fetchInfracoesMes(profile, firstISO, lastISO)
+  const infRes = await fetchInfracoesMes(profile, firstISO, lastISO)
 
   const pessoal: DesempenhoPessoal = {
     os: { qtd: listaOS.length, valor: valorOS, lista: listaOS },
@@ -590,7 +608,7 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
     requisicoes: { qtd: listaReq.length, valor: valorReq, lista: listaReq },
     combustivel: { qtd: listaComb.length, valor: valorComb, lista: listaComb },
     osInternas: { qtd: listaOSInt.length, valor: valorOSInt, lista: listaOSInt },
-    infracoes: { qtd: infracoesLista.length, lista: infracoesLista },
+    infracoes: { qtd: infRes.lista.length, lista: infRes.lista, motivoVazio: infRes.motivoVazio },
     custoRH,
   }
 
@@ -610,22 +628,34 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
 // Infrações — chama o endpoint server-side
 // =================================================================
 
+interface InfracoesResp {
+  infracoes?: InfracaoItem[]
+  stats?: {
+    totalPontos?: number
+    motivo?: string
+  }
+}
+
 async function fetchInfracoesMes(
   profile: ProfileNomes,
   firstISO: string,
   lastISO: string,
-): Promise<InfracaoItem[]> {
+): Promise<{ lista: InfracaoItem[]; motivoVazio?: string }> {
   const motorista = profile.nome_pos || profile.tecnico_nome
-  if (!motorista) return []
+  if (!motorista) return { lista: [], motivoVazio: 'Sem nome de motorista configurado no perfil.' }
   try {
     const url = `/api/infracoes?motorista=${encodeURIComponent(motorista)}&dataInicio=${firstISO}&dataFim=${lastISO}`
     const res = await fetch(url)
-    if (!res.ok) return []
-    const json = await res.json() as { infracoes?: InfracaoItem[] }
-    return json.infracoes || []
+    if (!res.ok) return { lista: [], motivoVazio: `Endpoint retornou erro ${res.status}.` }
+    const json = await res.json() as InfracoesResp
+    const lista = json.infracoes || []
+    if (lista.length === 0 && json.stats?.motivo) {
+      return { lista, motivoVazio: json.stats.motivo }
+    }
+    return { lista }
   } catch (e) {
     console.warn('[relatorios] Falha ao buscar infrações:', e)
-    return []
+    return { lista: [], motivoVazio: 'Falha ao consultar o servidor (offline?).' }
   }
 }
 

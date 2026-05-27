@@ -79,34 +79,48 @@ function distM(lat1: number, lng1: number, lat2: number, lng2: number): number {
 
 const memCache = new Map<string, { vias: ViaCache[]; expiry: number }>()
 
+// Flag pra evitar tentar usar a tabela de cache se ela não existir (SQL não rodado).
+// Reseta a cada cold start; uma vez detectada como ausente, pula pra Overpass direto.
+let supabaseCacheDisponivel: boolean | null = null
+
 async function getViasNoTile(tileKey: string): Promise<ViaCache[]> {
   // 1. Memória do processo
   const mem = memCache.get(tileKey)
   if (mem && mem.expiry > Date.now()) return mem.vias
 
-  // 2. Cache persistente no Supabase
-  const { data: cacheRow } = await supabase
-    .from('maxspeed_tile_cache')
-    .select('vias, updated_at')
-    .eq('tile_key', tileKey)
-    .maybeSingle()
+  // 2. Cache persistente no Supabase (se a tabela existir)
+  if (supabaseCacheDisponivel !== false) {
+    const { data: cacheRow, error } = await supabase
+      .from('maxspeed_tile_cache')
+      .select('vias, updated_at')
+      .eq('tile_key', tileKey)
+      .maybeSingle()
 
-  if (cacheRow) {
-    const idade = Date.now() - new Date(cacheRow.updated_at).getTime()
-    if (idade < TILE_TTL_MS) {
-      const vias = cacheRow.vias as ViaCache[]
-      memCache.set(tileKey, { vias, expiry: Date.now() + TILE_TTL_MS })
-      return vias
+    if (error && error.code === '42P01') {
+      // relation does not exist — sinaliza pra não tentar de novo neste processo
+      supabaseCacheDisponivel = false
+      console.warn('[infracoes] Tabela maxspeed_tile_cache não existe; pulando cache persistente. Rode sql/maxspeed_tile_cache.sql no Supabase.')
+    } else if (cacheRow) {
+      supabaseCacheDisponivel = true
+      const idade = Date.now() - new Date(cacheRow.updated_at).getTime()
+      if (idade < TILE_TTL_MS) {
+        const vias = cacheRow.vias as ViaCache[]
+        memCache.set(tileKey, { vias, expiry: Date.now() + TILE_TTL_MS })
+        return vias
+      }
     }
   }
 
   // 3. Query Overpass
   const vias = await queryOverpassTile(tileKey)
 
-  // 4. Persiste
-  await supabase
-    .from('maxspeed_tile_cache')
-    .upsert({ tile_key: tileKey, vias, updated_at: new Date().toISOString() })
+  // 4. Persiste (se cache disponível)
+  if (supabaseCacheDisponivel !== false) {
+    const { error: upsertErr } = await supabase
+      .from('maxspeed_tile_cache')
+      .upsert({ tile_key: tileKey, vias, updated_at: new Date().toISOString() })
+    if (upsertErr && upsertErr.code === '42P01') supabaseCacheDisponivel = false
+  }
 
   memCache.set(tileKey, { vias, expiry: Date.now() + TILE_TTL_MS })
   return vias
@@ -200,27 +214,57 @@ export async function GET(req: NextRequest) {
   }
 
   // ---- 1. Busca pontos GPS do período ----
-  let q = supabase
+  const baseSelect = 'id, placa, dt_posicao, latitude, longitude, velocidade'
+  const baseQuery = () => supabase
     .from('rastreio_pontos_relatorio')
-    .select('id, placa, dt_posicao, latitude, longitude, velocidade')
+    .select(baseSelect)
     .gte('data', dataInicio)
     .lte('data', dataFim)
     .gt('velocidade', MIN_VEL_PARA_CHECAR)
     .order('dt_posicao', { ascending: true })
     .limit(MAX_PONTOS_POR_REQ)
 
+  let pontos: Ponto[] = []
+  let estrategia = ''
+
   if (placa) {
-    q = q.eq('placa', placa)
-  } else if (motorista) {
-    q = q.ilike('motorista', `%${motorista}%`)
+    const { data } = await baseQuery().eq('placa', placa)
+    pontos = (data || []) as Ponto[]
+    estrategia = `placa=${placa}`
+  } else {
+    // 1ª tentativa: nome completo via ILIKE
+    const { data: d1 } = await baseQuery().ilike('motorista', `%${motorista}%`)
+    pontos = (d1 || []) as Ponto[]
+    estrategia = `motorista ilike %${motorista}%`
+
+    // 2ª tentativa: cada palavra significativa do nome (OR) — RotaExata
+    // pode gravar nome diferente do cadastrado no portal
+    if (pontos.length === 0) {
+      const palavras = motorista
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .split(/\s+/)
+        .filter(p => p.length >= 4)
+      if (palavras.length > 0) {
+        const orClause = palavras.map(p => `motorista.ilike.%${p}%`).join(',')
+        const { data: d2 } = await baseQuery().or(orClause)
+        pontos = (d2 || []) as Ponto[]
+        estrategia = `motorista palavras=[${palavras.join(', ')}]`
+      }
+    }
   }
 
-  const { data: pontos, error } = await q
-  if (error) {
-    return NextResponse.json({ error: error.message, infracoes: [] }, { status: 500 })
-  }
-  if (!pontos || pontos.length === 0) {
-    return NextResponse.json({ infracoes: [], stats: { totalPontos: 0, tilesConsultados: 0 } })
+  if (pontos.length === 0) {
+    return NextResponse.json({
+      infracoes: [],
+      stats: {
+        totalPontos: 0,
+        tilesConsultados: 0,
+        infracoesDetectadas: 0,
+        motivo: 'Nenhum ponto GPS encontrado para esse motorista no período. Verifique se rastreio_pontos_relatorio está sendo populado pelo cron do OMIE e se o nome em "motorista" bate com o cadastro do técnico.',
+        estrategia,
+      },
+    })
   }
 
   // ---- 2. Agrupa por tile (1 query Overpass por tile, não por ponto) ----

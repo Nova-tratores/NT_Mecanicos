@@ -31,7 +31,7 @@ export default function RelatoriosPage() {
 
   // Versão da chave: bump quando o shape de RelatorioMes muda, p/ invalidar IndexedDB stale
   const { data, loading, refreshing, refresh } = useCached<RelatorioMes>(
-    `relatorios:v6:${profile.tecnico_nome}:${mes}`,
+    `relatorios:v7:${profile.tecnico_nome}:${mes}`,
     () => fetchRelatorioMes(profile, mes),
     { skip: !user },
   )
@@ -553,14 +553,27 @@ function CardInfracoes({
       {isOpen && (
         <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
           {!temInfracao ? (
-            <div style={{
-              padding: '14px 12px', textAlign: 'center',
-              fontSize: 12, color: colors.success, fontWeight: 600,
-              background: colors.successBg, borderRadius: radius.md,
-              border: `1px solid ${colors.successBorder}`,
-            }}>
-              Sem infrações no período. Bom trabalho.
-            </div>
+            infracoes.motivoVazio ? (
+              <div style={{
+                padding: '12px 12px',
+                fontSize: 11, color: colors.textMuted, lineHeight: 1.5,
+                background: colors.surfaceAlt, borderRadius: radius.md,
+                border: `1px solid ${colors.border}`,
+                display: 'flex', alignItems: 'flex-start', gap: 6,
+              }}>
+                <Info size={12} style={{ marginTop: 2, flexShrink: 0, color: colors.textSubtle }} />
+                <span>{infracoes.motivoVazio}</span>
+              </div>
+            ) : (
+              <div style={{
+                padding: '14px 12px', textAlign: 'center',
+                fontSize: 12, color: colors.success, fontWeight: 600,
+                background: colors.successBg, borderRadius: radius.md,
+                border: `1px solid ${colors.successBorder}`,
+              }}>
+                Sem infrações no período. Bom trabalho.
+              </div>
+            )
           ) : (
             <>
               <div style={{
