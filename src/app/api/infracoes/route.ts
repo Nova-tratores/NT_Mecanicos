@@ -1,6 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import type { InfracaoItem } from '@/lib/types'
+import { cleanName } from '@/lib/relatorios'
+
+// Match canônico bidirecional palavra-a-palavra (mesma lógica do relatorios.ts).
+// Tolera nome completo vs curto (ex: "PEDRO MOTTA" casa com "PEDRO HENRIQUE MOTTA").
+function canonicoBate(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false
+  if (a === b) return true
+  const palA = a.split(' ').filter(w => w.length >= 3)
+  const palB = b.split(' ').filter(w => w.length >= 3)
+  if (palA.length === 0 || palB.length === 0) return false
+  return palA.every(w => palB.includes(w)) || palB.every(w => palA.includes(w))
+}
 
 // Cliente Supabase server-side (anon key — tabelas têm allow_all RLS)
 const supabase = createClient(
@@ -232,24 +244,38 @@ export async function GET(req: NextRequest) {
     pontos = (data || []) as Ponto[]
     estrategia = `placa=${placa}`
   } else {
-    // 1ª tentativa: nome completo via ILIKE
+    // 1ª passada: ILIKE com nome completo (rápido, casos óbvios)
     const { data: d1 } = await baseQuery().ilike('motorista', `%${motorista}%`)
     pontos = (d1 || []) as Ponto[]
     estrategia = `motorista ilike %${motorista}%`
 
-    // 2ª tentativa: cada palavra significativa do nome (OR) — RotaExata
-    // pode gravar nome diferente do cadastrado no portal
+    // 2ª passada: correlação canônica. Lista TODOS os motoristas distintos
+    // do período e filtra os que batem no canônico (acento, prefixo "Técnico:",
+    // unificações de apelido, bidirecional palavra-a-palavra).
     if (pontos.length === 0) {
-      const palavras = motorista
-        .normalize('NFD')
-        .replace(/[̀-ͯ]/g, '')
-        .split(/\s+/)
-        .filter(p => p.length >= 4)
-      if (palavras.length > 0) {
-        const orClause = palavras.map(p => `motorista.ilike.%${p}%`).join(',')
-        const { data: d2 } = await baseQuery().or(orClause)
-        pontos = (d2 || []) as Ponto[]
-        estrategia = `motorista palavras=[${palavras.join(', ')}]`
+      const tecnicoCanon = cleanName(motorista)
+      if (tecnicoCanon) {
+        const { data: amostra } = await supabase
+          .from('rastreio_pontos_relatorio')
+          .select('motorista')
+          .gte('data', dataInicio)
+          .lte('data', dataFim)
+          .not('motorista', 'is', null)
+          .limit(5000)
+
+        const distintos = Array.from(new Set(
+          (amostra || [])
+            .map(r => String((r as { motorista: string | null }).motorista || '').trim())
+            .filter(Boolean),
+        ))
+
+        const motoristasMatch = distintos.filter(m => canonicoBate(tecnicoCanon, cleanName(m)))
+
+        if (motoristasMatch.length > 0) {
+          const { data: d2 } = await baseQuery().in('motorista', motoristasMatch)
+          pontos = (d2 || []) as Ponto[]
+          estrategia = `correlacao canonica matched=[${motoristasMatch.join(', ')}]`
+        }
       }
     }
   }
