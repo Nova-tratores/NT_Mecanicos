@@ -201,15 +201,16 @@ async function queryOverpassTile(tileKey: string): Promise<ViaCache[]> {
   const latMax = latMin + TILE_SIZE_DEG
   const lngMax = lngMin + TILE_SIZE_DEG
 
-  // Pega todas as vias trafegáveis (com ou sem maxspeed); a heurística completa
-  const query = `[out:json][timeout:15];
+  // Timeout curto pra não estourar o limite do Railway (~30s/request total)
+  const query = `[out:json][timeout:6];
 way["highway"](${latMin},${lngMin},${latMax},${lngMax});
 out tags geom;`
 
+  const controller = new AbortController()
+  const abortTimer = setTimeout(() => controller.abort(), 7000)
+
   try {
     // Overpass rejeita requests sem User-Agent (HTTP 406) — política anti-bot.
-    // Também aceita melhor o formato application/x-www-form-urlencoded com
-    // chave "data=" do que text/plain bruto.
     const res = await fetch(OVERPASS_URL, {
       method: 'POST',
       headers: {
@@ -217,7 +218,9 @@ out tags geom;`
         'User-Agent': 'NT_Mecanicos/1.0 (https://github.com/Nova-tratores/NT_Mecanicos)',
       },
       body: `data=${encodeURIComponent(query)}`,
+      signal: controller.signal,
     })
+    clearTimeout(abortTimer)
     if (!res.ok) {
       console.warn('[infracoes] Overpass falhou', res.status, tileKey)
       return []
@@ -444,12 +447,19 @@ export async function GET(req: NextRequest) {
   }
 
   // ---- 3. Para cada tile: busca vias, depois checa cada ponto ----
+  // Budget total de tempo: Railway corta requests ~30s. Garante que paramos
+  // antes e retornamos o que processamos até então (próxima request continua
+  // do cache que ficou populado).
+  const deadline = Date.now() + 22000
   const infracoes: InfracaoItem[] = []
-  let pontosMatched = 0     // pontos atribuídos a alguma via com maxspeed
-  let pontosSemVia = 0      // pontos onde Overpass retornou vias mas nada bate
-  let tilesSemVias = 0      // tiles onde Overpass não trouxe nenhuma via
+  let pontosMatched = 0
+  let pontosSemVia = 0
+  let tilesSemVias = 0
+  let tilesProcessados = 0
   for (const [tile, pontosNoTile] of pontosPorTile) {
+    if (Date.now() > deadline) break
     const vias = await getViasNoTile(tile)
+    tilesProcessados++
     if (vias.length === 0) { tilesSemVias++; continue }
     for (const p of pontosNoTile) {
       const match = matchViaMaisProxima(p.latitude, p.longitude, vias)
@@ -474,16 +484,22 @@ export async function GET(req: NextRequest) {
     }
   }
 
+  const incompleto = tilesProcessados < pontosPorTile.size
   return NextResponse.json({
     infracoes,
     stats: {
       totalPontos: pontos.length,
       tilesConsultados: pontosPorTile.size,
+      tilesProcessados,
       tilesSemVias,
       pontosMatched,
       pontosSemVia,
       infracoesDetectadas: infracoes.length,
       estrategia,
+      incompleto,
+      ...(incompleto && {
+        avisoIncompleto: `Processados ${tilesProcessados}/${pontosPorTile.size} tiles antes do limite de tempo. Recarregue pra continuar — cache acumula entre requests.`,
+      }),
     },
   })
 }
