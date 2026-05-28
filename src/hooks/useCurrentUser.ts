@@ -63,11 +63,21 @@ export function useCurrentUser() {
         }
 
         // 1. Checar portal_permissoes
-        const { data: perm } = await supabase
+        const { data: perm, error: permError } = await supabase
           .from('portal_permissoes')
           .select('is_admin, mecanico_role, mecanico_tecnico_nome')
           .eq('user_id', session.user.id)
           .single()
+
+        // Se a query falhou (offline/rede instável), usar cache ao invés de continuar
+        if (permError && !perm) {
+          const cached = getCachedProfile()
+          if (cached) {
+            setUser(cached)
+            setLoading(false)
+            return
+          }
+        }
 
         if (cancelled) return
 
@@ -103,7 +113,7 @@ export function useCurrentUser() {
         }
 
         // 2. Fallback: checar mecanico_usuarios (legado)
-        const { data } = await supabase
+        const { data, error: legacyError } = await supabase
           .from('mecanico_usuarios')
           .select('*')
           .eq('id', session.user.id)
@@ -151,12 +161,20 @@ export function useCurrentUser() {
           return
         }
 
+        // Queries falharam (offline) — usar cache antes de redirecionar
+        if ((permError || legacyError) && getCachedProfile()) {
+          setLoading(false)
+          return
+        }
+
         clearCachedProfile()
         routerRef.current.replace('/login')
       } catch (err) {
         console.error('Erro ao carregar usuário:', err)
-        // Se offline e tem cache, usa o cache
-        if (!navigator.onLine && getCachedProfile()) {
+        // Se falhou (offline ou rede instável) e tem cache, usa o cache
+        const cached = getCachedProfile()
+        if (cached) {
+          setUser(cached)
           setLoading(false)
           return
         }

@@ -36,7 +36,10 @@ export function useCached<T>(
 
     try {
       const result = await fetcherRef.current()
-      cacheSet(keyRef.current, result)
+      // Só persiste se estiver online — evita sobrescrever cache offline com dados vazios
+      if (navigator.onLine) {
+        cacheSet(keyRef.current, result)
+      }
       setData(result)
     } catch (e) {
       console.error(`[cache] Erro ao buscar ${keyRef.current}:`, e)

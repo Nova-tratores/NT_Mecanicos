@@ -292,7 +292,10 @@
       "Bash(grep -rl \"mapeamento\\\\|Mapeamento\" C:/projetos/portal/src --include=\"*.tsx\" --include=\"*.ts\" 2>/dev/null | head -20)",
       "Bash(grep -rl \"mapeamento_tecnicos\\\\|mapeamento_geral\\\\|BlocoMapeamento\\\\|MapeamentoTec\" C:/projetos/portal/src --include=\"*.tsx\" --include=\"*.ts\" 2>/dev/null | head -20)",
       "Bash(ls C:/projetos/portal/src/app/\\\\\\(portal\\\\\\)/mapa-geral/)",
-      "Bash(git log:*)"
+      "Bash(git log:*)",
+      "Bash(find /c/projetos/mecanicos/src -type f \\\\\\( -name \"*.ts\" -o -name \"*.tsx\" -o -name \"*.js\" -o -name \"*.jsx\" \\\\\\) 2>/dev/null | grep -v node_modules | head -100)",
+      "Bash(find /c/projetos/mecanicos/src -name \"*.ts\" -o -name \"*.tsx\" | xargs grep -l \"React\\\\.createContext\\\\|useContext\" | head -10)",
+      "Bash(find /c/projetos/mecanicos/public -type f -name \"*.json\" 2>/dev/null | head -10)"
     ]
   }
 }

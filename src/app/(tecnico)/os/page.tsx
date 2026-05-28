@@ -36,6 +36,9 @@ async function fetchOsData(nome: string): Promise<OsData> {
       .order('Id_Ordem', { ascending: false }),
   ])
 
+  // Se o Supabase retornou erro (ex: offline), lança para o useCached usar o fallback do IndexedDB
+  if (osRes.error) throw new Error(osRes.error.message)
+
   const todas = (osRes.data || []) as OrdemServico[]
 
   let preenchidas = new Set<string>()

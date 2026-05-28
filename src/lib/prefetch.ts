@@ -212,8 +212,19 @@ export async function prefetchAll(
     // 8. Pré-aquecer cache do SW com páginas-chave (HTML + JS chunks)
     // Isso garante que navegação offline funcione sem depender do app shell fallback
     onProgress?.('Preparando paginas offline...')
-    const rotasParaCachear = ['/os', '/dashboard']
+    // Inclui rotas /os/[id] e /os/[id]/preencher para cachear os JS chunks dessas rotas dinâmicas
+    const primeiraOs = osList[0]?.Id_Ordem
+    const rotasParaCachear = [
+      '/os', '/dashboard',
+      ...(primeiraOs ? [`/os/${primeiraOs}`, `/os/${primeiraOs}/preencher`] : []),
+    ]
     await Promise.allSettled(rotasParaCachear.map(r => fetch(r)))
+
+    // Cachear RSC payloads para navegação client-side offline (Next.js App Router)
+    const rscFetches = osList.slice(0, 20).flatMap((os: { Id_Ordem: string }) => [
+      fetch(`/os/${os.Id_Ordem}`, { headers: { RSC: '1', 'Next-Router-Prefetch': '1' } }).catch(() => {}),
+    ])
+    await Promise.allSettled(rscFetches)
 
     localStorage.setItem(PREFETCH_KEY, String(Date.now()))
     console.log('[prefetch] Dados offline carregados com sucesso')
