@@ -209,6 +209,12 @@ export async function prefetchAll(
       await offlineSet('prefetch:os-enviadas', osEnviadas)
     }
 
+    // 8. Pré-aquecer cache do SW com páginas-chave (HTML + JS chunks)
+    // Isso garante que navegação offline funcione sem depender do app shell fallback
+    onProgress?.('Preparando paginas offline...')
+    const rotasParaCachear = ['/os', '/dashboard']
+    await Promise.allSettled(rotasParaCachear.map(r => fetch(r)))
+
     localStorage.setItem(PREFETCH_KEY, String(Date.now()))
     console.log('[prefetch] Dados offline carregados com sucesso')
     onProgress?.('')

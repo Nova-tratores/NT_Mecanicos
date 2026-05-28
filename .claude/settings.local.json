@@ -291,7 +291,8 @@
       "Bash(find C:/projetos/portal/src -type f -iname \"*mapea*\" -o -iname \"*tecnico*\" 2>/dev/null | head -20)",
       "Bash(grep -rl \"mapeamento\\\\|Mapeamento\" C:/projetos/portal/src --include=\"*.tsx\" --include=\"*.ts\" 2>/dev/null | head -20)",
       "Bash(grep -rl \"mapeamento_tecnicos\\\\|mapeamento_geral\\\\|BlocoMapeamento\\\\|MapeamentoTec\" C:/projetos/portal/src --include=\"*.tsx\" --include=\"*.ts\" 2>/dev/null | head -20)",
-      "Bash(ls C:/projetos/portal/src/app/\\\\\\(portal\\\\\\)/mapa-geral/)"
+      "Bash(ls C:/projetos/portal/src/app/\\\\\\(portal\\\\\\)/mapa-geral/)",
+      "Bash(git log:*)"
     ]
   }
 }

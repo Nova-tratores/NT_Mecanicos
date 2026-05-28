@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nt-mecanicos-v16';
+const CACHE_NAME = 'nt-mecanicos-v17';
 const APP_SHELL_KEY = 'nt-app-shell';
 
 // Apenas assets que sempre retornam 200 (sem autenticação)
@@ -84,7 +84,19 @@ self.addEventListener('fetch', (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(event.request).then((c) => c || new Response('', { status: 404 })))
+        .catch(async () => {
+          // Tentar cache exato desta rota
+          const cached = await caches.match(event.request);
+          if (cached) return cached;
+
+          // Sem RSC em cache — devolver app shell para forçar MPA navigation.
+          // Next.js detecta que a resposta não é RSC e faz hard navigation,
+          // que cai no handler de 'navigate' abaixo e serve o app shell normalmente.
+          const shell = await getAppShell();
+          if (shell) return shell;
+
+          return new Response('', { status: 404 });
+        })
     );
     return;
   }
