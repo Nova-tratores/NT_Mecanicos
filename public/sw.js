@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nt-mecanicos-v17';
+const CACHE_NAME = 'nt-mecanicos-v18';
 const APP_SHELL_KEY = 'nt-app-shell';
 
 // Apenas assets que sempre retornam 200 (sem autenticação)
@@ -67,16 +67,30 @@ async function getAppShell() {
   }
 }
 
+/**
+ * Race fetch com timeout — no celular navigator.onLine pode ser true sem internet,
+ * fazendo o fetch ficar pendurado por 30s+. O timeout garante fallback rápido.
+ */
+function fetchWithTimeout(request, timeoutMs = 3000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), timeoutMs);
+    fetch(request).then(
+      (res) => { clearTimeout(timer); resolve(res); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
+  });
+}
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
 
   // Ignorar requests de API (Supabase, /api/*) — dados ficam no IndexedDB
   if (API_PATTERNS.some((p) => p.test(event.request.url))) return;
 
-  // RSC payloads (Next.js app router) — network-first, cachear para offline
+  // RSC payloads (Next.js app router) — network-first com timeout rápido
   if (event.request.headers.get('RSC') === '1') {
     event.respondWith(
-      fetch(event.request)
+      fetchWithTimeout(event.request, 3000)
         .then((response) => {
           if (response.ok) {
             const clone = response.clone();
@@ -85,26 +99,24 @@ self.addEventListener('fetch', (event) => {
           return response;
         })
         .catch(async () => {
-          // Tentar cache exato desta rota
+          // Tentar cache exato desta rota RSC
           const cached = await caches.match(event.request);
           if (cached) return cached;
 
           // Sem RSC em cache — devolver app shell para forçar MPA navigation.
-          // Next.js detecta que a resposta não é RSC e faz hard navigation,
-          // que cai no handler de 'navigate' abaixo e serve o app shell normalmente.
           const shell = await getAppShell();
-          if (shell) return shell;
+          if (shell) return shell.clone();
 
-          return new Response('', { status: 404 });
+          return new Response('', { status: 503 });
         })
     );
     return;
   }
 
-  // Navegação (HTML pages) — network-first, app shell como fallback offline
+  // Navegação (HTML pages) — network-first com timeout, app shell como fallback offline
   if (event.request.mode === 'navigate') {
     event.respondWith(
-      fetch(event.request)
+      fetchWithTimeout(event.request, 3000)
         .then((response) => {
           if (response.ok) {
             // Cachear esta página específica
@@ -123,7 +135,7 @@ self.addEventListener('fetch', (event) => {
 
           // 2. Fallback: app shell (qualquer página HTML cacheada)
           const shell = await getAppShell();
-          if (shell) return shell;
+          if (shell) return shell.clone();
 
           // 3. Último recurso: página offline mínima
           return new Response(`

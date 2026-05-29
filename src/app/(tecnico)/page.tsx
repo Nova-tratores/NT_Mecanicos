@@ -64,6 +64,9 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
       .limit(5),
   ])
 
+  // Se a query principal falhou (offline), lança para useCached usar fallback do IndexedDB
+  if (osRes.error) throw new Error(osRes.error.message)
+
   // Filtrar avisos já confirmados pelo técnico
   const todosAvisos = (avisosRes.data || []) as AvisoGeral[]
   let avisosFiltrados = todosAvisos

@@ -129,9 +129,15 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         .from('movimentacoes')
         .select('*')
         .eq('Id_PPV', idPPV)
-      movs = res.data as MovimentacaoPPV[] | null
+      // Se falhou (offline/rede instável), usar cache
+      if (res.error || !res.data) {
+        const cached = await getCachedPPV(idPPV)
+        movs = cached as MovimentacaoPPV[] | null
+      } else {
+        movs = res.data as MovimentacaoPPV[] | null
+      }
     } catch {
-      // Offline — usar cache do prefetch
+      // Erro de rede — usar cache do prefetch
       const cached = await getCachedPPV(idPPV)
       movs = cached as MovimentacaoPPV[] | null
     }
@@ -235,12 +241,31 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         return
       }
 
-      const [{ data: osData }, { data: tecData }, { data: veicData }, { data: existing }] = await Promise.all([
+      const [osRes, { data: tecData }, { data: veicData }, { data: existing }] = await Promise.all([
         supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
         supabase.from('Tecnicos_Appsheet').select('UsuNome').order('UsuNome'),
         supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca'),
         supabase.from('Ordem_Servico_Tecnicos').select('*').eq('Ordem_Servico', id).maybeSingle(),
       ])
+
+      // Se a query principal falhou (rede instável), fallback para cache offline
+      if (osRes.error && !osRes.data) {
+        console.warn('[preencher] Query falhou, usando cache offline...')
+        const [cachedOs, cachedTecnicos, cachedVeiculos] = await Promise.all([
+          getCachedOS(id), getCachedTecnicos(), getCachedVeiculos(),
+        ])
+        if (cachedOs) {
+          setOs(cachedOs as unknown as OrdemServico)
+          if (cachedOs.Projeto) setProjeto(cachedOs.Projeto as string)
+          if (cachedOs.Tipo_Servico) setTipoServico(cachedOs.Tipo_Servico as string)
+        }
+        if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
+        if (cachedVeiculos) setVeiculos(cachedVeiculos)
+        if (user) setTecResp1(user.tecnico_nome)
+        setLoading(false)
+        return
+      }
+      const osData = osRes.data
 
       if (osData) {
         setOs(osData as OrdemServico)

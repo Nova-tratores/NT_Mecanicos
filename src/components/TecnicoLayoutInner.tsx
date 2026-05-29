@@ -88,14 +88,14 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     verificarCheckin()
   }, [verificarCheckin])
 
-  // Prefetch de dados para offline
+  // Prefetch de dados para offline (nunca bloqueia navegação)
   useEffect(() => {
     if (!user?.tecnico_nome) return
     const nome = user.nome_pos || user.tecnico_nome
 
+    // Se offline e nunca fez prefetch, agenda para quando voltar online (sem bloquear)
     if (!navigator.onLine && !hasPrefetchedBefore()) {
-      setPrefetchStatus('need-internet')
-      // Quando voltar online, rodar prefetch
+      setPrefetchStatus('idle')
       const handleOnline = async () => {
         setPrefetchStatus('loading')
         const ok = await prefetchAll(nome, user.tecnico_nome, setPrefetchMsg)
@@ -118,6 +118,30 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     window.addEventListener('online', handleOnline)
     return () => window.removeEventListener('online', handleOnline)
   }, [user?.tecnico_nome, user?.nome_pos])
+
+  // ── Interceptor de navegação offline ──
+  // Quando offline, cliques em links internos fazem MPA navigation direta,
+  // pulando o RSC fetch do Next.js (que ficaria pendurado sem internet).
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      // Só interceptar se realmente sem internet
+      if (navigator.onLine) return
+
+      const anchor = (e.target as HTMLElement).closest('a')
+      if (!anchor) return
+
+      const href = anchor.getAttribute('href')
+      if (!href || href.startsWith('http') || href.startsWith('#') || href.startsWith('mailto:')) return
+
+      // Link interno — converter para navegação direta (SW serve app shell)
+      e.preventDefault()
+      e.stopPropagation()
+      window.location.href = href
+    }
+    // capture phase para interceptar antes do Next.js Link
+    document.addEventListener('click', handler, true)
+    return () => document.removeEventListener('click', handler, true)
+  }, [])
 
   useEffect(() => {
     carregarAvisosPendentes()
@@ -157,45 +181,6 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   }
 
   if (!user) return null
-
-  // ── Tela bloqueante: precisa de internet para primeiro download ──
-  if (prefetchStatus === 'need-internet') {
-    return (
-      <div style={{
-        minHeight: '100vh', display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', padding: 32,
-        background: 'linear-gradient(180deg, #1E3A5F 0%, #0F1F33 100%)',
-      }}>
-        <div style={{
-          width: 100, height: 100, borderRadius: 28,
-          background: 'rgba(255,255,255,0.1)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          marginBottom: 28,
-        }}>
-          <WifiOff size={48} color="#F59E0B" />
-        </div>
-        <h2 style={{ fontSize: 22, fontWeight: 800, color: '#fff', marginBottom: 8, textAlign: 'center' }}>
-          Sem internet
-        </h2>
-        <p style={{ fontSize: 14, color: 'rgba(255,255,255,0.7)', textAlign: 'center', lineHeight: 1.7, maxWidth: 320 }}>
-          Para usar o app pela primeira vez, conecte-se a uma rede Wi-Fi ou dados moveis.
-          Vamos baixar suas ordens e informacoes para voce poder trabalhar offline depois.
-        </p>
-        <div style={{
-          marginTop: 32, padding: '14px 28px', borderRadius: 14,
-          background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)',
-        }}>
-          <div style={{
-            display: 'flex', alignItems: 'center', gap: 10,
-            fontSize: 13, fontWeight: 600, color: '#F59E0B',
-          }}>
-            <Download size={18} />
-            Aguardando conexao...
-          </div>
-        </div>
-      </div>
-    )
-  }
 
   // Check-in diario bloqueante (antes de tudo)
   if (checkinFeito === false) {

@@ -88,32 +88,48 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
   }, [loading, restoreBackup])
 
   useEffect(() => {
+    // Helper para carregar dados do cache offline (IndexedDB/prefetch)
+    const carregarDoCache = async () => {
+      const cachedOs = await getCachedOS(id)
+      const cachedTec = await getCachedOSTec(id)
+      if (cachedOs) {
+        setOs(cachedOs as unknown as OrdemServico)
+        if (cachedOs.Cnpj_Cliente) {
+          const cachedCli = await getCachedCliente(cachedOs.Cnpj_Cliente as string)
+          if (cachedCli?.cidade) setCidade(cachedCli.cidade)
+        }
+      }
+      if (cachedTec) {
+        setExistingId(cachedTec.IdOs as number)
+        setJaPreenchida(true)
+        setStatusPreench((cachedTec.Status as string) || '')
+        if (cachedTec.Data) setDataEnvio(cachedTec.Data as string)
+      }
+      setLoading(false)
+    }
+
     const carregar = async () => {
-      // Se offline, usar dados do prefetch
+      // Se offline, usar dados do prefetch direto
       if (!navigator.onLine) {
-        const cachedOs = await getCachedOS(id)
-        const cachedTec = await getCachedOSTec(id)
-        if (cachedOs) {
-          setOs(cachedOs as unknown as OrdemServico)
-          if (cachedOs.Cnpj_Cliente) {
-            const cachedCli = await getCachedCliente(cachedOs.Cnpj_Cliente as string)
-            if (cachedCli?.cidade) setCidade(cachedCli.cidade)
-          }
-        }
-        if (cachedTec) {
-          setExistingId(cachedTec.IdOs as number)
-          setJaPreenchida(true)
-          setStatusPreench((cachedTec.Status as string) || '')
-          if (cachedTec.Data) setDataEnvio(cachedTec.Data as string)
-        }
-        setLoading(false)
+        await carregarDoCache()
         return
       }
 
-      const [{ data: osData }, { data: preench }] = await Promise.all([
+      const [osRes, preenchRes] = await Promise.all([
         supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
         supabase.from('Ordem_Servico_Tecnicos').select('*').eq('Ordem_Servico', id).maybeSingle(),
       ])
+
+      // Se a query principal falhou (rede instável), fallback para cache
+      if (osRes.error && !osRes.data) {
+        console.warn('[os-detalhe] Query falhou, usando cache offline...')
+        await carregarDoCache()
+        return
+      }
+
+      const osData = osRes.data
+      const preench = preenchRes.data
+
       if (osData) {
         setOs(osData as OrdemServico)
         if (osData.Cnpj_Cliente) {
@@ -153,12 +169,10 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
         }
         if (diasLoaded.length > 0) {
           setDias(diasLoaded)
-          // Se já tem pelo menos um dia com chegada e saída, considerar registrado
           if (diasLoaded.some(d => d.horaChegada && d.horaSaida)) {
             setHorariosRegistrados(true)
           }
         }
-        // Carregar justificativa existente
         if (preench.JustificativaAtraso) {
           setJustificativa(preench.JustificativaAtraso)
         }
@@ -166,24 +180,8 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       setLoading(false)
     }
     carregar().catch(async () => {
-      // Rede falhou — fallback para cache
       console.warn('[os-detalhe] Rede falhou, tentando cache offline...')
-      const cachedOs = await getCachedOS(id)
-      const cachedTec = await getCachedOSTec(id)
-      if (cachedOs) {
-        setOs(cachedOs as unknown as OrdemServico)
-        if (cachedOs.Cnpj_Cliente) {
-          const cachedCli = await getCachedCliente(cachedOs.Cnpj_Cliente as string)
-          if (cachedCli?.cidade) setCidade(cachedCli.cidade)
-        }
-      }
-      if (cachedTec) {
-        setExistingId(cachedTec.IdOs as number)
-        setJaPreenchida(true)
-        setStatusPreench((cachedTec.Status as string) || '')
-        if (cachedTec.Data) setDataEnvio(cachedTec.Data as string)
-      }
-      setLoading(false)
+      await carregarDoCache()
     })
   }, [id])
 
