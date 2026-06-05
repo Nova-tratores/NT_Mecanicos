@@ -129,7 +129,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         .from('movimentacoes')
         .select('*')
         .eq('Id_PPV', idPPV)
-      // Se falhou (offline/rede instável), usar cache
       if (res.error || !res.data) {
         const cached = await getCachedPPV(idPPV)
         movs = cached as MovimentacaoPPV[] | null
@@ -137,7 +136,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         movs = res.data as MovimentacaoPPV[] | null
       }
     } catch {
-      // Erro de rede — usar cache do prefetch
       const cached = await getCachedPPV(idPPV)
       movs = cached as MovimentacaoPPV[] | null
     }
@@ -145,16 +143,42 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     const manuais = existentes.filter(p => p.origem === 'manual')
 
     if (movs && movs.length > 0) {
-      const pecasPPV = (movs as MovimentacaoPPV[]).map((m) => ({
-        descricao: m.Descricao || m.CodProduto,
-        codigo: m.CodProduto || '',
-        qtdOriginal: m.Qtde || '1',
-      }))
-      const ppvExistentes = existentes.filter(p => p.origem === 'ppv')
+      // Agregar movimentações por CodProduto — soma quantidades, evita duplicatas
+      const agrupado = new Map<string, { descricao: string; codigo: string; qtdTotal: number }>()
+      for (const m of movs) {
+        const cod = (m.CodProduto || '').trim()
+        if (!cod) continue
+        const existing = agrupado.get(cod)
+        const qty = parseFloat(m.Qtde) || 0
+        if (existing) {
+          existing.qtdTotal += qty
+          if (m.Descricao) existing.descricao = m.Descricao
+        } else {
+          agrupado.set(cod, {
+            descricao: m.Descricao || cod,
+            codigo: cod,
+            qtdTotal: qty,
+          })
+        }
+      }
 
+      const pecasPPV = Array.from(agrupado.values()).map(a => ({
+        descricao: a.descricao,
+        codigo: a.codigo,
+        qtdOriginal: a.qtdTotal > 0 ? String(a.qtdTotal) : '1',
+      }))
+
+      // Map de peças já preenchidas pelo técnico (por código)
+      const ppvExistentes = new Map<string, PecaInfo>()
+      for (const p of existentes.filter(p => p.origem === 'ppv')) {
+        ppvExistentes.set(p.codigo, p)
+      }
+
+      // PPV é a fonte de verdade: só aparecem peças que existem no PPV atual
       const merged: PecaInfo[] = pecasPPV.map((ppv) => {
-        const jaExiste = ppvExistentes.find(p => p.codigo === ppv.codigo)
+        const jaExiste = ppvExistentes.get(ppv.codigo)
         if (jaExiste) {
+          // Atualiza descrição e quantidade do PPV, preserva revisão do técnico
           return { ...jaExiste, descricao: ppv.descricao, qtdOriginal: ppv.qtdOriginal }
         }
         return {
