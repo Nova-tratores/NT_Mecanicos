@@ -9,7 +9,7 @@ import type { OrdemServico } from '@/lib/types'
 import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV } from '@/lib/prefetch'
 import FotoUpload from '@/components/FotoUpload'
 import SignaturePad from '@/components/SignaturePad'
-import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, ChevronDown, ChevronUp, Package, AlertTriangle, FileDown } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown } from 'lucide-react'
 import Link from 'next/link'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
 import { notificarPortalOS } from '@/lib/notificarPortal'
@@ -86,7 +86,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const pecasRef = useRef<PecaInfo[]>([])
   pecasRef.current = pecas
   const [loadingPPV, setLoadingPPV] = useState(false)
-  const [ppvAberto, setPpvAberto] = useState(false)
   const [ppvRevisado, setPpvRevisado] = useState(false)
   const [justificativaPecaExtra, setJustificativaPecaExtra] = useState('')
 
@@ -646,7 +645,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
     if (os?.ID_PPV && !todosRevisados) {
       mostrarErro(`Revise todos os produtos do PPV antes de enviar. ${ppvItems.filter(p => !p.revisado).length} produto(s) pendente(s).`, 'secao-ppv')
-      setPpvAberto(true)
       return
     }
 
@@ -1150,170 +1148,17 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             {os.Serv_Solicitado && <div><strong>Descrição:</strong> {os.Serv_Solicitado}</div>}
             {os.Projeto && <div><strong>Projeto:</strong> {os.Projeto}</div>}
             {os.ID_PPV && (
-              <button id="secao-ppv" type="button" onClick={() => {
-                if (!ppvAberto && pecas.filter(p => p.origem === 'ppv').length === 0) {
-                  carregarProdutosPPV(os.ID_PPV)
-                }
-                setPpvAberto(!ppvAberto)
-              }} style={{
+              <div style={{
                 display: 'flex', alignItems: 'center', gap: 8,
-                background: ppvRevisado ? '#D1FAE5' : '#DBEAFE',
-                border: `2px solid ${ppvRevisado ? '#10B981' : '#3B82F6'}`,
-                borderRadius: 10, padding: '10px 14px', cursor: 'pointer',
-                marginTop: 6, width: '100%', textAlign: 'left',
+                background: '#DBEAFE', borderRadius: 10, padding: '10px 14px', marginTop: 6,
               }}>
-                <Package size={18} color={ppvRevisado ? '#059669' : '#2563EB'} />
-                <span style={{ flex: 1, fontSize: 14, fontWeight: 700, color: ppvRevisado ? '#059669' : '#1D4ED8' }}>
+                <Package size={18} color="#2563EB" />
+                <span style={{ fontSize: 14, fontWeight: 700, color: '#1D4ED8' }}>
                   PPV: {os.ID_PPV}
                 </span>
-                {ppvRevisado ? (
-                  <CheckCircle size={18} color="#059669" />
-                ) : (
-                  <span style={{ fontSize: 11, fontWeight: 700, color: '#DC2626', background: '#FEE2E2', padding: '2px 8px', borderRadius: 6 }}>
-                    Revisar
-                  </span>
-                )}
-                {ppvAberto ? <ChevronUp size={18} color="#6B7280" /> : <ChevronDown size={18} color="#6B7280" />}
-              </button>
+              </div>
             )}
           </div>
-        </div>
-      )}
-
-      {/* PRODUTOS DO PPV (expandível) */}
-      {os?.ID_PPV && ppvAberto && (
-        <div style={{
-          ...sectionStyle, borderLeft: '4px solid #3B82F6',
-          background: '#F8FAFC', marginTop: -8,
-        }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#1D4ED8', marginBottom: 6 }}>
-            Produtos do PPV — {os.ID_PPV}
-          </div>
-          <p style={{ fontSize: 12, color: '#6B7280', marginBottom: 14 }}>
-            Revise cada produto: confirme se usou, informe se devolveu ou não utilizou. Todos devem ser revisados para enviar a OS.
-          </p>
-
-          {loadingPPV ? (
-            <div style={{ textAlign: 'center', padding: 20 }}>
-              <div className="spinner" style={{ margin: '0 auto' }} />
-              <div style={{ fontSize: 13, color: '#9CA3AF', marginTop: 8 }}>Carregando produtos...</div>
-            </div>
-          ) : (
-            <>
-              {pecas.filter(p => p.origem === 'ppv').length > 0 && (() => {
-                const items = pecas.filter(p => p.origem === 'ppv')
-                const revisados = items.filter(p => p.revisado).length
-                const total = items.length
-                return (
-                  <div style={{
-                    background: revisados === total ? '#D1FAE5' : '#FEF3C7',
-                    borderRadius: 10, padding: '10px 14px', marginBottom: 14,
-                    display: 'flex', alignItems: 'center', gap: 8,
-                  }}>
-                    {revisados === total
-                      ? <CheckCircle size={16} color="#059669" />
-                      : <AlertTriangle size={16} color="#D97706" />
-                    }
-                    <span style={{
-                      fontSize: 13, fontWeight: 700,
-                      color: revisados === total ? '#059669' : '#D97706',
-                    }}>
-                      {revisados === total
-                        ? 'Todos os produtos revisados!'
-                        : `${revisados} de ${total} produtos revisados`}
-                    </span>
-                  </div>
-                )
-              })()}
-
-              {pecas.map((peca, i) => {
-                if (peca.origem !== 'ppv') return null
-                return (
-                  <div key={i} style={{
-                    background: peca.revisado
-                      ? (peca.naoUsada ? '#FEF2F2' : '#F0FDF4')
-                      : '#fff',
-                    borderRadius: 12, padding: 14, marginBottom: 10,
-                    border: `2px solid ${peca.revisado
-                      ? (peca.naoUsada ? '#FECACA' : '#BBF7D0')
-                      : '#FDE68A'}`,
-                  }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: '#1F2937', marginBottom: 2 }}>
-                          {peca.descricao}
-                        </div>
-                        {peca.codigo && (
-                          <div style={{ fontSize: 11, color: '#6B7280' }}>Cód: {peca.codigo}</div>
-                        )}
-                        <div style={{ fontSize: 12, color: '#6B7280', marginTop: 2 }}>
-                          Qtd separada: <strong>{peca.qtdOriginal}</strong>
-                        </div>
-                      </div>
-                      {peca.revisado ? (
-                        <CheckCircle size={20} color={peca.naoUsada ? '#DC2626' : '#10B981'} />
-                      ) : (
-                        <span style={{
-                          fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                          background: '#FEF3C7', color: '#D97706',
-                        }}>
-                          Pendente
-                        </span>
-                      )}
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Usou?</span>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button type="button" onClick={() => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, naoUsada: false, revisado: true } : p))}
-                          style={{ padding: '7px 16px', borderRadius: 8, border: `2px solid ${!peca.naoUsada && peca.revisado ? '#10B981' : '#E5E7EB'}`, background: !peca.naoUsada && peca.revisado ? '#D1FAE5' : '#fff', color: !peca.naoUsada && peca.revisado ? '#059669' : '#6B7280', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                          Sim
-                        </button>
-                        <button type="button" onClick={() => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, naoUsada: true, devolvida: false, qtdDevolvida: '', revisado: true } : p))}
-                          style={{ padding: '7px 16px', borderRadius: 8, border: `2px solid ${peca.naoUsada ? '#EF4444' : '#E5E7EB'}`, background: peca.naoUsada ? '#FEE2E2' : '#fff', color: peca.naoUsada ? '#DC2626' : '#6B7280', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
-                          Não usou
-                        </button>
-                      </div>
-                    </div>
-
-                    {peca.revisado && !peca.naoUsada && (
-                      <>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-                          <div>
-                            <label style={{ fontSize: 11, color: '#6B7280' }}>Qtd utilizada</label>
-                            <input type="text" inputMode="numeric" value={peca.qtdUsada}
-                              onChange={(e) => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, qtdUsada: e.target.value } : p))}
-                              style={inputStyle} placeholder="0" />
-                          </div>
-                          <div>
-                            <label style={{ fontSize: 11, color: '#6B7280' }}>Devolveu?</label>
-                            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                              <button type="button" onClick={() => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, devolvida: false, qtdDevolvida: '' } : p))}
-                                style={{ flex: 1, padding: '10px 0', borderRadius: 8, border: `2px solid ${!peca.devolvida ? '#1E3A5F' : '#E5E7EB'}`, background: !peca.devolvida ? '#1E3A5F' : '#fff', color: !peca.devolvida ? '#fff' : '#6B7280', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                                Não
-                              </button>
-                              <button type="button" onClick={() => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, devolvida: true } : p))}
-                                style={{ flex: 1, padding: '10px 0', borderRadius: 8, border: `2px solid ${peca.devolvida ? '#10B981' : '#E5E7EB'}`, background: peca.devolvida ? '#D1FAE5' : '#fff', color: peca.devolvida ? '#059669' : '#6B7280', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-                                Sim
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                        {peca.devolvida && (
-                          <div style={{ marginTop: 8 }}>
-                            <label style={{ fontSize: 11, color: '#6B7280' }}>Qtd devolvida</label>
-                            <input type="text" inputMode="numeric" value={peca.qtdDevolvida}
-                              onChange={(e) => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, qtdDevolvida: e.target.value } : p))}
-                              style={inputStyle} placeholder="0" />
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
-                )
-              })}
-            </>
-          )}
         </div>
       )}
 
@@ -1779,22 +1624,143 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         </button>
       </div>
 
-      {/* Aviso se PPV não revisado */}
-      {os?.ID_PPV && !todosRevisados && (
-        <div style={{
-          background: '#FEF2F2', border: '2px solid #FECACA', borderRadius: 12,
-          padding: '14px 16px', marginBottom: 12,
-          display: 'flex', alignItems: 'center', gap: 10,
+      {/* REVISÃO DO PPV — sempre visível, sem cascata */}
+      {os?.ID_PPV && (
+        <div id="secao-ppv" style={{
+          ...sectionStyle, borderLeft: '4px solid #3B82F6',
+          background: '#F8FAFC',
         }}>
-          <AlertTriangle size={20} color="#DC2626" />
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: '#DC2626' }}>
-              PPV não revisado
-            </div>
-            <div style={{ fontSize: 12, color: '#991B1B' }}>
-              Clique no PPV acima e revise {ppvItems.filter(p => !p.revisado).length} produto(s) pendente(s) antes de enviar.
-            </div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#1D4ED8', marginBottom: 6 }}>
+            Revisão de Peças — PPV {os.ID_PPV}
           </div>
+          <p style={{ fontSize: 12, color: '#6B7280', marginBottom: 14 }}>
+            Revise cada produto: confirme se usou, informe se devolveu ou não utilizou. Todos devem ser revisados para enviar a OS.
+          </p>
+
+          {loadingPPV ? (
+            <div style={{ textAlign: 'center', padding: 20 }}>
+              <div className="spinner" style={{ margin: '0 auto' }} />
+              <div style={{ fontSize: 13, color: '#9CA3AF', marginTop: 8 }}>Carregando produtos...</div>
+            </div>
+          ) : ppvItems.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 20, fontSize: 13, color: '#9CA3AF' }}>
+              Nenhum produto encontrado no PPV.
+            </div>
+          ) : (
+            <>
+              {(() => {
+                const revisados = ppvItems.filter(p => p.revisado).length
+                const total = ppvItems.length
+                return (
+                  <div style={{
+                    background: revisados === total ? '#D1FAE5' : '#FEF3C7',
+                    borderRadius: 10, padding: '10px 14px', marginBottom: 14,
+                    display: 'flex', alignItems: 'center', gap: 8,
+                  }}>
+                    {revisados === total
+                      ? <CheckCircle size={16} color="#059669" />
+                      : <AlertTriangle size={16} color="#D97706" />
+                    }
+                    <span style={{
+                      fontSize: 13, fontWeight: 700,
+                      color: revisados === total ? '#059669' : '#D97706',
+                    }}>
+                      {revisados === total
+                        ? 'Todos os produtos revisados!'
+                        : `${revisados} de ${total} produtos revisados`}
+                    </span>
+                  </div>
+                )
+              })()}
+
+              {pecas.map((peca, i) => {
+                if (peca.origem !== 'ppv') return null
+                return (
+                  <div key={i} style={{
+                    background: peca.revisado
+                      ? (peca.naoUsada ? '#FEF2F2' : '#F0FDF4')
+                      : '#fff',
+                    borderRadius: 12, padding: 14, marginBottom: 10,
+                    border: `2px solid ${peca.revisado
+                      ? (peca.naoUsada ? '#FECACA' : '#BBF7D0')
+                      : '#FDE68A'}`,
+                  }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: '#1F2937', marginBottom: 2 }}>
+                          {peca.descricao}
+                        </div>
+                        {peca.codigo && (
+                          <div style={{ fontSize: 11, color: '#6B7280' }}>Cód: {peca.codigo}</div>
+                        )}
+                        <div style={{ fontSize: 12, color: '#6B7280', marginTop: 2 }}>
+                          Qtd separada: <strong>{peca.qtdOriginal}</strong>
+                        </div>
+                      </div>
+                      {peca.revisado ? (
+                        <CheckCircle size={20} color={peca.naoUsada ? '#DC2626' : '#10B981'} />
+                      ) : (
+                        <span style={{
+                          fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                          background: '#FEF3C7', color: '#D97706',
+                        }}>
+                          Pendente
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: '#374151' }}>Usou?</span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button type="button" onClick={() => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, naoUsada: false, revisado: true } : p))}
+                          style={{ padding: '7px 16px', borderRadius: 8, border: `2px solid ${!peca.naoUsada && peca.revisado ? '#10B981' : '#E5E7EB'}`, background: !peca.naoUsada && peca.revisado ? '#D1FAE5' : '#fff', color: !peca.naoUsada && peca.revisado ? '#059669' : '#6B7280', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                          Sim
+                        </button>
+                        <button type="button" onClick={() => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, naoUsada: true, devolvida: false, qtdDevolvida: '', revisado: true } : p))}
+                          style={{ padding: '7px 16px', borderRadius: 8, border: `2px solid ${peca.naoUsada ? '#EF4444' : '#E5E7EB'}`, background: peca.naoUsada ? '#FEE2E2' : '#fff', color: peca.naoUsada ? '#DC2626' : '#6B7280', fontSize: 13, fontWeight: 700, cursor: 'pointer' }}>
+                          Não usou
+                        </button>
+                      </div>
+                    </div>
+
+                    {peca.revisado && !peca.naoUsada && (
+                      <>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                          <div>
+                            <label style={{ fontSize: 11, color: '#6B7280' }}>Qtd utilizada</label>
+                            <input type="text" inputMode="numeric" value={peca.qtdUsada}
+                              onChange={(e) => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, qtdUsada: e.target.value } : p))}
+                              style={inputStyle} placeholder="0" />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 11, color: '#6B7280' }}>Devolveu?</label>
+                            <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                              <button type="button" onClick={() => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, devolvida: false, qtdDevolvida: '' } : p))}
+                                style={{ flex: 1, padding: '10px 0', borderRadius: 8, border: `2px solid ${!peca.devolvida ? '#1E3A5F' : '#E5E7EB'}`, background: !peca.devolvida ? '#1E3A5F' : '#fff', color: !peca.devolvida ? '#fff' : '#6B7280', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                                Não
+                              </button>
+                              <button type="button" onClick={() => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, devolvida: true } : p))}
+                                style={{ flex: 1, padding: '10px 0', borderRadius: 8, border: `2px solid ${peca.devolvida ? '#10B981' : '#E5E7EB'}`, background: peca.devolvida ? '#D1FAE5' : '#fff', color: peca.devolvida ? '#059669' : '#6B7280', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                                Sim
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                        {peca.devolvida && (
+                          <div style={{ marginTop: 8 }}>
+                            <label style={{ fontSize: 11, color: '#6B7280' }}>Qtd devolvida</label>
+                            <input type="text" inputMode="numeric" value={peca.qtdDevolvida}
+                              onChange={(e) => setPecas(prev => prev.map((p, idx) => idx === i ? { ...p, qtdDevolvida: e.target.value } : p))}
+                              style={inputStyle} placeholder="0" />
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )
+              })}
+            </>
+          )}
         </div>
       )}
 
@@ -1803,7 +1769,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         {(() => {
           const bloqueado = !!os?.ID_PPV && !todosRevisados
           const motivo = (os?.ID_PPV && !todosRevisados)
-            ? 'Revise o PPV para enviar'
+            ? `Revise ${ppvItems.filter(p => !p.revisado).length} peça(s) do PPV para enviar`
             : null
           return (
             <button
