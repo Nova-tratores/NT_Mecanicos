@@ -249,8 +249,20 @@ export interface DesempenhoPessoal {
   combustivel: { qtd: number; valor: number; lista: ReqDespesaItem[] }
   osInternas: { qtd: number; valor: number; lista: OSItem[] }
   infracoes: { qtd: number; lista: InfracaoItem[]; motivoVazio?: string }
+  ocorrencias: { qtd: number; pontos: number; lista: OcorrenciaItem[] }
   custoRH: number | null
   custoRHCadastro: string | null     // nome no config que bateu (null = sem cadastro)
+}
+
+export interface OcorrenciaItem {
+  id: number
+  tipo: string
+  descricao: string
+  pontos: number
+  data: string             // 'DD/MM'
+  dataRef: string          // 'YYYY-MM-DD'
+  idOrdem: string | null
+  adminNome: string | null
 }
 
 export interface InfracaoItem {

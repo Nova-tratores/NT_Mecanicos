@@ -4,6 +4,7 @@ import Link from 'next/link'
 import {
   ArrowLeft, TrendingUp, TrendingDown, Trophy, Wrench, ShoppingCart,
   ClipboardList, Wallet, ChevronDown, RefreshCw, Info, Fuel, AlertTriangle, MapPin, Gift,
+  Shield,
 } from 'lucide-react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
@@ -12,12 +13,13 @@ import { colors, radius, shadow, spacing, text } from '@/lib/ui'
 import {
   fetchRelatorioMes, mesAtual, mesesOpcoes, fmtBRL, fmtBRLCompacto,
 } from '@/lib/relatorios'
+import { getLabelTipo } from '@/lib/alertas'
 import type { RelatorioMes } from '@/lib/types'
 
 export default function RelatoriosPage() {
   const { user } = useCurrentUser()
   const [mes, setMes] = useState<string>(mesAtual())
-  const [open, setOpen] = useState<Record<'os' | 'pv' | 'req' | 'comb' | 'int' | 'inf', boolean>>({ os: false, pv: false, req: false, comb: false, int: false, inf: false })
+  const [open, setOpen] = useState<Record<'os' | 'pv' | 'req' | 'comb' | 'int' | 'inf' | 'oc', boolean>>({ os: false, pv: false, req: false, comb: false, int: false, inf: false, oc: false })
 
   const opcoes = useMemo(() => mesesOpcoes(12), [])
 
@@ -31,7 +33,7 @@ export default function RelatoriosPage() {
 
   // Versão da chave: bump quando o shape de RelatorioMes muda, p/ invalidar IndexedDB stale
   const { data, loading, refreshing, refresh } = useCached<RelatorioMes>(
-    `relatorios:v13:${profile.tecnico_nome}:${mes}`,
+    `relatorios:v14:${profile.tecnico_nome}:${mes}`,
     () => fetchRelatorioMes(profile, mes),
     { skip: !user },
   )
@@ -273,8 +275,8 @@ function SecaoPessoal({
   setOpen,
 }: {
   data: RelatorioMes
-  open: Record<'os' | 'pv' | 'req' | 'comb' | 'int' | 'inf', boolean>
-  setOpen: React.Dispatch<React.SetStateAction<Record<'os' | 'pv' | 'req' | 'comb' | 'int' | 'inf', boolean>>>
+  open: Record<'os' | 'pv' | 'req' | 'comb' | 'int' | 'inf' | 'oc', boolean>
+  setOpen: React.Dispatch<React.SetStateAction<Record<'os' | 'pv' | 'req' | 'comb' | 'int' | 'inf' | 'oc', boolean>>>
 }) {
   // Normaliza pessoal — protege contra cache stale ou falha parcial do fetcher
   // (campos novos podem estar ausentes em payload antigo).
@@ -286,6 +288,7 @@ function SecaoPessoal({
     combustivel: data.pessoal?.combustivel ?? empty,
     osInternas: data.pessoal?.osInternas ?? empty,
     infracoes: data.pessoal?.infracoes ?? { qtd: 0, lista: [] as never[] },
+    ocorrencias: data.pessoal?.ocorrencias ?? { qtd: 0, pontos: 0, lista: [] as never[] },
     custoRH: data.pessoal?.custoRH ?? null,
     custoRHCadastro: data.pessoal?.custoRHCadastro ?? null,
   } as RelatorioMes['pessoal']
@@ -298,7 +301,7 @@ function SecaoPessoal({
   const saldo = receita - despesasReq - despesasComb - custoOSInt - custoRH
   const saldoPositivo = saldo >= 0
 
-  const toggle = (k: 'os' | 'pv' | 'req' | 'comb' | 'int' | 'inf') => setOpen(prev => ({ ...prev, [k]: !prev[k] }))
+  const toggle = (k: 'os' | 'pv' | 'req' | 'comb' | 'int' | 'inf' | 'oc') => setOpen(prev => ({ ...prev, [k]: !prev[k] }))
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.md, marginTop: spacing.md }}>
@@ -510,8 +513,135 @@ function SecaoPessoal({
         </Expandable>
       )}
 
+      {/* Ocorrências */}
+      <CardOcorrencias ocorrencias={pessoal.ocorrencias} isOpen={open.oc} onToggle={() => toggle('oc')} />
+
       {/* Infrações de trânsito */}
       <CardInfracoes infracoes={pessoal.infracoes} isOpen={open.inf} onToggle={() => toggle('inf')} />
+    </div>
+  )
+}
+
+// =================================================================
+// Card de ocorrências
+// =================================================================
+
+function CardOcorrencias({
+  ocorrencias,
+  isOpen,
+  onToggle,
+}: {
+  ocorrencias: RelatorioMes['pessoal']['ocorrencias']
+  isOpen: boolean
+  onToggle: () => void
+}) {
+  const qtd = ocorrencias.qtd
+  const pontos = ocorrencias.pontos
+  const tem = qtd > 0
+  const tomBg = tem ? colors.dangerBg : colors.successBg
+  const tomBorder = tem ? colors.dangerBorder : colors.successBorder
+  const tomMain = tem ? colors.danger : colors.success
+
+  return (
+    <div style={{
+      background: colors.surface, borderRadius: radius.xl,
+      border: `1px solid ${colors.border}`, overflow: 'hidden',
+      boxShadow: shadow.sm,
+    }}>
+      <button onClick={onToggle} style={{
+        width: '100%', padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+          <Shield size={16} color={tomMain} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: colors.text, textAlign: 'left' }}>
+            Ocorrências
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {tem && (
+            <span style={{
+              fontSize: 11, fontWeight: 800,
+              color: colors.danger,
+              background: colors.dangerBg,
+              border: `1px solid ${colors.dangerBorder}`,
+              padding: '3px 9px', borderRadius: radius.sm,
+            }}>
+              -{pontos} pts
+            </span>
+          )}
+          <span style={{
+            fontSize: 11, fontWeight: 800,
+            color: tomMain,
+            background: tomBg,
+            border: `1px solid ${tomBorder}`,
+            padding: '3px 9px', borderRadius: radius.sm,
+          }}>
+            {qtd}
+          </span>
+          <ChevronDown size={18} color={colors.textSubtle} style={{
+            transition: 'transform 0.2s',
+            transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)',
+          }} />
+        </div>
+      </button>
+
+      {isOpen && (
+        <div style={{ padding: '0 14px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {!tem ? (
+            <div style={{
+              padding: '14px 12px', textAlign: 'center',
+              fontSize: 12, color: colors.success, fontWeight: 600,
+              background: colors.successBg, borderRadius: radius.md,
+              border: `1px solid ${colors.successBorder}`,
+            }}>
+              Nenhuma ocorrência no período. Bom trabalho.
+            </div>
+          ) : (
+            ocorrencias.lista.map(oc => (
+              <div key={oc.id} style={{
+                background: colors.dangerBg, borderRadius: radius.md,
+                padding: '10px 12px',
+                border: `1px solid ${colors.dangerBorder}`,
+                display: 'flex', alignItems: 'center', gap: 10,
+              }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                  background: colors.danger, color: '#fff',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: 13, fontWeight: 800,
+                }}>
+                  -{oc.pontos}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 13, fontWeight: 700, color: colors.text,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {getLabelTipo(oc.tipo)}
+                  </div>
+                  <div style={{
+                    fontSize: 11, color: colors.textMuted, marginTop: 2,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {oc.descricao}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted }}>
+                    {oc.data}
+                  </div>
+                  {oc.idOrdem && (
+                    <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 2 }}>
+                      OS {oc.idOrdem}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      )}
     </div>
   )
 }

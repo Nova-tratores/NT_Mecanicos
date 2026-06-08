@@ -8,6 +8,7 @@ import type {
   PVItem,
   ReqDespesaItem,
   InfracaoItem,
+  OcorrenciaItem,
 } from '@/lib/types'
 
 // =================================================================
@@ -621,6 +622,9 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
   // Infrações de trânsito (Overpass API server-side, com cache de tiles)
   const infRes = await fetchInfracoesMes(profile, firstISO, lastISO)
 
+  // Ocorrências do técnico no mês
+  const ocorrenciasRes = await fetchOcorrenciasMes(profile, firstISO, lastISO)
+
   const pessoal: DesempenhoPessoal = {
     os: { qtd: listaOS.length, valor: valorOS, lista: listaOS },
     pv: { qtd: listaPV.length, valor: valorPV, lista: listaPV },
@@ -628,6 +632,7 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
     combustivel: { qtd: listaComb.length, valor: valorComb, lista: listaComb },
     osInternas: { qtd: listaOSInt.length, valor: valorOSInt, lista: listaOSInt },
     infracoes: { qtd: infRes.lista.length, lista: infRes.lista, motivoVazio: infRes.motivoVazio },
+    ocorrencias: ocorrenciasRes,
     custoRH,
     custoRHCadastro,
   }
@@ -641,6 +646,54 @@ export async function fetchRelatorioMes(profile: ProfileNomes, ym: string): Prom
     ranking: rankingArr,
     pessoal,
     ultimoSync,
+  }
+}
+
+// =================================================================
+// Ocorrências do técnico no mês
+// =================================================================
+
+async function fetchOcorrenciasMes(
+  profile: ProfileNomes,
+  firstISO: string,
+  lastISO: string,
+): Promise<{ qtd: number; pontos: number; lista: OcorrenciaItem[] }> {
+  const nome = profile.nome_pos || profile.tecnico_nome
+  if (!nome) return { qtd: 0, pontos: 0, lista: [] }
+
+  const nextDay = new Date(new Date(lastISO).getTime() + 86400000).toISOString().split('T')[0]
+
+  try {
+    const { data, error } = await supabase
+      .from('mecanico_ocorrencias')
+      .select('id, tipo, descricao, pontos, data_referencia, id_ordem, admin_nome')
+      .eq('tecnico_nome', nome)
+      .gte('data_referencia', firstISO)
+      .lt('data_referencia', nextDay)
+      .order('data_referencia', { ascending: false })
+
+    if (error || !data) return { qtd: 0, pontos: 0, lista: [] }
+
+    let totalPontos = 0
+    const lista: OcorrenciaItem[] = data.map((o) => {
+      totalPontos += o.pontos || 0
+      const dt = o.data_referencia ? new Date(o.data_referencia + 'T12:00:00') : null
+      return {
+        id: o.id,
+        tipo: o.tipo,
+        descricao: o.descricao,
+        pontos: o.pontos || 0,
+        data: dt ? dt.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) : '',
+        dataRef: o.data_referencia || '',
+        idOrdem: o.id_ordem || null,
+        adminNome: o.admin_nome || null,
+      }
+    })
+
+    return { qtd: lista.length, pontos: totalPontos, lista }
+  } catch (e) {
+    console.warn('[relatorios] Falha ao buscar ocorrências:', e)
+    return { qtd: 0, pontos: 0, lista: [] }
   }
 }
 
