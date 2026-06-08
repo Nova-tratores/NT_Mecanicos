@@ -109,6 +109,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [fotoPecaNova2, setFotoPecaNova2] = useState('')
   const [fotoPecaInstalada1, setFotoPecaInstalada1] = useState('')
   const [fotoPecaInstalada2, setFotoPecaInstalada2] = useState('')
+  const [fotoExtra1, setFotoExtra1] = useState('')
+  const [fotoExtra2, setFotoExtra2] = useState('')
+  const [fotoExtra3, setFotoExtra3] = useState('')
+  const [fotoExtra4, setFotoExtra4] = useState('')
+  const [fotoExtra5, setFotoExtra5] = useState('')
 
   // Almoço
   const [temAlmoco, setTemAlmoco] = useState(false)
@@ -331,6 +336,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         setFotoPecaNova2(existing.FotoPecaNova2 || '')
         setFotoPecaInstalada1(existing.FotoPecaInstalada1 || '')
         setFotoPecaInstalada2(existing.FotoPecaInstalada2 || '')
+        setFotoExtra1(existing.FotoExtra1 || '')
+        setFotoExtra2(existing.FotoExtra2 || '')
+        setFotoExtra3(existing.FotoExtra3 || '')
+        setFotoExtra4(existing.FotoExtra4 || '')
+        setFotoExtra5(existing.FotoExtra5 || '')
         setAssCliente(existing.AssCliente || '')
         setAssTecnico(existing.AssTecnico || '')
         setJustificativaPecaExtra(existing.JustificativaPecaExtra || '')
@@ -419,6 +429,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
     fotoPecaNova1, fotoPecaNova2, fotoPecaInstalada1, fotoPecaInstalada2,
+    fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5,
     temAlmoco, valorAlmoco, fotoAlmoco,
     assCliente, assTecnico,
   }), [
@@ -429,6 +440,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
     fotoPecaNova1, fotoPecaNova2, fotoPecaInstalada1, fotoPecaInstalada2,
+    fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5,
     temAlmoco, valorAlmoco, fotoAlmoco,
     assCliente, assTecnico,
   ])
@@ -469,6 +481,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (data.fotoPecaNova2 !== undefined) setFotoPecaNova2(data.fotoPecaNova2 as string)
     if (data.fotoPecaInstalada1 !== undefined) setFotoPecaInstalada1(data.fotoPecaInstalada1 as string)
     if (data.fotoPecaInstalada2 !== undefined) setFotoPecaInstalada2(data.fotoPecaInstalada2 as string)
+    if (data.fotoExtra1 !== undefined) setFotoExtra1(data.fotoExtra1 as string)
+    if (data.fotoExtra2 !== undefined) setFotoExtra2(data.fotoExtra2 as string)
+    if (data.fotoExtra3 !== undefined) setFotoExtra3(data.fotoExtra3 as string)
+    if (data.fotoExtra4 !== undefined) setFotoExtra4(data.fotoExtra4 as string)
+    if (data.fotoExtra5 !== undefined) setFotoExtra5(data.fotoExtra5 as string)
     if (data.temAlmoco !== undefined) setTemAlmoco(data.temAlmoco as boolean)
     if (data.valorAlmoco !== undefined) setValorAlmoco(data.valorAlmoco as string)
     if (data.fotoAlmoco !== undefined) setFotoAlmoco(data.fotoAlmoco as string)
@@ -693,6 +710,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       fotoEsquerdaFinal, fotoTraseiraFinal, fotoVolanteFinal,
       fotoFalha1Final, fotoFalha2Final, fotoFalha3Final, fotoFalha4Final,
       fotoPecaNova1Final, fotoPecaNova2Final, fotoPecaInstalada1Final, fotoPecaInstalada2Final,
+      fotoExtra1Final, fotoExtra2Final, fotoExtra3Final, fotoExtra4Final, fotoExtra5Final,
       fotoAlmocoFinal,
     ] = await Promise.all([
       resolverFoto(fotoHorimetro, 'FotoHorimetro'),
@@ -710,6 +728,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       resolverFoto(fotoPecaNova2, 'FotoPecaNova2'),
       resolverFoto(fotoPecaInstalada1, 'FotoPecaInstalada1'),
       resolverFoto(fotoPecaInstalada2, 'FotoPecaInstalada2'),
+      resolverFoto(fotoExtra1, 'FotoExtra1'),
+      resolverFoto(fotoExtra2, 'FotoExtra2'),
+      resolverFoto(fotoExtra3, 'FotoExtra3'),
+      resolverFoto(fotoExtra4, 'FotoExtra4'),
+      resolverFoto(fotoExtra5, 'FotoExtra5'),
       temAlmoco ? resolverFoto(fotoAlmoco, 'FotoAlmoco') : Promise.resolve(null),
     ])
 
@@ -769,6 +792,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       FotoPecaNova2: fotoPecaNova2Final,
       FotoPecaInstalada1: fotoPecaInstalada1Final,
       FotoPecaInstalada2: fotoPecaInstalada2Final,
+      FotoExtra1: fotoExtra1Final,
+      FotoExtra2: fotoExtra2Final,
+      FotoExtra3: fotoExtra3Final,
+      FotoExtra4: fotoExtra4Final,
+      FotoExtra5: fotoExtra5Final,
       TemAlmoco: temAlmoco,
       ValorAlmoco: temAlmoco ? parseFloat(valorAlmoco) || 0 : null,
       FotoAlmoco: fotoAlmocoFinal,
@@ -1398,6 +1426,18 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           <FotoUpload label="Horímetro" value={fotoHorimetro} onChange={(f) => handleFoto(setFotoHorimetro, 'FotoHorimetro', f)} onRemove={() => setFotoHorimetro('')} obrigatorio />
           <FotoUpload label="Chassis" value={fotoChassis} onChange={(f) => handleFoto(setFotoChassis, 'FotoChassis', f)} onRemove={() => setFotoChassis('')} obrigatorio />
         </div>
+        {tipoServico === 'Manutenção' && (
+          <>
+            <p style={{ fontSize: 12, color: '#9CA3AF', marginTop: 14, marginBottom: 10 }}>Fotos extras (opcional)</p>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <FotoUpload label="Extra 1" value={fotoExtra1} onChange={(f) => handleFoto(setFotoExtra1, 'FotoExtra1', f)} onRemove={() => setFotoExtra1('')} />
+              <FotoUpload label="Extra 2" value={fotoExtra2} onChange={(f) => handleFoto(setFotoExtra2, 'FotoExtra2', f)} onRemove={() => setFotoExtra2('')} />
+              <FotoUpload label="Extra 3" value={fotoExtra3} onChange={(f) => handleFoto(setFotoExtra3, 'FotoExtra3', f)} onRemove={() => setFotoExtra3('')} />
+              <FotoUpload label="Extra 4" value={fotoExtra4} onChange={(f) => handleFoto(setFotoExtra4, 'FotoExtra4', f)} onRemove={() => setFotoExtra4('')} />
+              <FotoUpload label="Extra 5" value={fotoExtra5} onChange={(f) => handleFoto(setFotoExtra5, 'FotoExtra5', f)} onRemove={() => setFotoExtra5('')} />
+            </div>
+          </>
+        )}
       </div>
 
       {/* 7. GARANTIA — Peças solicitadas + Fotos (só aparece se tipo = Garantia) */}
