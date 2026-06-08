@@ -209,22 +209,26 @@ export async function prefetchAll(
       await offlineSet('prefetch:os-enviadas', osEnviadas)
     }
 
-    // 8. Pré-aquecer cache do SW com páginas-chave (HTML + JS chunks)
-    // Isso garante que navegação offline funcione sem depender do app shell fallback
+    // 8. Pré-aquecer cache do SW com TODAS as páginas (HTML + JS chunks)
     onProgress?.('Preparando paginas offline...')
-    // Inclui rotas /os/[id] e /os/[id]/preencher para cachear os JS chunks dessas rotas dinâmicas
-    const primeiraOs = osList?.[0]?.Id_Ordem
-    const rotasParaCachear = [
-      '/os', '/dashboard',
-      ...(primeiraOs ? [`/os/${primeiraOs}`, `/os/${primeiraOs}/preencher`] : []),
+    const rotasEstaticas = [
+      '/', '/os', '/os-enviadas', '/requisicoes', '/requisicoes/nova',
+      '/relatorios', '/perfil', '/fotos', '/jornada', '/garantias', '/mapa',
     ]
-    await Promise.allSettled(rotasParaCachear.map(r => fetch(r)))
+    // Cachear uma OS e preencher para garantir que os JS chunks dessas rotas dinâmicas fiquem no SW
+    const primeiraOs = osList?.[0]?.Id_Ordem
+    if (primeiraOs) {
+      rotasEstaticas.push(`/os/${primeiraOs}`, `/os/${primeiraOs}/preencher`)
+    }
+    await Promise.allSettled(rotasEstaticas.map(r => fetch(r).catch(() => {})))
 
-    // Cachear RSC payloads para navegação client-side offline (Next.js App Router)
+    // Cachear RSC payloads para TODAS as OS + preencher (navegação client-side offline)
     if (osList && osList.length > 0) {
-      const rscFetches = osList.slice(0, 20).map((os: { Id_Ordem: string }) =>
-        fetch(`/os/${os.Id_Ordem}`, { headers: { RSC: '1', 'Next-Router-Prefetch': '1' } }).catch(() => {})
-      )
+      const rscHeaders = { RSC: '1', 'Next-Router-Prefetch': '1' }
+      const rscFetches = osList.slice(0, 30).flatMap((os: { Id_Ordem: string }) => [
+        fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders }).catch(() => {}),
+        fetch(`/os/${os.Id_Ordem}/preencher`, { headers: rscHeaders }).catch(() => {}),
+      ])
       await Promise.allSettled(rscFetches)
     }
 
