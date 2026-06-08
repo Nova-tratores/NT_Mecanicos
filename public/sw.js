@@ -1,4 +1,4 @@
-const CACHE_NAME = 'nt-mecanicos-v19';
+const CACHE_NAME = 'nt-mecanicos-v20';
 const APP_SHELL_KEY = 'nt-app-shell';
 
 // Apenas assets que sempre retornam 200 (sem autenticação)
@@ -103,11 +103,8 @@ self.addEventListener('fetch', (event) => {
           const cached = await caches.match(event.request);
           if (cached) return cached;
 
-          // Sem RSC em cache — redirecionar para navegação MPA.
-          // Retornar o app shell direto confunde o router; um redirect força
-          // o browser a fazer navigation request normal, que cai no handler abaixo.
-          const url = new URL(event.request.url);
-          return Response.redirect(url.pathname + url.search, 302);
+          // Sem RSC em cache — retornar erro para que o Next.js faça hard navigation
+          return new Response('', { status: 503 });
         })
     );
     return;
