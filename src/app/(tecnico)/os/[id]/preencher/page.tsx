@@ -128,11 +128,13 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const carregarProdutosPPV = async (idPPV: string, pecasAtuais?: PecaInfo[]) => {
     setLoadingPPV(true)
     let movs: MovimentacaoPPV[] | null = null
+    const ppvTimeout = <T,>(p: PromiseLike<T>): Promise<T> =>
+      Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))])
     try {
-      const res = await supabase
+      const res = await ppvTimeout(supabase
         .from('movimentacoes')
         .select('*')
-        .eq('Id_PPV', idPPV)
+        .eq('Id_PPV', idPPV))
       if (res.error || !res.data) {
         const cached = await getCachedPPV(idPPV)
         movs = cached as MovimentacaoPPV[] | null
@@ -269,11 +271,15 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         return
       }
 
+      const timeoutMs = 5000
+      const withTimeout = <T,>(p: PromiseLike<T>): Promise<T> =>
+        Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs))])
+
       const [osRes, { data: tecData }, { data: veicData }, { data: existing }] = await Promise.all([
-        supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
-        supabase.from('Tecnicos_Appsheet').select('UsuNome').order('UsuNome'),
-        supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca'),
-        supabase.from('Ordem_Servico_Tecnicos').select('*').eq('Ordem_Servico', id).maybeSingle(),
+        withTimeout(supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single()),
+        withTimeout(supabase.from('Tecnicos_Appsheet').select('UsuNome').order('UsuNome')),
+        withTimeout(supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca')),
+        withTimeout(supabase.from('Ordem_Servico_Tecnicos').select('*').eq('Ordem_Servico', id).maybeSingle()),
       ])
 
       // Se a query principal falhou (rede instável), fallback para cache offline

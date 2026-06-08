@@ -12,6 +12,15 @@ interface UseCachedResult<T> {
   refresh: () => void
 }
 
+const FETCH_TIMEOUT = 8000
+
+function withTimeout<T>(p: Promise<T>): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), FETCH_TIMEOUT)),
+  ])
+}
+
 export function useCached<T>(
   key: string,
   fetcher: () => Promise<T>,
@@ -35,7 +44,7 @@ export function useCached<T>(
     else setRefreshing(true)
 
     try {
-      const result = await fetcherRef.current()
+      const result = await withTimeout(fetcherRef.current())
       // Só persiste se estiver online — evita sobrescrever cache offline com dados vazios
       if (navigator.onLine) {
         cacheSet(keyRef.current, result)
