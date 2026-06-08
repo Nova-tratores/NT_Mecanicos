@@ -1426,18 +1426,27 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           <FotoUpload label="Horímetro" value={fotoHorimetro} onChange={(f) => handleFoto(setFotoHorimetro, 'FotoHorimetro', f)} onRemove={() => setFotoHorimetro('')} obrigatorio />
           <FotoUpload label="Chassis" value={fotoChassis} onChange={(f) => handleFoto(setFotoChassis, 'FotoChassis', f)} onRemove={() => setFotoChassis('')} obrigatorio />
         </div>
-        {tipoServico === 'Manutenção' && (
-          <>
-            <p style={{ fontSize: 12, color: '#9CA3AF', marginTop: 14, marginBottom: 10 }}>Fotos extras (opcional)</p>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-              <FotoUpload label="Extra 1" value={fotoExtra1} onChange={(f) => handleFoto(setFotoExtra1, 'FotoExtra1', f)} onRemove={() => setFotoExtra1('')} />
-              <FotoUpload label="Extra 2" value={fotoExtra2} onChange={(f) => handleFoto(setFotoExtra2, 'FotoExtra2', f)} onRemove={() => setFotoExtra2('')} />
-              <FotoUpload label="Extra 3" value={fotoExtra3} onChange={(f) => handleFoto(setFotoExtra3, 'FotoExtra3', f)} onRemove={() => setFotoExtra3('')} />
-              <FotoUpload label="Extra 4" value={fotoExtra4} onChange={(f) => handleFoto(setFotoExtra4, 'FotoExtra4', f)} onRemove={() => setFotoExtra4('')} />
-              <FotoUpload label="Extra 5" value={fotoExtra5} onChange={(f) => handleFoto(setFotoExtra5, 'FotoExtra5', f)} onRemove={() => setFotoExtra5('')} />
-            </div>
-          </>
-        )}
+        {tipoServico === 'Manutenção' && (() => {
+          const temAlgumaExtra = !!(fotoExtra1 || fotoExtra2 || fotoExtra3 || fotoExtra4 || fotoExtra5)
+          return (
+            <details open={temAlgumaExtra} style={{ marginTop: 14 }}>
+              <summary style={{
+                fontSize: 13, fontWeight: 600, color: '#6B7280', cursor: 'pointer',
+                padding: '8px 0', listStyle: 'none', display: 'flex', alignItems: 'center', gap: 6,
+              }}>
+                <Camera size={14} />
+                Fotos extras (opcional)
+              </summary>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
+                <FotoUpload label="Extra 1" value={fotoExtra1} onChange={(f) => handleFoto(setFotoExtra1, 'FotoExtra1', f)} onRemove={() => setFotoExtra1('')} />
+                <FotoUpload label="Extra 2" value={fotoExtra2} onChange={(f) => handleFoto(setFotoExtra2, 'FotoExtra2', f)} onRemove={() => setFotoExtra2('')} />
+                <FotoUpload label="Extra 3" value={fotoExtra3} onChange={(f) => handleFoto(setFotoExtra3, 'FotoExtra3', f)} onRemove={() => setFotoExtra3('')} />
+                <FotoUpload label="Extra 4" value={fotoExtra4} onChange={(f) => handleFoto(setFotoExtra4, 'FotoExtra4', f)} onRemove={() => setFotoExtra4('')} />
+                <FotoUpload label="Extra 5" value={fotoExtra5} onChange={(f) => handleFoto(setFotoExtra5, 'FotoExtra5', f)} onRemove={() => setFotoExtra5('')} />
+              </div>
+            </details>
+          )
+        })()}
       </div>
 
       {/* 7. GARANTIA — Peças solicitadas + Fotos (só aparece se tipo = Garantia) */}
