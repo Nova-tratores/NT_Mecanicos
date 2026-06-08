@@ -1,21 +1,19 @@
-const CACHE_NAME = 'nt-mecanicos-v20';
+const ASSETS_CACHE = 'nt-assets-v20';
+const PAGES_CACHE = 'nt-pages';      // NUNCA versionado — sobrevive atualizações do SW
 const APP_SHELL_KEY = 'nt-app-shell';
 
-// Apenas assets que sempre retornam 200 (sem autenticação)
 const PRECACHE_URLS = [
   '/manifest.json',
   '/capa_app.png',
   '/Logo_Nova.png',
 ];
 
-// Assets estáticos — cache-first (muito mais rápido)
 const CACHE_FIRST_PATTERNS = [
   /\/_next\/static\//,
   /\.(?:png|jpg|jpeg|svg|gif|ico|webp|woff2?)$/,
   /\/manifest\.json$/,
 ];
 
-// URLs do Supabase — não cachear no SW (dados ficam no IndexedDB)
 const API_PATTERNS = [
   /supabase\.co/,
   /\/api\//,
@@ -23,11 +21,9 @@ const API_PATTERNS = [
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(async (cache) => {
+    caches.open(ASSETS_CACHE).then(async (cache) => {
       for (const url of PRECACHE_URLS) {
-        try {
-          await cache.add(url);
-        } catch (err) {
+        try { await cache.add(url); } catch (err) {
           console.warn('[SW] Falha ao precachear:', url, err);
         }
       }
@@ -39,7 +35,7 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+      Promise.all(keys.filter((k) => k !== ASSETS_CACHE && k !== PAGES_CACHE).map((k) => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
@@ -51,7 +47,7 @@ self.addEventListener('activate', (event) => {
  */
 async function saveAppShell(response) {
   try {
-    const cache = await caches.open(CACHE_NAME);
+    const cache = await caches.open(PAGES_CACHE);
     await cache.put(APP_SHELL_KEY, response);
   } catch (e) {
     console.warn('[SW] Erro ao salvar app shell:', e);
@@ -60,7 +56,7 @@ async function saveAppShell(response) {
 
 async function getAppShell() {
   try {
-    const cache = await caches.open(CACHE_NAME);
+    const cache = await caches.open(PAGES_CACHE);
     return await cache.match(APP_SHELL_KEY);
   } catch {
     return null;
@@ -94,7 +90,7 @@ self.addEventListener('fetch', (event) => {
         .then((response) => {
           if (response.ok) {
             const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+            caches.open(PAGES_CACHE).then((cache) => cache.put(event.request, clone));
           }
           return response;
         })
@@ -118,7 +114,7 @@ self.addEventListener('fetch', (event) => {
           if (response.ok) {
             // Cachear esta página específica
             const clone1 = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone1));
+            caches.open(PAGES_CACHE).then((cache) => cache.put(event.request, clone1));
             // Salvar como app shell (qualquer página serve de shell)
             const clone2 = response.clone();
             saveAppShell(clone2);
@@ -191,7 +187,7 @@ self.addEventListener('fetch', (event) => {
         return fetch(event.request).then((response) => {
           if (response.ok) {
             const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+            caches.open(ASSETS_CACHE).then((cache) => cache.put(event.request, clone));
           }
           return response;
         }).catch(() => new Response('', { status: 404 }));
@@ -206,7 +202,7 @@ self.addEventListener('fetch', (event) => {
       .then((response) => {
         if (response.ok) {
           const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          caches.open(PAGES_CACHE).then((cache) => cache.put(event.request, clone));
         }
         return response;
       })
@@ -302,7 +298,7 @@ async function backgroundPrefetch() {
     }
 
     // 5. Pré-cachear páginas HTML + RSC para navegação offline
-    const cache = await caches.open(CACHE_NAME);
+    const cache = await caches.open(PAGES_CACHE);
     const rscHeaders2 = { RSC: '1', 'Next-Router-Prefetch': '1' };
     const pageFetches = osList.slice(0, 20).flatMap(os => [
       fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}`, r)).catch(() => {}),
