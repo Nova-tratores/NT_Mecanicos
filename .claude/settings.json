@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(git add \"src/hooks/useCached.ts\" \"src/app/\\(tecnico\\)/os/[id]/preencher/page.tsx\")"
+    ]
+  }
+}
