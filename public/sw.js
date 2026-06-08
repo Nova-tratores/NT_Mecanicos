@@ -214,6 +214,115 @@ self.addEventListener('fetch', (event) => {
   );
 });
 
+// ── Background Sync — baixa dados sem o app aberto ──
+
+const IDB_NAME = 'nt-mecanicos-offline';
+const IDB_STORE = 'cache';
+
+function idbGet(key) {
+  return new Promise((resolve) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE, { keyPath: 'key' });
+      if (!db.objectStoreNames.contains('syncQueue')) db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
+    };
+    req.onsuccess = () => {
+      const tx = req.result.transaction(IDB_STORE, 'readonly');
+      const get = tx.objectStore(IDB_STORE).get(key);
+      get.onsuccess = () => resolve(get.result ? get.result.data : null);
+      get.onerror = () => resolve(null);
+    };
+    req.onerror = () => resolve(null);
+  });
+}
+
+function idbSet(key, data) {
+  return new Promise((resolve) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onsuccess = () => {
+      const tx = req.result.transaction(IDB_STORE, 'readwrite');
+      tx.objectStore(IDB_STORE).put({ key, data, timestamp: Date.now() });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    };
+    req.onerror = () => resolve();
+  });
+}
+
+async function backgroundPrefetch() {
+  const config = await idbGet('sw-config');
+  if (!config || !config.supabaseUrl || !config.tecnicoNome) return;
+
+  const { supabaseUrl, supabaseKey, tecnicoNome, tecnicoNomeReal } = config;
+  const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` };
+  const base = `${supabaseUrl}/rest/v1`;
+
+  console.log('[SW] Background sync iniciando para', tecnicoNome);
+
+  try {
+    // 1. OS do técnico
+    const encNome = encodeURIComponent(tecnicoNome);
+    const osUrl = `${base}/Ordem_Servico?select=*&Status=not.in.("Concluida","Cancelada","Concluída","cancelada")&or=(Os_Tecnico.ilike.%25${encNome}%25,Os_Tecnico2.ilike.%25${encNome}%25)&order=Id_Ordem.desc`;
+    const osRes = await fetch(osUrl, { headers });
+    if (!osRes.ok) return;
+    const osList = await osRes.json();
+
+    await idbSet('prefetch:os-list', osList);
+    for (const os of osList) {
+      await idbSet(`prefetch:os:${os.Id_Ordem}`, os);
+    }
+
+    // 2. OS_Tecnicos
+    const ids = osList.map(o => `"${o.Id_Ordem}"`).join(',');
+    if (ids) {
+      const tecUrl = `${base}/Ordem_Servico_Tecnicos?select=*&Ordem_Servico=in.(${ids})`;
+      const tecRes = await fetch(tecUrl, { headers });
+      if (tecRes.ok) {
+        const tecEntries = await tecRes.json();
+        for (const e of tecEntries) {
+          await idbSet(`prefetch:os-tec:${e.Ordem_Servico}`, e);
+        }
+      }
+    }
+
+    // 3. Dados de referência
+    const [tecnicosRes, veiculosRes] = await Promise.all([
+      fetch(`${base}/Tecnicos_Appsheet?select=UsuNome&order=UsuNome`, { headers }),
+      fetch(`${base}/SupaPlacas?select=IdPlaca,NumPlaca&order=NumPlaca`, { headers }),
+    ]);
+    if (tecnicosRes.ok) await idbSet('prefetch:tecnicos', await tecnicosRes.json());
+    if (veiculosRes.ok) await idbSet('prefetch:veiculos', await veiculosRes.json());
+
+    // 4. PPV de cada OS
+    const osComPPV = osList.filter(o => o.ID_PPV);
+    for (const os of osComPPV) {
+      const ppvRes = await fetch(`${base}/movimentacoes?select=*&Id_PPV=eq.${os.ID_PPV}`, { headers });
+      if (ppvRes.ok) await idbSet(`prefetch:ppv:${os.ID_PPV}`, await ppvRes.json());
+    }
+
+    // 5. Pré-cachear páginas HTML + RSC para navegação offline
+    const cache = await caches.open(CACHE_NAME);
+    const rscHeaders2 = { RSC: '1', 'Next-Router-Prefetch': '1' };
+    const pageFetches = osList.slice(0, 20).flatMap(os => [
+      fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}`, r)).catch(() => {}),
+      fetch(`/os/${os.Id_Ordem}/preencher`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}/preencher`, r)).catch(() => {}),
+    ]);
+    await Promise.allSettled(pageFetches);
+
+    console.log('[SW] Background sync completo:', osList.length, 'OS');
+  } catch (err) {
+    console.warn('[SW] Background sync falhou:', err);
+  }
+}
+
+// ── Periodic Background Sync — roda a cada ~2h quando tem internet ──
+self.addEventListener('periodicsync', (event) => {
+  if (event.tag === 'bg-prefetch') {
+    event.waitUntil(backgroundPrefetch());
+  }
+});
+
 // ── Push Notifications ──
 self.addEventListener('push', (event) => {
   if (!event.data) return;
@@ -229,7 +338,13 @@ self.addEventListener('push', (event) => {
     actions: [{ action: 'open', title: 'Abrir' }],
   };
 
-  event.waitUntil(self.registration.showNotification(title, options));
+  // Mostrar notificação E baixar dados em background
+  event.waitUntil(
+    Promise.all([
+      self.registration.showNotification(title, options),
+      backgroundPrefetch(),
+    ])
+  );
 });
 
 self.addEventListener('notificationclick', (event) => {

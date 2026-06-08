@@ -49,12 +49,9 @@ export default function ServiceWorkerRegister() {
     navigator.serviceWorker
       .register('/sw.js')
       .then((reg) => {
-        // Forçar atualização imediata do SW
         reg.update();
         setInterval(() => reg.update(), 60 * 60 * 1000);
 
-        // Quando novo SW instalado, ativa sem reload forçado
-        // (reload automático causava perda de dados preenchidos offline)
         reg.addEventListener('updatefound', () => {
           const newWorker = reg.installing;
           if (newWorker) {
@@ -66,10 +63,16 @@ export default function ServiceWorkerRegister() {
           }
         });
 
-        // Subscribir ao push quando o técnico estiver logado
         if (user?.tecnico_nome && VAPID_PUBLIC_KEY) {
           const nome = user.nome_pos || user.tecnico_nome;
           subscribePush(reg, nome);
+        }
+
+        // Periodic Background Sync — atualiza dados mesmo com app fechado
+        if ('periodicSync' in reg) {
+          (reg as any).periodicSync.register('bg-prefetch', {
+            minInterval: 2 * 60 * 60 * 1000, // a cada 2 horas
+          }).catch(() => { /* browser pode negar */ });
         }
       })
       .catch((err) => {

@@ -232,6 +232,14 @@ export async function prefetchAll(
       await Promise.allSettled(rscFetches)
     }
 
+    // Salvar config para o SW fazer background sync sem o app aberto
+    await offlineSet('sw-config', {
+      supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL,
+      supabaseKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      tecnicoNome: nome,
+      tecnicoNomeReal: tecnicoNome,
+    })
+
     localStorage.setItem(PREFETCH_KEY, String(Date.now()))
     console.log('[prefetch] Dados offline carregados com sucesso')
     onProgress?.('')
