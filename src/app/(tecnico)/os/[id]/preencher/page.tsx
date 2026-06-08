@@ -209,6 +209,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
   useEffect(() => {
     const carregar = async () => {
+      try {
       // Se offline, carregar do cache prefetch + backup do form
       if (!navigator.onLine) {
         const [cachedOs, cachedTec, cachedTecnicos, cachedVeiculos] = await Promise.all([
@@ -267,7 +268,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           }
         }
 
-        setLoading(false)
         return
       }
 
@@ -296,7 +296,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
         if (cachedVeiculos) setVeiculos(cachedVeiculos)
         if (user) setTecResp1(user.tecnico_nome)
-        setLoading(false)
         return
       }
       const osData = osRes.data
@@ -400,20 +399,25 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         }
       }
 
-      setLoading(false)
-    }
-    carregar().catch(async () => {
+    } catch {
       // Rede falhou (onLine=true mas sem internet real) — fallback para cache
       console.warn('[preencher] Rede falhou, tentando cache offline...')
-      const [cachedOs, cachedTecnicos, cachedVeiculos] = await Promise.all([
-        getCachedOS(id), getCachedTecnicos(), getCachedVeiculos(),
-      ])
-      if (cachedOs) setOs(cachedOs as unknown as OrdemServico)
-      if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
-      if (cachedVeiculos) setVeiculos(cachedVeiculos)
-      if (user) setTecResp1(user.tecnico_nome)
+      try {
+        const [cachedOs, cachedTecnicos, cachedVeiculos] = await Promise.all([
+          getCachedOS(id), getCachedTecnicos(), getCachedVeiculos(),
+        ])
+        if (cachedOs) setOs(cachedOs as unknown as OrdemServico)
+        if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
+        if (cachedVeiculos) setVeiculos(cachedVeiculos)
+        if (user) setTecResp1(user.tecnico_nome)
+      } catch (e) {
+        console.error('[preencher] Fallback de cache falhou:', e)
+      }
+    } finally {
       setLoading(false)
-    })
+    }
+    }
+    carregar()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, user?.tecnico_nome])
 

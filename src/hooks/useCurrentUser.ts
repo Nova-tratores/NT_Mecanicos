@@ -5,6 +5,14 @@ import { supabase } from '@/lib/supabase'
 import type { MecanicoProfile } from '@/lib/types'
 
 const PROFILE_KEY = 'nt-mecanicos-profile'
+const AUTH_TIMEOUT = 8000
+
+function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('auth timeout')), AUTH_TIMEOUT)),
+  ])
+}
 
 function getCachedProfile(): MecanicoProfile | null {
   try {
@@ -47,7 +55,7 @@ export function useCurrentUser() {
       }
 
       try {
-        const { data: { session } } = await supabase.auth.getSession()
+        const { data: { session } } = await withTimeout(supabase.auth.getSession())
 
         if (!session) {
           // Se sem internet (ou internet instável) e tem perfil cacheado, usa o cache
@@ -63,11 +71,11 @@ export function useCurrentUser() {
         }
 
         // 1. Checar portal_permissoes
-        const { data: perm, error: permError } = await supabase
+        const { data: perm, error: permError } = await withTimeout(supabase
           .from('portal_permissoes')
           .select('is_admin, mecanico_role, mecanico_tecnico_nome')
           .eq('user_id', session.user.id)
-          .single()
+          .single())
 
         // Se a query falhou (offline/rede instável), usar cache ao invés de continuar
         if (permError && !perm) {
@@ -82,11 +90,11 @@ export function useCurrentUser() {
         if (cancelled) return
 
         if (perm && (perm.mecanico_role || perm.is_admin)) {
-          const { data: portalProfile } = await supabase
+          const { data: portalProfile } = await withTimeout(supabase
             .from('financeiro_usu')
             .select('nome, email, avatar_url')
             .eq('id', session.user.id)
-            .single()
+            .single())
 
           if (cancelled) return
 
@@ -113,11 +121,11 @@ export function useCurrentUser() {
         }
 
         // 2. Fallback: checar mecanico_usuarios (legado)
-        const { data, error: legacyError } = await supabase
+        const { data, error: legacyError } = await withTimeout(supabase
           .from('mecanico_usuarios')
           .select('*')
           .eq('id', session.user.id)
-          .single()
+          .single())
 
         if (cancelled) return
 
@@ -126,29 +134,29 @@ export function useCurrentUser() {
           const email = profile.tecnico_email?.trim()
 
           if (email && !profile.nome_pos) {
-            const { data: reqUser } = await supabase
+            const { data: reqUser } = await withTimeout(supabase
               .from('req_usuarios')
               .select('nome')
               .ilike('email', `%${email}%`)
-              .maybeSingle()
+              .maybeSingle())
 
             let nomePOS = reqUser?.nome || null
 
             if (!nomePOS) {
-              const { data: tecApp } = await supabase
+              const { data: tecApp } = await withTimeout(supabase
                 .from('Tecnicos_Appsheet')
                 .select('UsuNome')
                 .ilike('UsuEmail', `%${email}%`)
-                .maybeSingle()
+                .maybeSingle())
               nomePOS = tecApp?.UsuNome?.trim() || null
             }
 
             if (nomePOS) {
-              const { data: tecExato } = await supabase
+              const { data: tecExato } = await withTimeout(supabase
                 .from('Tecnicos_Appsheet')
                 .select('UsuNome')
                 .ilike('UsuNome', `%${nomePOS}%`)
-                .maybeSingle()
+                .maybeSingle())
               if (tecExato?.UsuNome) nomePOS = tecExato.UsuNome.trim()
               profile.nome_pos = nomePOS
             }

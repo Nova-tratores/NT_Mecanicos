@@ -27,6 +27,11 @@ function addAvisoConfirmadoLocal(id: number) {
   localStorage.setItem(AVISOS_CONFIRMADOS_KEY, JSON.stringify([...set]))
 }
 
+const LAYOUT_TIMEOUT = 8000
+function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
+  return Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), LAYOUT_TIMEOUT))])
+}
+
 export default function TecnicoLayoutInner({ children }: { children: React.ReactNode }) {
   const { user, loading } = useCurrentUser()
   const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '')
@@ -42,21 +47,21 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     if (!user?.tecnico_nome) return
     if (!navigator.onLine) return // não tentar carregar avisos offline
     const hoje = new Date().toISOString().split('T')[0]
-    const { data: avisos } = await supabase
+    const { data: avisos } = await withTimeout(supabase
       .from('avisos_gerais')
       .select('id, titulo, mensagem, prioridade')
       .eq('ativo', true)
       .or(`expira_em.is.null,expira_em.gte.${hoje}`)
-      .order('created_at', { ascending: true })
+      .order('created_at', { ascending: true }))
     if (!avisos || avisos.length === 0) { setAvisosPendentes([]); return }
 
     // Filtrar por confirmados no servidor
     const ids = avisos.map(a => a.id)
-    const { data: confirmados } = await supabase
+    const { data: confirmados } = await withTimeout(supabase
       .from('avisos_gerais_confirmados')
       .select('aviso_id')
       .eq('tecnico_nome', user.tecnico_nome)
-      .in('aviso_id', ids)
+      .in('aviso_id', ids))
     const confirmSet = new Set((confirmados || []).map((c: any) => c.aviso_id))
 
     // Também filtrar por confirmados localmente (proteção contra re-exibição)
@@ -71,12 +76,12 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     if (!navigator.onLine) { setCheckinFeito(true); return }
     try {
       const hoje = new Date().toISOString().split('T')[0]
-      const { data, error } = await supabase
+      const { data, error } = await withTimeout(supabase
         .from('checkin_diario')
         .select('id')
         .eq('tecnico_nome', user.tecnico_nome)
         .eq('data', hoje)
-        .limit(1)
+        .limit(1))
       if (error) { setCheckinFeito(true); return }
       setCheckinFeito((data && data.length > 0) ? true : false)
     } catch {
