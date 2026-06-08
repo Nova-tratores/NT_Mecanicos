@@ -399,7 +399,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       if (user) setTecResp1(user.tecnico_nome)
       setLoading(false)
     })
-  }, [id, user])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, user?.tecnico_nome])
 
   // Polling automático do PPV (a cada 30s)
   useEffect(() => {

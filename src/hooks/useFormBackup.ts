@@ -23,11 +23,12 @@ export function useFormBackup(
   getRef.current = getFormData
   const setRef = useRef(setFormData)
   setRef.current = setFormData
+  const readyRef = useRef(false)
 
   const save = useCallback(() => {
+    if (!readyRef.current) return
     try {
       const data = getRef.current()
-      // Só salva se tem algum dado preenchido
       const hasData = Object.values(data).some(v =>
         v !== '' && v !== false && v !== null && v !== undefined &&
         !(Array.isArray(v) && v.length === 0)
@@ -64,7 +65,6 @@ export function useFormBackup(
     }
   }, [save])
 
-  // Restaurar dados salvos — chamar manualmente APÓS carregar dados do servidor
   const restore = useCallback(() => {
     try {
       const saved = localStorage.getItem(prefixedKey)
@@ -75,12 +75,14 @@ export function useFormBackup(
           const { _t, ...fields } = data
           setRef.current(fields)
           console.log(`[backup] Restaurado: ${key}`)
+          readyRef.current = true
           return true
         }
       }
     } catch {
       // dados corrompidos, ignora
     }
+    readyRef.current = true
     return false
   }, [prefixedKey, key])
 
