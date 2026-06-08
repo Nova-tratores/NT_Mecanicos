@@ -89,17 +89,23 @@ self.addEventListener('fetch', (event) => {
       fetchWithTimeout(event.request, 3000)
         .then((response) => {
           if (response.ok) {
-            const clone = response.clone();
-            caches.open(PAGES_CACHE).then((cache) => cache.put(event.request, clone));
+            // Salvar SEM o header Vary para que qualquer RSC request bata no cache
+            const headers = new Headers(response.headers);
+            headers.delete('Vary');
+            const cleaned = new Response(response.clone().body, { status: response.status, headers });
+            caches.open(PAGES_CACHE).then((cache) => cache.put(event.request.url, cleaned));
           }
           return response;
         })
         .catch(async () => {
-          // Tentar cache exato desta rota RSC
-          const cached = await caches.match(event.request);
+          // ignoreVary: RSC prefetch vs RSC navigation tem headers diferentes
+          const cached = await caches.match(event.request, { ignoreVary: true });
           if (cached) return cached;
 
-          // Sem RSC em cache — retornar erro para que o Next.js faça hard navigation
+          // Tentar pelo URL direto (sem considerar headers)
+          const byUrl = await caches.match(event.request.url);
+          if (byUrl) return byUrl;
+
           return new Response('', { status: 503 });
         })
     );

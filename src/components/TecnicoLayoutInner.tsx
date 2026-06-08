@@ -126,48 +126,23 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   }, [user?.tecnico_nome, user?.nome_pos])
 
   // ── Interceptor de navegação offline ──
-  // navigator.onLine é unreliable (pode ser true sem internet real).
-  // Rastreamos conectividade real: se qualquer fetch falhou recentemente, usamos MPA.
+  // SEMPRE usa MPA navigation (window.location.href) para links internos.
+  // O SW serve do cache quando offline. Confiabilidade > velocidade de transição.
   useEffect(() => {
-    let fetchFailed = !navigator.onLine
-
-    const originalFetch = window.fetch
-    window.fetch = async function (...args: Parameters<typeof fetch>) {
-      try {
-        const res = await originalFetch.apply(window, args)
-        fetchFailed = false
-        return res
-      } catch (err) {
-        fetchFailed = true
-        throw err
-      }
-    }
-
-    const onOffline = () => { fetchFailed = true }
-    const onOnline = () => { fetchFailed = false }
-    window.addEventListener('offline', onOffline)
-    window.addEventListener('online', onOnline)
-
     const handler = (e: MouseEvent) => {
-      if (!fetchFailed) return
-
       const anchor = (e.target as HTMLElement).closest('a')
       if (!anchor) return
 
       const href = anchor.getAttribute('href')
       if (!href || href.startsWith('http') || href.startsWith('#') || href.startsWith('mailto:')) return
+      if (href === window.location.pathname) return
 
       e.preventDefault()
       e.stopPropagation()
       window.location.href = href
     }
     document.addEventListener('click', handler, true)
-    return () => {
-      document.removeEventListener('click', handler, true)
-      window.removeEventListener('offline', onOffline)
-      window.removeEventListener('online', onOnline)
-      window.fetch = originalFetch
-    }
+    return () => document.removeEventListener('click', handler, true)
   }, [])
 
   useEffect(() => {
