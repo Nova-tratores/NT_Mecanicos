@@ -33,7 +33,7 @@ export default function RelatoriosPage() {
 
   // Versão da chave: bump quando o shape de RelatorioMes muda, p/ invalidar IndexedDB stale
   const { data, loading, refreshing, refresh } = useCached<RelatorioMes>(
-    `relatorios:v14:${profile.tecnico_nome}:${mes}`,
+    `relatorios:v15:${profile.tecnico_nome}:${mes}`,
     () => fetchRelatorioMes(profile, mes),
     { skip: !user },
   )
@@ -535,6 +535,14 @@ function CardOcorrencias({
   isOpen: boolean
   onToggle: () => void
 }) {
+  const [expandidos, setExpandidos] = useState<Set<number | string>>(new Set())
+  const toggleItem = (id: number | string) => {
+    setExpandidos(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
   const qtd = ocorrencias.qtd
   const pontos = ocorrencias.pontos
   const tem = qtd > 0
@@ -598,47 +606,65 @@ function CardOcorrencias({
               Nenhuma ocorrência no período. Bom trabalho.
             </div>
           ) : (
-            ocorrencias.lista.map(oc => (
-              <div key={oc.id} style={{
-                background: colors.dangerBg, borderRadius: radius.md,
-                padding: '10px 12px',
-                border: `1px solid ${colors.dangerBorder}`,
-                display: 'flex', alignItems: 'center', gap: 10,
-              }}>
-                <div style={{
-                  width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
-                  background: colors.danger, color: '#fff',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 13, fontWeight: 800,
-                }}>
-                  -{oc.pontos}
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontSize: 13, fontWeight: 700, color: colors.text,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>
-                    {getLabelTipo(oc.tipo)}
-                  </div>
-                  <div style={{
-                    fontSize: 11, color: colors.textMuted, marginTop: 2,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>
-                    {oc.descricao}
-                  </div>
-                </div>
-                <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted }}>
-                    {oc.data}
-                  </div>
-                  {oc.idOrdem && (
-                    <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 2 }}>
-                      OS {oc.idOrdem}
+            ocorrencias.lista.map(oc => {
+              const aberta = expandidos.has(oc.id)
+              return (
+                <button
+                  key={oc.id}
+                  onClick={() => toggleItem(oc.id)}
+                  style={{
+                    background: colors.dangerBg, borderRadius: radius.md,
+                    padding: '10px 12px',
+                    border: `1px solid ${colors.dangerBorder}`,
+                    display: 'flex', flexDirection: 'column', gap: 8,
+                    cursor: 'pointer', textAlign: 'left', width: '100%',
+                    font: 'inherit',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%' }}>
+                    <div style={{
+                      width: 36, height: 36, borderRadius: '50%', flexShrink: 0,
+                      background: colors.danger, color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 13, fontWeight: 800,
+                    }}>
+                      -{oc.pontos}
                     </div>
-                  )}
-                </div>
-              </div>
-            ))
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: 13, fontWeight: 700, color: colors.text,
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
+                        {getLabelTipo(oc.tipo)}
+                      </div>
+                      <div style={{
+                        fontSize: 11, color: colors.textMuted, marginTop: 2,
+                        ...(aberta
+                          ? { whiteSpace: 'normal' as const, wordBreak: 'break-word' as const }
+                          : { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
+                        ),
+                      }}>
+                        {oc.descricao}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: 'right', flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted }}>
+                        {oc.data}
+                      </div>
+                      {oc.idOrdem && (
+                        <div style={{ fontSize: 10, color: colors.textSubtle }}>
+                          OS {oc.idOrdem}
+                        </div>
+                      )}
+                      <ChevronDown size={14} color={colors.textSubtle} style={{
+                        transition: 'transform 0.2s',
+                        transform: aberta ? 'rotate(180deg)' : 'rotate(0deg)',
+                      }} />
+                    </div>
+                  </div>
+                </button>
+              )
+            })
           )}
         </div>
       )}

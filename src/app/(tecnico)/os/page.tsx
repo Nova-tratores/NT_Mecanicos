@@ -27,50 +27,81 @@ interface OsData {
 
 /* ═══ Fetch principal ═══ */
 async function fetchOsData(nome: string): Promise<OsData> {
-  const [osRes] = await Promise.all([
+  // Duas queries em paralelo:
+  // (A) OS ATIVAS do técnico — alimenta as abas Preencher/Abertas (exclui já
+  //     concluídas/canceladas pelo comercial pra não poluir a lista de trabalho)
+  // (B) TODAS as OS do técnico (inclui Concluída/Faturada/Cancelada) —
+  //     necessária pra o contador "Enviadas" bater com a sub-aba, que mostra
+  //     TUDO que foi enviado ao longo da vida do técnico, não só o que ainda
+  //     está ativo
+  const [osAtivasRes, osTodasRes] = await Promise.all([
     supabase
       .from('Ordem_Servico')
       .select('*')
       .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
       .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
       .order('Id_Ordem', { ascending: false }),
+    supabase
+      .from('Ordem_Servico')
+      .select('Id_Ordem, Status')
+      .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
+      .limit(2000),
   ])
 
-  // Se o Supabase retornou erro (ex: offline), lança para o useCached usar o fallback do IndexedDB
-  if (osRes.error) throw new Error(osRes.error.message)
+  if (osAtivasRes.error) throw new Error(osAtivasRes.error.message)
 
-  const todas = (osRes.data || []) as OrdemServico[]
+  const todas = (osAtivasRes.data || []) as OrdemServico[]
+  const todasGlobal = (osTodasRes.data || []) as { Id_Ordem: string; Status: string }[]
 
   let preenchidas = new Set<string>()
   let enviadas = new Set<string>()
   const cidadeMap: Record<string, string> = {}
   const agendaMap: Record<string, string[]> = {}
 
+  // Status pós-relatório usados nos dois lados (lista + contador)
+  const FASES_CONCLUIDAS_TECNICO = [
+    'Relatório Concluído', 'Relatorio Concluido',
+    'Executada aguardando comercial',
+    'Concluída', 'Concluida', 'Concluído', 'Concluido',
+    'Faturada', 'Faturado',
+    'Finalizada', 'Finalizado',
+  ]
+
   if (todas.length > 0) {
-    const ids = todas.map(o => o.Id_Ordem)
+    const idsAtivas = todas.map(o => o.Id_Ordem)
+    const idsAll = todasGlobal.map(o => String(o.Id_Ordem))
     const cnpjs = [...new Set(todas.map(o => o.Cnpj_Cliente).filter(Boolean))]
-    const [preenchRes, cliRes, agendaRes] = await Promise.all([
-      supabase.from('Ordem_Servico_Tecnicos').select('Ordem_Servico, Status').in('Ordem_Servico', ids),
+    const [preenchRes, cliRes, agendaRes, enviadasAllRes] = await Promise.all([
+      supabase.from('Ordem_Servico_Tecnicos').select('Ordem_Servico, Status').in('Ordem_Servico', idsAtivas),
       cnpjs.length > 0
         ? supabase.from('Clientes').select('cnpj_cpf, cidade').in('cnpj_cpf', cnpjs)
         : Promise.resolve({ data: null }),
       supabase
         .from('agenda_tecnico')
         .select('id_ordem, data_agendada')
-        .in('id_ordem', ids)
+        .in('id_ordem', idsAtivas)
         .not('status', 'eq', 'cancelado'),
+      // Conta registros 'enviado' em TODAS as OS do técnico (incluindo já
+      // finalizadas). Sem isso o contador subestima — só conta OS ativas.
+      idsAll.length > 0
+        ? supabase
+          .from('Ordem_Servico_Tecnicos')
+          .select('Ordem_Servico')
+          .in('Ordem_Servico', idsAll)
+          .eq('Status', 'enviado')
+        : Promise.resolve({ data: null }),
     ])
     if (preenchRes.data) {
       preenchidas = new Set(preenchRes.data.map((p: { Ordem_Servico: string }) => String(p.Ordem_Servico)))
-      enviadas = new Set(
-        preenchRes.data
-          .filter((p: { Status: string }) => p.Status === 'enviado')
-          .map((p: { Ordem_Servico: string }) => String(p.Ordem_Servico)),
-      )
     }
-    // OS com status concluído pelo técnico também contam como enviadas
-    const FASES_CONCLUIDAS_TECNICO = ['Relatório Concluído', 'Executada aguardando comercial']
-    for (const o of todas) {
+    // CONTADOR: usa a passada GLOBAL (registros 'enviado' em TODAS as OS,
+    // independente do status atual da OS principal).
+    enviadas = new Set(
+      ((enviadasAllRes.data || []) as { Ordem_Servico: string }[])
+        .map(r => String(r.Ordem_Servico)),
+    )
+    // + OS principal já em fase finalizada (também conta como enviada)
+    for (const o of todasGlobal) {
       if (FASES_CONCLUIDAS_TECNICO.includes(o.Status)) {
         enviadas.add(String(o.Id_Ordem))
       }
@@ -165,7 +196,7 @@ export default function OrdensHub() {
   const nome = user?.nome_pos || user?.tecnico_nome || ''
 
   const { data, loading, refreshing } = useCached<OsData>(
-    `os:${nome}`,
+    `os:v2:${nome}`,
     () => fetchOsData(nome),
     { skip: !user },
   )
@@ -426,62 +457,85 @@ export default function OrdensHub() {
 /* ═══ Sub-aba Enviadas ═══ */
 function OsEnviadasTab({ nome }: { nome: string }) {
   const { data: ordens, loading } = useCached(
-    `os-enviadas:${nome}`,
+    `os-enviadas:v5:${nome}`,
     async () => {
-      // 1. Buscar registros preenchidos pelo técnico (enviado ou rascunho)
-      const { data: tecData } = await supabase
-        .from('Ordem_Servico_Tecnicos')
-        .select('*')
-        .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
-        .in('Status', ['enviado', 'rascunho'])
-        .order('Data', { ascending: false })
-      const todosRegs = (tecData || []) as { id: number; Ordem_Servico: string; TecResp1: string; Data: string; TipoServico: string; Status: string; pdf_criado: boolean }[]
-
-      // Buscar status da OS principal para cada registro
-      const osIds = [...new Set(todosRegs.map(r => String(r.Ordem_Servico)))]
-      let osStatusMap: Record<string, string> = {}
-      if (osIds.length > 0) {
-        const { data: osData } = await supabase
-          .from('Ordem_Servico')
-          .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data_Abertura')
-          .in('Id_Ordem', osIds)
-        if (osData) {
-          for (const o of osData) {
-            osStatusMap[String(o.Id_Ordem)] = o.Status
-          }
-        }
+      type RegTec = {
+        id: number; Ordem_Servico: string; TecResp1: string | null; TecResp2: string | null;
+        Data: string; TipoServico: string | null; Status: string; pdf_criado: boolean;
       }
+      // Coluna se chama "Data" — NÃO "Data_Abertura" (esse era um nome inventado
+      // que causava HTTP 400 silencioso e fazia a query inteira retornar []).
+      type OS = { Id_Ordem: string; Status: string; Tipo_Servico: string | null; Os_Cliente: string | null; Data: string | null }
 
-      // Incluir se: registro 'enviado' OU OS principal já está concluída
-      const FASES_CONCLUIDAS = ['Relatório Concluído', 'Executada aguardando comercial']
-      const registros = todosRegs.filter(r =>
-        r.Status === 'enviado' || FASES_CONCLUIDAS.includes(osStatusMap[String(r.Ordem_Servico)] || '')
-      )
-      const idsJaIncluidos = new Set(registros.map(r => String(r.Ordem_Servico)))
+      const FASES_FINALIZADAS = new Set([
+        'Relatório Concluído', 'Relatorio Concluido',
+        'Executada aguardando comercial',
+        'Concluída', 'Concluida', 'Concluído', 'Concluido',
+        'Faturada', 'Faturado',
+        'Finalizada', 'Finalizado',
+      ])
 
-      // 2. Buscar OS concluídas que não têm registro na tabela do técnico
-      const { data: osConc } = await supabase
+      // ESTRATÉGIA (espelha a do contador verde em fetchOsData):
+      // 1) Busca OS onde o técnico aparece como Os_Tecnico OU Os_Tecnico2.
+      // 2) Busca TODOS os registros dessas OS em Ordem_Servico_Tecnicos pelo ID,
+      //    SEM filtrar por TecResp (cobre caso do TecResp2 preencher).
+      // 3) Inclui qualquer OS que tenha registro 'enviado' OU OS principal já
+      //    está em fase finalizada (Concluída/Faturada/etc.).
+      const { data: osList, error: osErr } = await supabase
         .from('Ordem_Servico')
-        .select('Id_Ordem, Tipo_Servico, Os_Cliente, Data_Abertura')
-        .in('Status', FASES_CONCLUIDAS)
+        .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data')
         .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
-      if (osConc) {
-        for (const os of osConc) {
-          if (!idsJaIncluidos.has(String(os.Id_Ordem))) {
-            registros.push({
-              id: 0,
-              Ordem_Servico: String(os.Id_Ordem),
-              TecResp1: nome,
-              Data: os.Data_Abertura || '',
-              TipoServico: os.Tipo_Servico || '',
-              Status: 'enviado',
-              pdf_criado: false,
-            } as any)
-          }
+        .limit(1000)
+      if (osErr) {
+        console.warn('[os-enviadas] erro na query de OS:', osErr.message)
+        return [] as RegTec[]
+      }
+      const osArr = (osList || []) as OS[]
+      if (osArr.length === 0) return [] as RegTec[]
+
+      const ids = osArr.map(o => String(o.Id_Ordem))
+      const { data: regsData, error: regsErr } = await supabase
+        .from('Ordem_Servico_Tecnicos')
+        .select('id, Ordem_Servico, TecResp1, TecResp2, Data, TipoServico, Status, pdf_criado')
+        .in('Ordem_Servico', ids)
+        .order('Data', { ascending: false })
+      if (regsErr) console.warn('[os-enviadas] erro na query de registros:', regsErr.message)
+      const todosRegs = (regsData || []) as RegTec[]
+
+      // Agrupa registros por Ordem_Servico
+      const regsPorOs = new Map<string, RegTec[]>()
+      for (const r of todosRegs) {
+        const k = String(r.Ordem_Servico)
+        const arr = regsPorOs.get(k) || []
+        arr.push(r)
+        regsPorOs.set(k, arr)
+      }
+
+      // Pra cada OS, decide se vai pra aba "enviadas"
+      const finais: RegTec[] = []
+      for (const os of osArr) {
+        const idOs = String(os.Id_Ordem)
+        const regs = regsPorOs.get(idOs) || []
+        const algumEnviado = regs.find(r => r.Status === 'enviado')
+        const osFinalizada = FASES_FINALIZADAS.has(os.Status)
+
+        if (algumEnviado) {
+          finais.push(algumEnviado)
+        } else if (osFinalizada) {
+          finais.push(regs[0] || {
+            id: 0,
+            Ordem_Servico: idOs,
+            TecResp1: nome,
+            TecResp2: null,
+            Data: os.Data || '',
+            TipoServico: os.Tipo_Servico,
+            Status: 'enviado',
+            pdf_criado: false,
+          })
         }
       }
 
-      return registros
+      return finais.sort((a, b) => (b.Data || '').localeCompare(a.Data || ''))
     },
     { skip: !nome },
   )
