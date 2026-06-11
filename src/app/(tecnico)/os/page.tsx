@@ -433,7 +433,7 @@ export default function OrdensHub() {
 /* ═══ Sub-aba Enviadas ═══ */
 function OsEnviadasTab({ nome }: { nome: string }) {
   const { data: ordens, loading } = useCached(
-    `os-enviadas:v3:${nome}`,
+    `os-enviadas:v4:${nome}`,
     async () => {
       type RegTec = {
         id: number; Ordem_Servico: string; TecResp1: string | null; TecResp2: string | null;
@@ -441,8 +441,6 @@ function OsEnviadasTab({ nome }: { nome: string }) {
       }
       type OS = { Id_Ordem: string; Status: string; Tipo_Servico: string | null; Os_Cliente: string | null; Data_Abertura: string | null }
 
-      // Status pós-relatório: técnico já enviou e a OS pode estar em qualquer fase
-      // dali pra frente. Lista ampla pra cobrir todas as variações de grafia.
       const FASES_FINALIZADAS = new Set([
         'Relatório Concluído', 'Relatorio Concluido',
         'Executada aguardando comercial',
@@ -451,53 +449,55 @@ function OsEnviadasTab({ nome }: { nome: string }) {
         'Finalizada', 'Finalizado',
       ])
 
-      // Busca em paralelo:
-      // (1) TODOS os registros do técnico em Ordem_Servico_Tecnicos — sem filtro
-      //     de status (o status pode ser 'enviado', mas pode tb ter virado outra
-      //     coisa depois do comercial. Filtramos rascunhos em JS).
-      // (2) TODAS as OS onde o técnico aparece como responsável — pra cruzar e
-      //     também pegar as que estão finalizadas sem registro técnico.
-      const [tecRes, osRes] = await Promise.all([
-        supabase
-          .from('Ordem_Servico_Tecnicos')
-          .select('id, Ordem_Servico, TecResp1, TecResp2, Data, TipoServico, Status, pdf_criado')
-          .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
-          .order('Data', { ascending: false })
-          .limit(1000),
-        supabase
-          .from('Ordem_Servico')
-          .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data_Abertura')
-          .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
-          .limit(1000),
-      ])
+      // ESTRATÉGIA (espelha a do contador verde em fetchOsData):
+      // 1) Busca OS onde o técnico aparece como Os_Tecnico OU Os_Tecnico2 (campos
+      //    da OS principal — origem confiável de "OS desse técnico").
+      // 2) Busca TODOS os registros dessas OS em Ordem_Servico_Tecnicos pelo ID,
+      //    SEM filtrar por TecResp. Isso cobre o caso onde o TecResp2 preencheu
+      //    em vez do TecResp1 (ou onde os nomes batem em campos diferentes).
+      // 3) Inclui na lista qualquer OS que tenha PELO MENOS UM registro
+      //    com Status='enviado' OU cuja OS principal já está em fase finalizada.
+      const { data: osList } = await supabase
+        .from('Ordem_Servico')
+        .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data_Abertura')
+        .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
+        .limit(1000)
+      const osArr = (osList || []) as OS[]
+      if (osArr.length === 0) return [] as RegTec[]
 
-      const tecnicoRegs = (tecRes.data || []) as RegTec[]
-      const osList = (osRes.data || []) as OS[]
+      const ids = osArr.map(o => String(o.Id_Ordem))
+      const { data: regsData } = await supabase
+        .from('Ordem_Servico_Tecnicos')
+        .select('id, Ordem_Servico, TecResp1, TecResp2, Data, TipoServico, Status, pdf_criado')
+        .in('Ordem_Servico', ids)
+        .order('Data', { ascending: false })
+      const todosRegs = (regsData || []) as RegTec[]
 
-      // Mapa pra olhar status atual de cada OS
-      const osMap = new Map<string, OS>()
-      for (const o of osList) osMap.set(String(o.Id_Ordem), o)
-
-      // Acumulador (Map evita duplicatas) — chave = Ordem_Servico
-      const finais = new Map<string, RegTec>()
-
-      // (a) Pra cada registro técnico: incluir se Status != 'rascunho'
-      //     OU se OS principal já está numa fase finalizada
-      for (const r of tecnicoRegs) {
-        const idOs = String(r.Ordem_Servico)
-        const osStatus = osMap.get(idOs)?.Status || ''
-        if (r.Status !== 'rascunho' || FASES_FINALIZADAS.has(osStatus)) {
-          finais.set(idOs, r)
-        }
+      // Agrupa registros por Ordem_Servico
+      const regsPorOs = new Map<string, RegTec[]>()
+      for (const r of todosRegs) {
+        const k = String(r.Ordem_Servico)
+        const arr = regsPorOs.get(k) || []
+        arr.push(r)
+        regsPorOs.set(k, arr)
       }
 
-      // (b) Adiciona OS finalizadas no nome do técnico que NÃO têm registro técnico
-      //     (caso raro: comercial mudou status sem o técnico ter preenchido o app)
-      for (const os of osList) {
+      // Pra cada OS, decide se vai pra aba "enviadas"
+      const finais: RegTec[] = []
+      for (const os of osArr) {
         const idOs = String(os.Id_Ordem)
-        if (finais.has(idOs)) continue
-        if (FASES_FINALIZADAS.has(os.Status)) {
-          finais.set(idOs, {
+        const regs = regsPorOs.get(idOs) || []
+        const algumEnviado = regs.find(r => r.Status === 'enviado')
+        const osFinalizada = FASES_FINALIZADAS.has(os.Status)
+
+        if (algumEnviado) {
+          // Mostra o registro 'enviado' (de quem realmente enviou — pode ser
+          // TecResp1 ou TecResp2)
+          finais.push(algumEnviado)
+        } else if (osFinalizada) {
+          // OS já está concluída/faturada mas não tem registro 'enviado' na
+          // tabela do técnico. Pega o último registro disponível ou cria fake.
+          finais.push(regs[0] || {
             id: 0,
             Ordem_Servico: idOs,
             TecResp1: nome,
@@ -510,10 +510,7 @@ function OsEnviadasTab({ nome }: { nome: string }) {
         }
       }
 
-      // Ordena por data decrescente (mais recentes primeiro)
-      return Array.from(finais.values()).sort((a, b) =>
-        (b.Data || '').localeCompare(a.Data || '')
-      )
+      return finais.sort((a, b) => (b.Data || '').localeCompare(a.Data || ''))
     },
     { skip: !nome },
   )
@@ -525,7 +522,7 @@ function OsEnviadasTab({ nome }: { nome: string }) {
       <EmptyState
         icon={Send}
         title="Nenhuma OS enviada"
-        subtitle={`Nenhuma OS encontrada com TecResp1/Os_Tecnico ILIKE "%${nome}%". Se você sabe que enviou OS, confira se seu nome cadastrado no app bate com o nome que aparece no campo Tecnico das OS no Omie.`}
+        subtitle="Suas ordens preenchidas aparecerão aqui"
       />
     )
   }
