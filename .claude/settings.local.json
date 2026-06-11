@@ -298,7 +298,9 @@
       "Bash(find /c/projetos/mecanicos/public -type f -name \"*.json\" 2>/dev/null | head -10)",
       "Bash(Select-Object -Last 30)",
       "PowerShell(git add \"src/components/TecnicoLayoutInner.tsx\" \"public/sw.js\")",
-      "PowerShell(git add \"src/lib/prefetch.ts\" \"src/components/ServiceWorkerRegister.tsx\" \"src/components/TecnicoLayoutInner.tsx\" \"public/sw.js\")"
+      "PowerShell(git add \"src/lib/prefetch.ts\" \"src/components/ServiceWorkerRegister.tsx\" \"src/components/TecnicoLayoutInner.tsx\" \"public/sw.js\")",
+      "PowerShell(git add \"public/sw.js\")",
+      "PowerShell(git add \"public/sw.js\" \"src/components/TecnicoLayoutInner.tsx\")"
     ]
   }
 }

@@ -8,12 +8,21 @@ import { getQueue, removeFromQueue, updateQueueItem, type SyncItem } from './off
 
 let syncing = false
 const MAX_RETRIES = 5
+const SYNC_TIMEOUT = 15000
+
+function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('sync timeout')), SYNC_TIMEOUT)),
+  ])
+}
 
 // Campos que podem conter fotos em base64 pendentes de upload
 const FOTO_FIELDS = [
   'FotoHorimetro', 'FotoChassis', 'FotoFrente', 'FotoDireita', 'FotoEsquerda',
   'FotoTraseira', 'FotoVolante', 'FotoFalha1', 'FotoFalha2', 'FotoFalha3', 'FotoFalha4',
   'FotoPecaNova1', 'FotoPecaNova2', 'FotoPecaInstalada1', 'FotoPecaInstalada2', 'FotoAlmoco',
+  'FotoExtra1', 'FotoExtra2', 'FotoExtra3', 'FotoExtra4', 'FotoExtra5',
 ]
 
 /** Upload de uma foto base64 para Supabase Storage */
@@ -22,7 +31,7 @@ async function uploadBase64Foto(base64: string, table: string, campo: string, os
     const res = await fetch(base64)
     const blob = await res.blob()
     const path = `os-tecnicos/${osId}/${campo}_sync_${Date.now()}.jpg`
-    const { error } = await supabase.storage.from('requisicoes').upload(path, blob, { upsert: true })
+    const { error } = await withTimeout(supabase.storage.from('requisicoes').upload(path, blob, { upsert: true }))
     if (!error) {
       const { data } = supabase.storage.from('requisicoes').getPublicUrl(path)
       return data.publicUrl
@@ -71,15 +80,15 @@ export async function processQueue(): Promise<number> {
         let result
 
         if (item.action === 'insert') {
-          result = await supabase.from(item.table).insert(data)
+          result = await withTimeout(supabase.from(item.table).insert(data))
         } else if (item.action === 'update' && item.match) {
           let query = supabase.from(item.table).update(data)
           for (const [k, v] of Object.entries(item.match)) {
             query = query.eq(k, v)
           }
-          result = await query
+          result = await withTimeout(query)
         } else if (item.action === 'upsert') {
-          result = await supabase.from(item.table).upsert(data)
+          result = await withTimeout(supabase.from(item.table).upsert(data))
         }
 
         if (result?.error) {
@@ -99,6 +108,14 @@ export async function processQueue(): Promise<number> {
         console.log(`[sync] Item ${item.id} sincronizado (${item.table}/${item.action})`)
       } catch (err) {
         console.error(`[sync] Erro no item ${item.id}:`, err)
+        const retries = (item.retries || 0) + 1
+        if (item.id) {
+          if (retries >= MAX_RETRIES) {
+            await removeFromQueue(item.id)
+          } else {
+            await updateQueueItem(item.id, { retries })
+          }
+        }
       }
     }
 

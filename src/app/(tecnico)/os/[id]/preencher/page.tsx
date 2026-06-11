@@ -818,38 +818,37 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       pdf_criado: false,
     }
 
+    let queued = false
+
     if (existingId) {
       const res = await offlineWrite({
         table: 'Ordem_Servico_Tecnicos', action: 'update',
         data: payload, match: { IdOs: existingId },
       })
       if (!res.ok) { setSaving(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
-      if (res.queued) {
-        // Dados salvos na fila offline — não tenta gerar PDF
-        setSaving(false)
-        setSucesso(true)
-        clearBackup()
-        return
-      }
+      queued = res.queued
     } else {
-      if (navigator.onLine) {
-        const { data } = await supabase.from('Ordem_Servico_Tecnicos').insert(payload).select('IdOs').single()
+      const res = await offlineWrite({ table: 'Ordem_Servico_Tecnicos', action: 'insert', data: payload })
+      if (!res.ok) { setSaving(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
+      if (!res.queued) {
+        const { data } = await supabase.from('Ordem_Servico_Tecnicos').select('IdOs').eq('Ordem_Servico', id).order('IdOs', { ascending: false }).limit(1).single()
         if (data) setExistingId(data.IdOs)
-      } else {
-        const res = await offlineWrite({ table: 'Ordem_Servico_Tecnicos', action: 'insert', data: payload })
-        if (!res.ok) { setSaving(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
-        setSaving(false)
-        setSucesso(true)
-        clearBackup()
-        return
       }
+      queued = res.queued
     }
 
-    // Atualizar status da OS para 'Relatório Concluído' independente do PDF
+    // Atualizar status da OS — SEMPRE, mesmo offline (será enfileirado)
     await offlineWrite({
       table: 'Ordem_Servico', action: 'update',
       data: { Status: 'Relatório Concluído' }, match: { Id_Ordem: id },
     })
+
+    if (queued) {
+      setSaving(false)
+      setSucesso(true)
+      clearBackup()
+      return
+    }
 
     // Gerar PDF, fazer upload e vincular à OS no portal
     try {

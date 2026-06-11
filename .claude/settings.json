@@ -1,7 +1,16 @@
 {
   "permissions": {
     "allow": [
-      "PowerShell(git add \"src/hooks/useCached.ts\" \"src/app/\\(tecnico\\)/os/[id]/preencher/page.tsx\")"
+      "PowerShell(git add \"src/hooks/useCached.ts\" \"src/app/\\(tecnico\\)/os/[id]/preencher/page.tsx\")",
+      "Bash(xargs grep -l \"lousa\")",
+      "Bash(xargs grep -l \"OPA\\\\|opa\")",
+      "Bash(xargs grep -l \"portal_opas\")",
+      "Bash(Select-String \"avisos\" -list)",
+      "Bash(Select-Object -First 40)",
+      "PowerShell(npx tsc --noEmit --pretty 2>&1)",
+      "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\mecanicos)",
+      "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\rastreamento)",
+      "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\admin\\\\mapeamento)"
     ]
   }
 }

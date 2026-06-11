@@ -3,23 +3,28 @@ import { usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { Home, Calendar, Wrench, ClipboardList, Users, ShieldAlert, Megaphone } from 'lucide-react'
 
-const tabs = [
+const ALL_TABS = [
   { href: '/admin', icon: Home, label: 'Painel' },
   { href: '/admin/agenda', icon: Calendar, label: 'Agenda' },
   { href: '/admin/os', icon: Wrench, label: 'Ordens' },
   { href: '/admin/alertas', icon: ShieldAlert, label: 'Alertas' },
   { href: '/admin/avisos', icon: Megaphone, label: 'Avisos' },
-  { href: '/admin/requisicoes', icon: ClipboardList, label: 'Requisições' },
-  { href: '/admin/tecnicos', icon: Users, label: 'Técnicos' },
+  { href: '/admin/requisicoes', icon: ClipboardList, label: 'Requisicoes' },
+  { href: '/admin/tecnicos', icon: Users, label: 'Tecnicos' },
 ]
 
 interface BottomNavProps {
   reqPendentes?: number
   alertasPendentes?: number
+  favorites?: string[]
 }
 
-export default function BottomNav({ reqPendentes = 0, alertasPendentes = 0 }: BottomNavProps) {
+export default function BottomNav({ reqPendentes = 0, alertasPendentes = 0, favorites }: BottomNavProps) {
   const pathname = usePathname()
+
+  const tabs = favorites && favorites.length > 0
+    ? [ALL_TABS[0], ...ALL_TABS.filter(t => t.href !== '/admin' && favorites.includes(t.href))]
+    : ALL_TABS
 
   return (
     <nav style={{

@@ -1,5 +1,5 @@
-const ASSETS_CACHE = 'nt-assets-v20';
-const PAGES_CACHE = 'nt-pages';      // NUNCA versionado — sobrevive atualizações do SW
+const ASSETS_CACHE = 'nt-assets-v21';
+const PAGES_CACHE = 'nt-pages-v2';
 const APP_SHELL_KEY = 'nt-app-shell';
 
 const PRECACHE_URLS = [
