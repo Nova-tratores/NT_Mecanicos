@@ -6,8 +6,8 @@ import { supabase } from '@/lib/supabase'
 import type { OrdemServico } from '@/lib/types'
 import {
   Wrench, ClipboardList, User, Megaphone, Camera,
-  Calendar, Navigation, Clock, MapPin, ShieldCheck,
-  ChevronDown, AlertTriangle, BarChart3, AlertCircle,
+  Navigation, Clock, MapPin, ShieldCheck,
+  ChevronDown, AlertTriangle, BarChart3, AlertCircle, Headset,
 } from 'lucide-react'
 import Link from 'next/link'
 import { PageSpinner } from '@/components/ui'
@@ -582,24 +582,6 @@ export default function TecnicoHome() {
           </div>
         </Link>
 
-        <Link href="/agenda" style={{
-          background: colors.surface, borderRadius: 20, padding: '20px 16px',
-          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
-          display: 'flex', alignItems: 'center', gap: 14,
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
-            background: colors.accentBg,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Calendar size={22} color={colors.accent} />
-          </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Agenda</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>Programacao</div>
-          </div>
-        </Link>
-
         <Link href="/jornada" style={{
           background: colors.surface, borderRadius: 20, padding: '20px 16px',
           textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
@@ -712,6 +694,25 @@ export default function TecnicoHome() {
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Mapa de Veiculos</div>
             <div style={{ fontSize: 11, color: colors.textMuted }}>Ver quem esta perto</div>
+          </div>
+        </Link>
+
+        <Link href="/sat" style={{
+          background: colors.surface, borderRadius: 20, padding: '20px 16px',
+          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
+          display: 'flex', alignItems: 'center', gap: 14,
+          gridColumn: '1 / -1',
+        }}>
+          <div style={{
+            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
+            background: '#FEF3C7',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Headset size={22} color="#D97706" />
+          </div>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>SAT Digital</div>
+            <div style={{ fontSize: 11, color: colors.textMuted }}>Solicitar atendimento</div>
           </div>
         </Link>
       </div>

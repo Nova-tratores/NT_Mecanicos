@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react'
 import { useAdmin } from '@/hooks/useAdmin'
 import {
-  Calendar, Megaphone, Users, UserCircle, Star, ChevronRight, AlertCircle, Car,
+  Calendar, Megaphone, Users, UserCircle, Star, ChevronRight, AlertCircle, Car, Building2, Headset,
 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -14,6 +14,8 @@ const ADMIN_SECTIONS = [
   { href: '/admin/avisos', icon: Megaphone, label: 'Avisos', color: '#8B5CF6' },
   { href: '/admin/tecnicos', icon: Users, label: 'Mecânicos', color: '#6366F1' },
   { href: '/admin/mapeamento', icon: Car, label: 'Mapeamento', color: '#0EA5E9' },
+  { href: '/admin/clientes', icon: Building2, label: 'Clientes', color: '#F97316' },
+  { href: '/admin/sat', icon: Headset, label: 'SAT Digital', color: '#D97706' },
   { href: '/admin/perfil', icon: UserCircle, label: 'Perfil', color: '#64748B' },
 ]
 

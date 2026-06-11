@@ -315,11 +315,20 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
       return { date: d, str: fmtDate(d), label: d.toLocaleDateString('pt-BR', { weekday: 'short' }).slice(0, 3) }
     }), [semana])
 
-  // ── Render entry card ──
-  const renderEntry = (entry: LousaEntry) => {
-    const tecIdx = tecnicos.findIndex(t => t.tecnico_nome === entry.tecnico_nome)
-    const palette = tecIdx >= 0 ? TECH_PALETTES[tecIdx % TECH_PALETTES.length]
-      : { bg: '#f9fafb', border: '#e5e7eb', avatar: '#9ca3af', text: '#6b7280' }
+  // ── Agrupar entradas por técnico ──
+  const gruposTecnico = useMemo(() => {
+    const map = new Map<string, LousaEntry[]>()
+    for (const e of entradasDia) {
+      const key = e.tecnico_nome || '___sem_tecnico___'
+      if (!map.has(key)) map.set(key, [])
+      map.get(key)!.push(e)
+    }
+    return Array.from(map.entries()).map(([nome, entries]) => ({ nome: nome === '___sem_tecnico___' ? '' : nome, entries }))
+  }, [entradasDia])
+
+  // ── Render sub-entry (linha dentro do card do técnico) ──
+  const renderSubEntry = (entry: LousaEntry) => {
+    const per = entry.periodo === 'tarde' ? 'tarde' : 'manha'
     const tipoMarca = (entry.tipo as TipoMarca) || 'servico'
     const isServico = tipoMarca === 'servico'
     const cfgMarca = TIPO_CONFIG[tipoMarca] || TIPO_CONFIG.servico
@@ -327,103 +336,76 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
 
     return (
       <div key={entry.id} onClick={() => abrirEdicao(entry)} style={{
-        background: isServico ? '#fff' : cfgMarca.bg, borderRadius: 14, padding: 14,
-        boxShadow: '0 1px 6px rgba(0,0,0,0.07)', cursor: 'pointer',
-        borderLeft: `5px solid ${entry.cor || cfgMarca.cor}`,
+        display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+        background: isServico ? '#FAFAFA' : cfgMarca.bg, borderRadius: 10, cursor: 'pointer',
+        borderLeft: `4px solid ${entry.cor || cfgMarca.cor}`,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: 9, flexShrink: 0,
-            background: isServico ? palette.avatar : cfgMarca.cor,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 14, fontWeight: 800, color: '#fff',
-          }}>
-            {isServico
-              ? (entry.tecnico_nome ? entry.tecnico_nome.charAt(0).toUpperCase() : '?')
-              : <IconMarca size={16} color="#fff" />}
-          </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: isServico ? palette.text : cfgMarca.cor }}>
-              {entry.tecnico_nome || 'Sem Técnico'}
-            </div>
-            {!isServico && (
-              <div style={{ fontSize: 11, fontWeight: 600, color: cfgMarca.cor, opacity: 0.8 }}>
-                {cfgMarca.label}
-              </div>
-            )}
-          </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            {isServico && (entry.temOsAberta
-              ? <CheckCircle size={16} color="#059669" />
-              : <XCircle size={16} color="#dc2626" />)}
-            {isServico && entry.temPedidoPPV && <Package size={16} color="#d97706" />}
-          </div>
-        </div>
-        <div style={{
-          fontSize: 16, fontWeight: 800, lineHeight: 1.3, marginBottom: 4,
-          color: isServico ? '#1a1a1a' : cfgMarca.cor,
+        <span style={{
+          fontSize: 8, fontWeight: 800, padding: '3px 6px', borderRadius: 4, flexShrink: 0,
+          background: per === 'manha' ? '#FEF3C7' : '#EDE9FE',
+          color: per === 'manha' ? '#92400E' : '#5B21B6',
+          width: 38, textAlign: 'center' as const,
         }}>
-          {isServico ? entry.cliente_nome : cfgMarca.label}
+          {per === 'manha' ? 'MANHÃ' : 'TARDE'}
+        </span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{
+            fontSize: 14, fontWeight: 700, color: isServico ? '#1a1a1a' : cfgMarca.cor,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }}>
+            {isServico ? entry.cliente_nome : cfgMarca.label}
+          </div>
+          {entry.descricao && (
+            <div style={{ fontSize: 11, color: '#6B7280', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.descricao}</div>
+          )}
         </div>
-        {entry.descricao && (
-          <div style={{ fontSize: 13, color: '#6B7280', lineHeight: 1.5 }}>{entry.descricao}</div>
-        )}
+        <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexShrink: 0 }}>
+          {!isServico && <IconMarca size={14} color={cfgMarca.cor} />}
+          {isServico && (entry.temOsAberta
+            ? <CheckCircle size={14} color="#059669" />
+            : <XCircle size={14} color="#dc2626" />)}
+          {isServico && entry.temPedidoPPV && <Package size={14} color="#d97706" />}
+        </div>
       </div>
     )
   }
 
-  // ── Render period section ──
-  const renderPeriodo = (per: 'manha' | 'tarde') => {
-    const perEntradas = entradasDia.filter(e => (e.periodo === 'tarde' ? 'tarde' : 'manha') === per)
+  // ── Render card agrupado por técnico ──
+  const renderTecnicoCard = (grupo: { nome: string; entries: LousaEntry[] }) => {
+    const tecIdx = tecnicos.findIndex(t => t.tecnico_nome === grupo.nome)
+    const palette = tecIdx >= 0 ? TECH_PALETTES[tecIdx % TECH_PALETTES.length]
+      : { bg: '#f9fafb', border: '#e5e7eb', avatar: '#9ca3af', text: '#6b7280' }
 
     return (
-      <div key={per}>
+      <div key={grupo.nome || 'sem'} style={{
+        background: '#fff', borderRadius: 16, overflow: 'hidden',
+        boxShadow: '0 1px 6px rgba(0,0,0,0.07)',
+      }}>
+        {/* Header do técnico */}
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          marginBottom: 8,
+          display: 'flex', alignItems: 'center', gap: 10, padding: '14px 14px 10px',
         }}>
           <div style={{
-            fontSize: 12, fontWeight: 800, letterSpacing: 0.5,
-            color: per === 'manha' ? '#D97706' : '#7C3AED',
-            display: 'flex', alignItems: 'center', gap: 8,
+            width: 38, height: 38, borderRadius: 10, flexShrink: 0,
+            background: palette.avatar,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 16, fontWeight: 800, color: '#fff',
           }}>
-            <div style={{
-              width: 24, height: 24, borderRadius: 6,
-              background: per === 'manha' ? '#FEF3C7' : '#EDE9FE',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12,
-            }}>
-              {per === 'manha' ? '☀️' : '🌙'}
+            {grupo.nome ? grupo.nome.charAt(0).toUpperCase() : '?'}
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: palette.text }}>
+              {grupo.nome || 'Sem Técnico'}
             </div>
-            {per === 'manha' ? 'MANHÃ · 7:30 — 11:30' : 'TARDE · 12:30 — 17:30'}
-            {perEntradas.length > 0 && (
-              <span style={{
-                background: per === 'manha' ? '#FEF3C7' : '#EDE9FE',
-                color: per === 'manha' ? '#92400E' : '#5B21B6',
-                fontSize: 10, fontWeight: 800, padding: '2px 8px', borderRadius: 6,
-              }}>
-                {perEntradas.length}
-              </span>
-            )}
+            <div style={{ fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>
+              {grupo.entries.length} serviço{grupo.entries.length !== 1 ? 's' : ''}
+            </div>
           </div>
-          <button onClick={() => abrirNovaEntrada(per)} style={{
-            width: 28, height: 28, borderRadius: 8, border: '1px dashed #D1D5DB',
-            background: '#fff', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Plus size={14} color="#9CA3AF" />
-          </button>
         </div>
-        {perEntradas.length > 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {perEntradas.map(renderEntry)}
-          </div>
-        ) : (
-          <div style={{
-            background: '#fff', borderRadius: 12, padding: 16, textAlign: 'center',
-            color: '#D1D5DB', fontSize: 12, border: '1px dashed #E5E7EB',
-          }}>
-            Nenhum agendamento
-          </div>
-        )}
+        {/* Entradas */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '0 10px 12px' }}>
+          {grupo.entries.map(renderSubEntry)}
+        </div>
       </div>
     )
   }
@@ -536,9 +518,31 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
         {loading ? (
           <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            {renderPeriodo('manha')}
-            {renderPeriodo('tarde')}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <span style={{ fontSize: 12, fontWeight: 800, color: '#6B7280', letterSpacing: 0.5 }}>
+                {entradasDia.length} agendamento{entradasDia.length !== 1 ? 's' : ''}
+              </span>
+              <button onClick={() => abrirNovaEntrada('manha')} style={{
+                display: 'flex', alignItems: 'center', gap: 4, padding: '6px 12px', borderRadius: 8,
+                border: '1px dashed #D1D5DB', background: '#fff', cursor: 'pointer',
+                fontSize: 11, fontWeight: 600, color: '#9CA3AF',
+              }}>
+                <Plus size={13} /> Novo
+              </button>
+            </div>
+            {gruposTecnico.length > 0 ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                {gruposTecnico.map(renderTecnicoCard)}
+              </div>
+            ) : (
+              <div style={{
+                background: '#fff', borderRadius: 12, padding: 24, textAlign: 'center',
+                color: '#D1D5DB', fontSize: 13, border: '1px dashed #E5E7EB',
+              }}>
+                Nenhum agendamento neste dia
+              </div>
+            )}
           </div>
         )}
       </div>

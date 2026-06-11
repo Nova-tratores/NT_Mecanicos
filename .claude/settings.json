@@ -10,7 +10,12 @@
       "PowerShell(npx tsc --noEmit --pretty 2>&1)",
       "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\mecanicos)",
       "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\rastreamento)",
-      "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\admin\\\\mapeamento)"
+      "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\admin\\\\mapeamento)",
+      "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\admin\\\\clientes)",
+      "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\admin\\\\sat)",
+      "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\\\(tecnico\\)\\\\sat)",
+      "PowerShell(New-Item -ItemType Directory -Force \"c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\\\(tecnico\\)\\\\sat\")",
+      "PowerShell(npx tsc --noEmit 2>&1)"
     ]
   }
 }
