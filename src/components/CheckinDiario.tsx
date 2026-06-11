@@ -11,6 +11,7 @@ interface OrdemOption {
   Id_Ordem: string
   Os_Cliente: string
   Endereco_Cliente: string
+  Serv_Solicitado: string
   lat: number | null
   lng: number | null
 }
@@ -47,7 +48,7 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
         supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca'),
         supabase
           .from('Ordem_Servico')
-          .select('Id_Ordem, Os_Cliente, Endereco_Cliente')
+          .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Serv_Solicitado')
           .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
           .or(`Os_Tecnico.ilike.%${nomeBusca}%,Os_Tecnico2.ilike.%${nomeBusca}%`),
       ])
@@ -78,6 +79,7 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
             Id_Ordem: os.Id_Ordem,
             Os_Cliente: os.Os_Cliente || '',
             Endereco_Cliente: os.Endereco_Cliente || '',
+            Serv_Solicitado: os.Serv_Solicitado || '',
             lat: coordMap[os.Os_Cliente]?.lat || null,
             lng: coordMap[os.Os_Cliente]?.lng || null,
           })),
@@ -320,11 +322,20 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
           >
             <option value="">Selecione o destino...</option>
             <option value="OFICINA">Oficina - Servico interno</option>
-            {ordens.map((o) => (
-              <option key={o.Id_Ordem} value={o.Id_Ordem}>
-                OS {o.Id_Ordem} - {o.Os_Cliente}
-              </option>
-            ))}
+            {ordens.map((o) => {
+              // Resume a descrição (Serv_Solicitado pode ser longo). Substitui
+              // quebras de linha por espaço e limita a 80 chars com elipse.
+              const desc = (o.Serv_Solicitado || '').replace(/\s+/g, ' ').trim()
+              const descCurta = desc.length > 80 ? `${desc.slice(0, 77)}…` : desc
+              const label = descCurta
+                ? `OS ${o.Id_Ordem} • ${o.Os_Cliente} — ${descCurta}`
+                : `OS ${o.Id_Ordem} • ${o.Os_Cliente}`
+              return (
+                <option key={o.Id_Ordem} value={o.Id_Ordem}>
+                  {label}
+                </option>
+              )
+            })}
           </select>
         </div>
 
@@ -354,6 +365,19 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
           }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>{ordemSelecionada.Os_Cliente}</div>
             <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>{ordemSelecionada.Endereco_Cliente || 'Endereco nao informado'}</div>
+            {ordemSelecionada.Serv_Solicitado && (
+              <div style={{
+                fontSize: 12, color: colors.text, marginTop: 8,
+                padding: '8px 10px', background: '#fff', borderRadius: 8,
+                border: `1px solid ${colors.border}`, whiteSpace: 'pre-wrap',
+                lineHeight: 1.4,
+              }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: colors.textSubtle, letterSpacing: 0.5, display: 'block', marginBottom: 3 }}>
+                  SERVIÇO SOLICITADO
+                </span>
+                {ordemSelecionada.Serv_Solicitado}
+              </div>
+            )}
             {loadingRota && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, color: colors.textSubtle, fontSize: 12 }}>
                 <Loader2 size={14} className="spinner" /> Calculando rota...
