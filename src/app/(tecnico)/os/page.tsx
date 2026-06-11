@@ -68,8 +68,15 @@ async function fetchOsData(nome: string): Promise<OsData> {
           .map((p: { Ordem_Servico: string }) => String(p.Ordem_Servico)),
       )
     }
-    // OS com status concluído pelo técnico também contam como enviadas
-    const FASES_CONCLUIDAS_TECNICO = ['Relatório Concluído', 'Executada aguardando comercial']
+    // OS com status concluído pelo técnico também contam como enviadas.
+    // Lista expandida pra cobrir as fases pós-relatório (comercial fatura/finaliza).
+    const FASES_CONCLUIDAS_TECNICO = [
+      'Relatório Concluído', 'Relatorio Concluido',
+      'Executada aguardando comercial',
+      'Concluída', 'Concluida', 'Concluído', 'Concluido',
+      'Faturada', 'Faturado',
+      'Finalizada', 'Finalizado',
+    ]
     for (const o of todas) {
       if (FASES_CONCLUIDAS_TECNICO.includes(o.Status)) {
         enviadas.add(String(o.Id_Ordem))
@@ -426,7 +433,7 @@ export default function OrdensHub() {
 /* ═══ Sub-aba Enviadas ═══ */
 function OsEnviadasTab({ nome }: { nome: string }) {
   const { data: ordens, loading } = useCached(
-    `os-enviadas:${nome}`,
+    `os-enviadas:v2:${nome}`,
     async () => {
       // 1. Buscar registros preenchidos pelo técnico (enviado ou rascunho)
       const { data: tecData } = await supabase
@@ -439,7 +446,7 @@ function OsEnviadasTab({ nome }: { nome: string }) {
 
       // Buscar status da OS principal para cada registro
       const osIds = [...new Set(todosRegs.map(r => String(r.Ordem_Servico)))]
-      let osStatusMap: Record<string, string> = {}
+      const osStatusMap: Record<string, string> = {}
       if (osIds.length > 0) {
         const { data: osData } = await supabase
           .from('Ordem_Servico')
@@ -452,19 +459,32 @@ function OsEnviadasTab({ nome }: { nome: string }) {
         }
       }
 
-      // Incluir se: registro 'enviado' OU OS principal já está concluída
-      const FASES_CONCLUIDAS = ['Relatório Concluído', 'Executada aguardando comercial']
+      // Status que indicam que a OS já saiu da mão do técnico (relatório feito).
+      // Antes só pegava as 2 primeiras — quando a OS finalizava no comercial
+      // (virava "Concluída"/"Faturada"), sumia da aba enviadas mesmo o técnico
+      // tendo preenchido e enviado.
+      const FASES_CONCLUIDAS = [
+        'Relatório Concluído', 'Relatorio Concluido',
+        'Executada aguardando comercial',
+        'Concluída', 'Concluida', 'Concluído', 'Concluido',
+        'Faturada', 'Faturado',
+        'Finalizada', 'Finalizado',
+      ]
+
+      // Incluir se: registro 'enviado' OU OS principal está em qualquer fase de "já enviada"
       const registros = todosRegs.filter(r =>
         r.Status === 'enviado' || FASES_CONCLUIDAS.includes(osStatusMap[String(r.Ordem_Servico)] || '')
       )
       const idsJaIncluidos = new Set(registros.map(r => String(r.Ordem_Servico)))
 
-      // 2. Buscar OS concluídas que não têm registro na tabela do técnico
+      // 2. Buscar OS já concluídas/faturadas onde o técnico foi responsável,
+      // mas que (por algum motivo) não tem registro na tabela do técnico.
       const { data: osConc } = await supabase
         .from('Ordem_Servico')
-        .select('Id_Ordem, Tipo_Servico, Os_Cliente, Data_Abertura')
+        .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data_Abertura')
         .in('Status', FASES_CONCLUIDAS)
         .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
+        .limit(500)
       if (osConc) {
         for (const os of osConc) {
           if (!idsJaIncluidos.has(String(os.Id_Ordem))) {
@@ -476,7 +496,7 @@ function OsEnviadasTab({ nome }: { nome: string }) {
               TipoServico: os.Tipo_Servico || '',
               Status: 'enviado',
               pdf_criado: false,
-            } as any)
+            } as unknown as typeof todosRegs[number])
           }
         }
       }
