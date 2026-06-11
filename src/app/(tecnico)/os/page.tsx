@@ -27,57 +27,81 @@ interface OsData {
 
 /* ═══ Fetch principal ═══ */
 async function fetchOsData(nome: string): Promise<OsData> {
-  const [osRes] = await Promise.all([
+  // Duas queries em paralelo:
+  // (A) OS ATIVAS do técnico — alimenta as abas Preencher/Abertas (exclui já
+  //     concluídas/canceladas pelo comercial pra não poluir a lista de trabalho)
+  // (B) TODAS as OS do técnico (inclui Concluída/Faturada/Cancelada) —
+  //     necessária pra o contador "Enviadas" bater com a sub-aba, que mostra
+  //     TUDO que foi enviado ao longo da vida do técnico, não só o que ainda
+  //     está ativo
+  const [osAtivasRes, osTodasRes] = await Promise.all([
     supabase
       .from('Ordem_Servico')
       .select('*')
       .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
       .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
       .order('Id_Ordem', { ascending: false }),
+    supabase
+      .from('Ordem_Servico')
+      .select('Id_Ordem, Status')
+      .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
+      .limit(2000),
   ])
 
-  // Se o Supabase retornou erro (ex: offline), lança para o useCached usar o fallback do IndexedDB
-  if (osRes.error) throw new Error(osRes.error.message)
+  if (osAtivasRes.error) throw new Error(osAtivasRes.error.message)
 
-  const todas = (osRes.data || []) as OrdemServico[]
+  const todas = (osAtivasRes.data || []) as OrdemServico[]
+  const todasGlobal = (osTodasRes.data || []) as { Id_Ordem: string; Status: string }[]
 
   let preenchidas = new Set<string>()
   let enviadas = new Set<string>()
   const cidadeMap: Record<string, string> = {}
   const agendaMap: Record<string, string[]> = {}
 
+  // Status pós-relatório usados nos dois lados (lista + contador)
+  const FASES_CONCLUIDAS_TECNICO = [
+    'Relatório Concluído', 'Relatorio Concluido',
+    'Executada aguardando comercial',
+    'Concluída', 'Concluida', 'Concluído', 'Concluido',
+    'Faturada', 'Faturado',
+    'Finalizada', 'Finalizado',
+  ]
+
   if (todas.length > 0) {
-    const ids = todas.map(o => o.Id_Ordem)
+    const idsAtivas = todas.map(o => o.Id_Ordem)
+    const idsAll = todasGlobal.map(o => String(o.Id_Ordem))
     const cnpjs = [...new Set(todas.map(o => o.Cnpj_Cliente).filter(Boolean))]
-    const [preenchRes, cliRes, agendaRes] = await Promise.all([
-      supabase.from('Ordem_Servico_Tecnicos').select('Ordem_Servico, Status').in('Ordem_Servico', ids),
+    const [preenchRes, cliRes, agendaRes, enviadasAllRes] = await Promise.all([
+      supabase.from('Ordem_Servico_Tecnicos').select('Ordem_Servico, Status').in('Ordem_Servico', idsAtivas),
       cnpjs.length > 0
         ? supabase.from('Clientes').select('cnpj_cpf, cidade').in('cnpj_cpf', cnpjs)
         : Promise.resolve({ data: null }),
       supabase
         .from('agenda_tecnico')
         .select('id_ordem, data_agendada')
-        .in('id_ordem', ids)
+        .in('id_ordem', idsAtivas)
         .not('status', 'eq', 'cancelado'),
+      // Conta registros 'enviado' em TODAS as OS do técnico (incluindo já
+      // finalizadas). Sem isso o contador subestima — só conta OS ativas.
+      idsAll.length > 0
+        ? supabase
+          .from('Ordem_Servico_Tecnicos')
+          .select('Ordem_Servico')
+          .in('Ordem_Servico', idsAll)
+          .eq('Status', 'enviado')
+        : Promise.resolve({ data: null }),
     ])
     if (preenchRes.data) {
       preenchidas = new Set(preenchRes.data.map((p: { Ordem_Servico: string }) => String(p.Ordem_Servico)))
-      enviadas = new Set(
-        preenchRes.data
-          .filter((p: { Status: string }) => p.Status === 'enviado')
-          .map((p: { Ordem_Servico: string }) => String(p.Ordem_Servico)),
-      )
     }
-    // OS com status concluído pelo técnico também contam como enviadas.
-    // Lista expandida pra cobrir as fases pós-relatório (comercial fatura/finaliza).
-    const FASES_CONCLUIDAS_TECNICO = [
-      'Relatório Concluído', 'Relatorio Concluido',
-      'Executada aguardando comercial',
-      'Concluída', 'Concluida', 'Concluído', 'Concluido',
-      'Faturada', 'Faturado',
-      'Finalizada', 'Finalizado',
-    ]
-    for (const o of todas) {
+    // CONTADOR: usa a passada GLOBAL (registros 'enviado' em TODAS as OS,
+    // independente do status atual da OS principal).
+    enviadas = new Set(
+      ((enviadasAllRes.data || []) as { Ordem_Servico: string }[])
+        .map(r => String(r.Ordem_Servico)),
+    )
+    // + OS principal já em fase finalizada (também conta como enviada)
+    for (const o of todasGlobal) {
       if (FASES_CONCLUIDAS_TECNICO.includes(o.Status)) {
         enviadas.add(String(o.Id_Ordem))
       }
@@ -172,7 +196,7 @@ export default function OrdensHub() {
   const nome = user?.nome_pos || user?.tecnico_nome || ''
 
   const { data, loading, refreshing } = useCached<OsData>(
-    `os:${nome}`,
+    `os:v2:${nome}`,
     () => fetchOsData(nome),
     { skip: !user },
   )
