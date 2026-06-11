@@ -433,13 +433,15 @@ export default function OrdensHub() {
 /* ═══ Sub-aba Enviadas ═══ */
 function OsEnviadasTab({ nome }: { nome: string }) {
   const { data: ordens, loading } = useCached(
-    `os-enviadas:v4:${nome}`,
+    `os-enviadas:v5:${nome}`,
     async () => {
       type RegTec = {
         id: number; Ordem_Servico: string; TecResp1: string | null; TecResp2: string | null;
         Data: string; TipoServico: string | null; Status: string; pdf_criado: boolean;
       }
-      type OS = { Id_Ordem: string; Status: string; Tipo_Servico: string | null; Os_Cliente: string | null; Data_Abertura: string | null }
+      // Coluna se chama "Data" — NÃO "Data_Abertura" (esse era um nome inventado
+      // que causava HTTP 400 silencioso e fazia a query inteira retornar []).
+      type OS = { Id_Ordem: string; Status: string; Tipo_Servico: string | null; Os_Cliente: string | null; Data: string | null }
 
       const FASES_FINALIZADAS = new Set([
         'Relatório Concluído', 'Relatorio Concluido',
@@ -450,27 +452,30 @@ function OsEnviadasTab({ nome }: { nome: string }) {
       ])
 
       // ESTRATÉGIA (espelha a do contador verde em fetchOsData):
-      // 1) Busca OS onde o técnico aparece como Os_Tecnico OU Os_Tecnico2 (campos
-      //    da OS principal — origem confiável de "OS desse técnico").
+      // 1) Busca OS onde o técnico aparece como Os_Tecnico OU Os_Tecnico2.
       // 2) Busca TODOS os registros dessas OS em Ordem_Servico_Tecnicos pelo ID,
-      //    SEM filtrar por TecResp. Isso cobre o caso onde o TecResp2 preencheu
-      //    em vez do TecResp1 (ou onde os nomes batem em campos diferentes).
-      // 3) Inclui na lista qualquer OS que tenha PELO MENOS UM registro
-      //    com Status='enviado' OU cuja OS principal já está em fase finalizada.
-      const { data: osList } = await supabase
+      //    SEM filtrar por TecResp (cobre caso do TecResp2 preencher).
+      // 3) Inclui qualquer OS que tenha registro 'enviado' OU OS principal já
+      //    está em fase finalizada (Concluída/Faturada/etc.).
+      const { data: osList, error: osErr } = await supabase
         .from('Ordem_Servico')
-        .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data_Abertura')
+        .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data')
         .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
         .limit(1000)
+      if (osErr) {
+        console.warn('[os-enviadas] erro na query de OS:', osErr.message)
+        return [] as RegTec[]
+      }
       const osArr = (osList || []) as OS[]
       if (osArr.length === 0) return [] as RegTec[]
 
       const ids = osArr.map(o => String(o.Id_Ordem))
-      const { data: regsData } = await supabase
+      const { data: regsData, error: regsErr } = await supabase
         .from('Ordem_Servico_Tecnicos')
         .select('id, Ordem_Servico, TecResp1, TecResp2, Data, TipoServico, Status, pdf_criado')
         .in('Ordem_Servico', ids)
         .order('Data', { ascending: false })
+      if (regsErr) console.warn('[os-enviadas] erro na query de registros:', regsErr.message)
       const todosRegs = (regsData || []) as RegTec[]
 
       // Agrupa registros por Ordem_Servico
@@ -491,18 +496,14 @@ function OsEnviadasTab({ nome }: { nome: string }) {
         const osFinalizada = FASES_FINALIZADAS.has(os.Status)
 
         if (algumEnviado) {
-          // Mostra o registro 'enviado' (de quem realmente enviou — pode ser
-          // TecResp1 ou TecResp2)
           finais.push(algumEnviado)
         } else if (osFinalizada) {
-          // OS já está concluída/faturada mas não tem registro 'enviado' na
-          // tabela do técnico. Pega o último registro disponível ou cria fake.
           finais.push(regs[0] || {
             id: 0,
             Ordem_Servico: idOs,
             TecResp1: nome,
             TecResp2: null,
-            Data: os.Data_Abertura || '',
+            Data: os.Data || '',
             TipoServico: os.Tipo_Servico,
             Status: 'enviado',
             pdf_criado: false,
