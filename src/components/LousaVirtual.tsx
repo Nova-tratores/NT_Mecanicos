@@ -36,6 +36,12 @@ const TIPO_CONFIG: Record<TipoMarca, { label: string; cor: string; bg: string; i
 interface Cliente { cnpj_cpf: string; nome_fantasia: string; razao_social: string; cidade: string }
 interface Tecnico { user_id: string; tecnico_nome: string }
 interface Usuario { id: string; nome: string; funcao: string }
+interface OSAberta {
+  Id_Ordem: string; Status: string; Data: string; Os_Cliente: string
+  Os_Tecnico: string; Os_Tecnico2: string; Tipo_Servico: string
+  Serv_Solicitado: string; Previsao_Execucao: string; ID_PPV: string
+  Valor_Total: number; Endereco_Cliente: string; Projeto: string
+}
 
 const CORES = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316', '#6366f1']
 
@@ -95,6 +101,12 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
   const [searchingClientes, setSearchingClientes] = useState(false)
   const [showClienteDropdown, setShowClienteDropdown] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  // ── State: modal OS ──
+  const [osModalOpen, setOsModalOpen] = useState(false)
+  const [osModalList, setOsModalList] = useState<OSAberta[]>([])
+  const [osModalLoading, setOsModalLoading] = useState(false)
+  const [osModalCliente, setOsModalCliente] = useState('')
 
   // ── State: notificação config ──
   const [configOpen, setConfigOpen] = useState(false)
@@ -194,6 +206,25 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
     }, 300)
   }, [])
 
+  // ── Buscar OS ao selecionar cliente ──
+  const buscarOsDoCliente = useCallback(async (nomeCliente: string, cnpj?: string) => {
+    setOsModalLoading(true)
+    setOsModalCliente(nomeCliente)
+    setOsModalList([])
+    const query = supabase.from('Ordem_Servico')
+      .select('Id_Ordem, Status, Data, Os_Cliente, Os_Tecnico, Os_Tecnico2, Tipo_Servico, Serv_Solicitado, Previsao_Execucao, ID_PPV, Valor_Total, Endereco_Cliente, Projeto')
+      .not('Status', 'in', '("Concluída","Cancelada")')
+    if (cnpj) {
+      query.or(`Cnpj_Cliente.eq.${cnpj},Os_Cliente.ilike.%${nomeCliente}%`)
+    } else {
+      query.ilike('Os_Cliente', `%${nomeCliente}%`)
+    }
+    const { data } = await query.order('Data', { ascending: false }).limit(20)
+    const ordens = (data || []) as OSAberta[]
+    setOsModalList(ordens)
+    setOsModalLoading(false)
+  }, [])
+
   // ── CRUD ──
   const abrirNovaEntrada = (periodo: 'manha' | 'tarde') => {
     setEditEntry(null)
@@ -223,6 +254,9 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
     setClienteResults([])
     setShowClienteDropdown(false)
     setModalOpen(true)
+    if ((!entry.tipo || entry.tipo === 'servico') && entry.cliente_nome) {
+      buscarOsDoCliente(entry.cliente_nome, entry.cliente_cnpj || undefined)
+    }
   }
 
   const podeSalvar = modalTipo === 'servico'
@@ -256,6 +290,33 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
     }
     setSaving(false)
     if (error) { alert(`Erro ao salvar: ${error.message}`); return }
+
+    // Notificar técnico via push (só se tem técnico e é novo ou técnico mudou)
+    const tecAlvo = payload.tecnico_nome
+    if (tecAlvo && (!editEntry || editEntry.tecnico_nome !== tecAlvo)) {
+      const descNotif = isServico
+        ? `${payload.cliente_nome || 'Serviço'} — ${modalDia}`
+        : `${TIPO_CONFIG[modalTipo].label} — ${modalDia}`
+      fetch('/api/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tecnico_nome: tecAlvo,
+          titulo: `Lousa: ${isServico ? payload.cliente_nome : TIPO_CONFIG[modalTipo].label}`,
+          descricao: descNotif,
+          link: '/',
+        }),
+      }).catch(() => {})
+      supabase.from('mecanico_notificacoes').insert({
+        tecnico_nome: tecAlvo,
+        tipo: 'lousa',
+        titulo: `Lousa: ${isServico ? payload.cliente_nome : TIPO_CONFIG[modalTipo].label}`,
+        descricao: descNotif,
+        link: '/',
+        lida: false,
+      }).then(() => {})
+    }
+
     setModalOpen(false)
     carregar()
   }
@@ -334,11 +395,13 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
     const cfgMarca = TIPO_CONFIG[tipoMarca] || TIPO_CONFIG.servico
     const IconMarca = cfgMarca.icon
 
+    const semOS = isServico && !entry.temOsAberta
+
     return (
       <div key={entry.id} onClick={() => abrirEdicao(entry)} style={{
         display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-        background: isServico ? '#FAFAFA' : cfgMarca.bg, borderRadius: 10, cursor: 'pointer',
-        borderLeft: `4px solid ${entry.cor || cfgMarca.cor}`,
+        background: semOS ? '#FEF2F2' : isServico ? '#FAFAFA' : cfgMarca.bg, borderRadius: 10, cursor: 'pointer',
+        borderLeft: `4px solid ${semOS ? '#EF4444' : entry.cor || cfgMarca.cor}`,
       }}>
         <span style={{
           fontSize: 8, fontWeight: 800, padding: '3px 6px', borderRadius: 4, flexShrink: 0,
@@ -359,7 +422,15 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
             <div style={{ fontSize: 11, color: '#6B7280', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.descricao}</div>
           )}
         </div>
-        <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexShrink: 0 }}>
+        <div style={{ display: 'flex', gap: 5, alignItems: 'center', flexShrink: 0 }}
+          onClick={isServico ? (e) => {
+            e.stopPropagation()
+            setOsModalCliente(entry.cliente_nome)
+            setOsModalLoading(true)
+            setOsModalOpen(true)
+            buscarOsDoCliente(entry.cliente_nome, entry.cliente_cnpj || undefined).then(() => setOsModalOpen(true))
+          } : undefined}
+        >
           {!isServico && <IconMarca size={14} color={cfgMarca.cor} />}
           {isServico && (entry.temOsAberta
             ? <CheckCircle size={14} color="#059669" />
@@ -695,7 +766,9 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                   }}>
                     {clienteResults.map((c, i) => (
                       <div key={c.cnpj_cpf + i} onClick={() => {
-                        setFormCliente(c); setFormClienteSearch(c.nome_fantasia || c.razao_social); setShowClienteDropdown(false)
+                        const nome = c.nome_fantasia || c.razao_social
+                        setFormCliente(c); setFormClienteSearch(nome); setShowClienteDropdown(false)
+                        buscarOsDoCliente(nome, c.cnpj_cpf)
                       }} style={{
                         padding: '10px 14px', cursor: 'pointer',
                         borderBottom: i < clienteResults.length - 1 ? '1px solid #F3F4F6' : 'none',
@@ -716,6 +789,62 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                     background: '#fff', borderRadius: 12, border: '1px solid #E5E7EB',
                     padding: 16, textAlign: 'center', color: '#9CA3AF', fontSize: 12, marginTop: 4,
                   }}>Buscando...</div>
+                )}
+              </div>
+            )}
+
+            {/* OS do cliente (inline) */}
+            {modalTipo === 'servico' && (formCliente || (editEntry && editEntry.cliente_nome)) && (
+              <div style={{ marginBottom: 16 }}>
+                {osModalLoading ? (
+                  <div style={{
+                    padding: 12, textAlign: 'center', background: '#F9FAFB', borderRadius: 10,
+                    border: '1px solid #E5E7EB', fontSize: 12, color: '#9CA3AF',
+                  }}>Buscando OS...</div>
+                ) : osModalList.length === 0 ? (
+                  <div style={{
+                    padding: 12, background: '#FEF2F2', borderRadius: 10,
+                    border: '1px solid #FECACA', display: 'flex', alignItems: 'center', gap: 8,
+                  }}>
+                    <XCircle size={16} color="#EF4444" />
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#991B1B' }}>
+                      Nenhuma OS aberta para este cliente
+                    </span>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{
+                      padding: '6px 10px', background: '#ECFDF5', borderRadius: '10px 10px 0 0',
+                      border: '1px solid #A7F3D0', borderBottom: 'none',
+                      fontSize: 11, fontWeight: 700, color: '#065F46',
+                    }}>
+                      {osModalList.length} OS aberta{osModalList.length !== 1 ? 's' : ''}
+                    </div>
+                    <div style={{
+                      maxHeight: 200, overflowY: 'auto', border: '1px solid #E5E7EB',
+                      borderRadius: '0 0 10px 10px', background: '#FAFAFA',
+                    }}>
+                      {osModalList.map(os => (
+                        <div key={os.Id_Ordem} onClick={() => { setOsModalList([os]); setOsModalCliente(os.Os_Cliente); setOsModalOpen(true) }} style={{
+                          padding: '10px 12px', borderBottom: '1px solid #F3F4F6', cursor: 'pointer',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                            <span style={{ fontSize: 13, fontWeight: 800, color: '#1E3A5F' }}>OS {os.Id_Ordem}</span>
+                            <span style={{
+                              fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5,
+                              background: os.Status === 'Em andamento' ? '#FEF3C7' : '#DBEAFE',
+                              color: os.Status === 'Em andamento' ? '#92400E' : '#1E40AF',
+                            }}>{os.Status}</span>
+                            {os.ID_PPV && <span style={{ fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5, background: '#FEF3C7', color: '#92400E' }}>PPV</span>}
+                          </div>
+                          <div style={{ fontSize: 11, color: '#6B7280' }}>
+                            {os.Tipo_Servico || '---'} · {os.Os_Tecnico || 'Sem técnico'}
+                            {os.Previsao_Execucao && ` · Prev: ${new Date(os.Previsao_Execucao).toLocaleDateString('pt-BR')}`}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </div>
             )}
@@ -869,6 +998,126 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                 boxShadow: '0 4px 12px rgba(245,158,11,0.25)',
               }}>Salvar</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ════════════════════════════════════════════════════════════ */}
+      {/* MODAL OS DO CLIENTE                                        */}
+      {/* ════════════════════════════════════════════════════════════ */}
+      {osModalOpen && (
+        <div onClick={e => { if (e.target === e.currentTarget) setOsModalOpen(false) }} style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)',
+          zIndex: 60000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 540,
+            maxHeight: '80vh', overflowY: 'auto', padding: '20px 20px env(safe-area-inset-bottom, 20px)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <div>
+                <h3 style={{ fontSize: 16, fontWeight: 800, color: '#1E3A5F', margin: 0 }}>
+                  {osModalList.length > 0 ? 'Ordens de Serviço' : 'Sem OS aberta'}
+                </h3>
+                <p style={{ fontSize: 12, color: '#6B7280', margin: '4px 0 0' }}>{osModalCliente}</p>
+              </div>
+              <button onClick={() => setOsModalOpen(false)} style={{
+                width: 36, height: 36, borderRadius: 10, border: 'none', background: '#F3F4F6',
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <X size={16} color="#6B7280" />
+              </button>
+            </div>
+
+            {osModalLoading ? (
+              <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
+            ) : osModalList.length === 0 ? (
+              <div style={{
+                padding: 32, textAlign: 'center', background: '#FEF2F2', borderRadius: 14,
+                border: '1px solid #FECACA',
+              }}>
+                <XCircle size={32} color="#EF4444" style={{ marginBottom: 8 }} />
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#991B1B', marginBottom: 4 }}>
+                  Nenhuma OS encontrada
+                </div>
+                <div style={{ fontSize: 12, color: '#DC2626' }}>
+                  Não há ordem de serviço aberta para este cliente no POS
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <div style={{
+                  padding: '8px 12px', background: '#ECFDF5', borderRadius: 8,
+                  border: '1px solid #A7F3D0', fontSize: 12, fontWeight: 600, color: '#065F46',
+                }}>
+                  {osModalList.length} OS aberta{osModalList.length !== 1 ? 's' : ''}
+                </div>
+                {osModalList.map(os => (
+                  <div key={os.Id_Ordem} style={{
+                    background: '#FAFAFA', borderRadius: 14, padding: 16,
+                    border: '1px solid #E5E7EB',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{
+                          fontSize: 16, fontWeight: 800, color: '#1E3A5F',
+                        }}>OS {os.Id_Ordem}</span>
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                          background: os.Status === 'Em andamento' ? '#FEF3C7' : os.Status === 'Aberta' ? '#DBEAFE' : '#F3F4F6',
+                          color: os.Status === 'Em andamento' ? '#92400E' : os.Status === 'Aberta' ? '#1E40AF' : '#374151',
+                        }}>{os.Status}</span>
+                      </div>
+                      {os.ID_PPV && (
+                        <span style={{
+                          fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                          background: '#FEF3C7', color: '#92400E',
+                        }}>PPV {os.ID_PPV}</span>
+                      )}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, fontSize: 12 }}>
+                      <div>
+                        <span style={{ color: '#9CA3AF', fontWeight: 600, fontSize: 10 }}>TIPO</span>
+                        <div style={{ fontWeight: 600, color: '#374151' }}>{os.Tipo_Servico || '---'}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: '#9CA3AF', fontWeight: 600, fontSize: 10 }}>TÉCNICO</span>
+                        <div style={{ fontWeight: 600, color: '#374151' }}>{os.Os_Tecnico || '---'}</div>
+                      </div>
+                      <div>
+                        <span style={{ color: '#9CA3AF', fontWeight: 600, fontSize: 10 }}>PREVISÃO</span>
+                        <div style={{ fontWeight: 600, color: '#374151' }}>
+                          {os.Previsao_Execucao ? new Date(os.Previsao_Execucao).toLocaleDateString('pt-BR') : '---'}
+                        </div>
+                      </div>
+                      <div>
+                        <span style={{ color: '#9CA3AF', fontWeight: 600, fontSize: 10 }}>VALOR</span>
+                        <div style={{ fontWeight: 600, color: '#374151' }}>
+                          {os.Valor_Total ? `R$ ${Number(os.Valor_Total).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : '---'}
+                        </div>
+                      </div>
+                    </div>
+                    {os.Serv_Solicitado && (
+                      <div style={{ marginTop: 10 }}>
+                        <span style={{ color: '#9CA3AF', fontWeight: 600, fontSize: 10 }}>SERVIÇO SOLICITADO</span>
+                        <div style={{ fontSize: 12, color: '#374151', lineHeight: 1.5, marginTop: 2 }}>{os.Serv_Solicitado}</div>
+                      </div>
+                    )}
+                    {os.Projeto && (
+                      <div style={{ marginTop: 6 }}>
+                        <span style={{ color: '#9CA3AF', fontWeight: 600, fontSize: 10 }}>PROJETO</span>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: '#6366F1' }}>{os.Projeto}</div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <button onClick={() => setOsModalOpen(false)} style={{
+              width: '100%', padding: '14px 0', borderRadius: 12, border: 'none', marginTop: 16,
+              background: '#F3F4F6', fontSize: 14, fontWeight: 600, cursor: 'pointer', color: '#6B7280',
+            }}>Fechar</button>
           </div>
         </div>
       )}

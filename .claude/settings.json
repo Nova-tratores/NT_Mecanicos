@@ -15,7 +15,22 @@
       "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\admin\\\\sat)",
       "PowerShell(New-Item -ItemType Directory -Force c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\\\(tecnico\\)\\\\sat)",
       "PowerShell(New-Item -ItemType Directory -Force \"c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\\\(tecnico\\)\\\\sat\")",
-      "PowerShell(npx tsc --noEmit 2>&1)"
+      "PowerShell(npx tsc --noEmit 2>&1)",
+      "Bash(xargs grep -l \"aviso\" -i)",
+      "PowerShell($token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aXBvIjoibG9naW4iLCJpZCI6NjQzOTIsImVtcHJlc2FfaWQiOjMwNDQ5LCJnZXN0b3IiOjEsImRpc3Bvc2l0aXZvIjoiZGVza3RvcCIsInByaW1laXJvX2FjZXNzbyI6ZmFsc2UsImlhdCI6MTc4MTI4MzMzMSwiZXhwIjoxNzgxMjg2OTMxfQ.15uCq071YNqX-7kND_IiWF5naWUcv4ljaEnu27waw5I'; $headers = @{Authorization=$token}; $res = Invoke-RestMethod -Uri 'https://api.rotaexata.com.br/adesoes?limit=5&page=0' -Headers $headers; \"Total veiculos: $\\($res.data.Count\\)\"; $res.data | Select-Object -First 2 | ConvertTo-Json -Depth 2)",
+      "PowerShell($token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aXBvIjoibG9naW4iLCJpZCI6NjQzOTIsImVtcHJlc2FfaWQiOjMwNDQ5LCJnZXN0b3IiOjEsImRpc3Bvc2l0aXZvIjoiZGVza3RvcCIsInByaW1laXJvX2FjZXNzbyI6ZmFsc2UsImlhdCI6MTc4MTI4MzMzMSwiZXhwIjoxNzgxMjg2OTMxfQ.15uCq071YNqX-7kND_IiWF5naWUcv4ljaEnu27waw5I'; $headers = @{Authorization=$token}; $hoje = \\(Get-Date\\).ToString\\('yyyy-MM-dd'\\); $res = Invoke-RestMethod -Uri \"https://api.rotaexata.com.br/posicoes?adesao_id=83035&limit=3&dt_posicao_inicial=$hoje 00:00:00&dt_posicao_final=$hoje 23:59:59\" -Headers $headers; \"Posicoes count: $\\($res.data.Count\\)\"; if \\($res.data.Count -gt 0\\) { $res.data[0] | ConvertTo-Json -Depth 2 })",
+      "Bash(Get-ChildItem -Path \"C:\\\\projetos\\\\portal\" -Recurse -Directory)",
+      "Bash(Select-Object -First 20)",
+      "Bash(findstr /R \"where.*adesao_id\\\\|where.*dt_posicao\" \"C:\\\\projetos\\\\portal\\\\src\\\\lib\\\\pos\\\\rastreamento.ts\")",
+      "PowerShell($token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0aXBvIjoibG9naW4iLCJpZCI6NjQzOTIsImVtcHJlc2FfaWQiOjMwNDQ5LCJnZXN0b3IiOjEsImRpc3Bvc2l0aXZvIjoiZGVza3RvcCIsInByaW1laXJvX2FjZXNzbyI6ZmFsc2UsImlhdCI6MTc4MTI4MzMzMSwiZXhwIjoxNzgxMjg2OTMxfQ.15uCq071YNqX-7kND_IiWF5naWUcv4ljaEnu27waw5I'; $headers = @{Authorization=$token}; $hoje = \\(Get-Date\\).ToString\\('yyyy-MM-dd'\\); $where = '{\"adesao_id\":83035,\"dt_posicao\":{\"$gte\":\"' + $hoje + 'T00:00:00.000-03:00\",\"$lte\":\"' + $hoje + 'T23:59:59.999-03:00\"}}'; $encoded = [System.Web.HttpUtility]::UrlEncode\\($where\\); $url = \"https://api.rotaexata.com.br/posicoes?where=$encoded&limit=3&page=0\"; $res = Invoke-RestMethod -Uri $url -Headers $headers; \"Count: $\\($res.data.Count\\)\"; if \\($res.data.Count -gt 0\\) { $res.data[0] | Select-Object adesao_id, dt_posicao, latitude, longitude, velocidade, ignicao })",
+      "Bash(Get-ChildItem -Path \"c:\\\\projetos\\\\mecanicos\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(xargs grep -l \"resolver_opa\\\\|portal_opas\")",
+      "Bash(xargs grep -l \"portal_opas\\\\|resolver_opa\")",
+      "Bash(xargs grep -l \"useAdmin\\\\|useCurrentUser\")",
+      "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\push\\\\send-all\" -Force)",
+      "Bash(xargs grep -l \"push_subscriptions\")",
+      "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\clientes\\\\projeto\" -Force)"
     ]
   }
 }

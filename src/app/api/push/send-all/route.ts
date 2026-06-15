@@ -14,37 +14,17 @@ function initVapid() {
   }
 }
 
-async function getAdminNames(): Promise<string[]> {
-  const { data: admins } = await supabase
-    .from('portal_permissoes')
-    .select('user_id')
-    .eq('is_admin', true)
-  if (!admins?.length) return []
-  const { data: profiles } = await supabase
-    .from('financeiro_usu')
-    .select('nome')
-    .in('id', admins.map(a => a.user_id))
-  return (profiles || []).map(p => p.nome).filter(Boolean)
-}
-
 export async function POST(request: Request) {
   initVapid()
-  const { tecnico_nome, titulo, descricao, link } = await request.json()
+  const { titulo, descricao, link } = await request.json()
 
-  if (!tecnico_nome || !titulo) {
-    return Response.json({ error: 'Dados inválidos' }, { status: 400 })
+  if (!titulo) {
+    return Response.json({ error: 'Título obrigatório' }, { status: 400 })
   }
-
-  const nomesAlvo = new Set<string>([tecnico_nome])
-
-  // Admins sempre recebem todas as notificações
-  const adminNames = await getAdminNames()
-  adminNames.forEach(n => nomesAlvo.add(n))
 
   const { data: subs } = await supabase
     .from('push_subscriptions')
     .select('*')
-    .in('tecnico_nome', [...nomesAlvo])
 
   if (!subs || subs.length === 0) {
     return Response.json({ sent: 0 })
@@ -55,7 +35,7 @@ export async function POST(request: Request) {
     body: descricao || '',
     icon: '/Logo_Nova.png',
     badge: '/Logo_Nova.png',
-    data: { url: link || '/' },
+    data: { url: link || '/opa' },
   })
 
   let sent = 0

@@ -92,11 +92,19 @@ export function useCurrentUser() {
         if (perm && (perm.mecanico_role || perm.is_admin)) {
           const { data: portalProfile } = await withTimeout(supabase
             .from('financeiro_usu')
-            .select('nome, email, avatar_url')
+            .select('nome, email, avatar_url, ativo')
             .eq('id', session.user.id)
             .single())
 
           if (cancelled) return
+
+          // Usuário inativado no portal: bloquear acesso ao app
+          if (portalProfile && (portalProfile as { ativo?: boolean }).ativo === false) {
+            clearCachedProfile()
+            await supabase.auth.signOut()
+            routerRef.current.replace('/login')
+            return
+          }
 
           if (perm.is_admin && !perm.mecanico_role) {
             routerRef.current.replace('/admin')

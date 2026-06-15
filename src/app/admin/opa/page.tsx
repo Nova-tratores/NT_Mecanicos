@@ -49,6 +49,13 @@ export default function AdminOpaPage() {
   const [enviando, setEnviando] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  useEffect(() => {
+    if (showModal) {
+      const t = setTimeout(() => fileRef.current?.click(), 400)
+      return () => clearTimeout(t)
+    }
+  }, [showModal])
+
   const carregar = useCallback(async () => {
     const { data: lista } = await supabase.from('portal_opas').select('*').order('created_at', { ascending: false })
     if (!lista) { setLoading(false); return }
@@ -118,6 +125,16 @@ export default function AdminOpaPage() {
         })
       }
     }
+
+    fetch('/api/push/send-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        titulo: `Opa: ${titulo.trim()}`,
+        descricao: descricao.trim() || 'Novo Opa registrado',
+        link: '/opa',
+      }),
+    }).catch(() => {})
 
     setTitulo(''); setDescricao(''); setArquivos([]); setShowModal(false); setEnviando(false)
     carregar()
@@ -319,7 +336,7 @@ export default function AdminOpaPage() {
             background: '#fff', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 540,
             maxHeight: '92vh', overflow: 'auto', padding: '24px 20px env(safe-area-inset-bottom, 20px)',
           }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <h2 style={{ fontSize: 18, fontWeight: 800, color: colors.text, margin: 0 }}>Novo Opa</h2>
               <button onClick={() => setShowModal(false)} style={{
                 background: colors.surfaceAlt, border: 'none', width: 32, height: 32, borderRadius: 8,
@@ -329,28 +346,32 @@ export default function AdminOpaPage() {
               </button>
             </div>
 
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Título</div>
-              <input value={titulo} onChange={e => setTitulo(e.target.value)} placeholder="O que está fora do lugar?"
-                style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.borderStrong}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA' }} />
-            </div>
+            {/* Instrução câmera */}
+            {arquivos.length === 0 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginBottom: 14,
+                background: '#FEF3C7', borderRadius: 12, border: '1px solid #FDE68A',
+              }}>
+                <Camera size={20} color="#D97706" />
+                <div style={{ fontSize: 12, color: '#92400E', fontWeight: 600, lineHeight: 1.5 }}>
+                  Tire uma <strong>foto ou grave um vídeo</strong> do problema primeiro, depois preencha os detalhes.
+                </div>
+              </div>
+            )}
 
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Descrição</div>
-              <textarea value={descricao} onChange={e => setDescricao(e.target.value)} placeholder="Descreva (opcional)..." rows={4}
-                style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.borderStrong}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA', resize: 'vertical', fontFamily: 'inherit' }} />
-            </div>
-
-            <div style={{ marginBottom: 18 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Fotos / Vídeos</div>
               <input ref={fileRef} type="file" accept="image/*,video/*" capture="environment" multiple
                 onChange={e => { setArquivos(prev => [...prev, ...Array.from(e.target.files || [])]); if (fileRef.current) fileRef.current.value = '' }}
                 style={{ display: 'none' }} />
               <button onClick={() => fileRef.current?.click()} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%', padding: 14,
-                borderRadius: 10, border: '2px dashed #D1D5DB', background: '#FAFAFA', fontSize: 13, fontWeight: 600, color: '#9CA3AF',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%', padding: 16,
+                borderRadius: 12, border: arquivos.length === 0 ? `2px solid ${colors.danger}` : '2px dashed #D1D5DB',
+                background: arquivos.length === 0 ? '#FEF2F2' : '#FAFAFA',
+                fontSize: 14, fontWeight: 700,
+                color: arquivos.length === 0 ? colors.danger : '#9CA3AF',
               }}>
-                <Camera size={18} /> Tirar foto / vídeo ou escolher
+                <Camera size={20} /> {arquivos.length === 0 ? 'Abrir câmera' : 'Adicionar mais'}
               </button>
               {arquivos.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
@@ -371,6 +392,18 @@ export default function AdminOpaPage() {
                   })}
                 </div>
               )}
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Título</div>
+              <input value={titulo} onChange={e => setTitulo(e.target.value)} placeholder="O que está fora do lugar?"
+                style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.borderStrong}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA' }} />
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Descrição</div>
+              <textarea value={descricao} onChange={e => setDescricao(e.target.value)} placeholder="Descreva (opcional)..." rows={3}
+                style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.borderStrong}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA', resize: 'vertical', fontFamily: 'inherit' }} />
             </div>
 
             <div style={{ display: 'flex', gap: 10 }}>

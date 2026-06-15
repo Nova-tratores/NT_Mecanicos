@@ -1,14 +1,28 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { MecanicoNotificacao } from '@/lib/types'
+
+const LIMPAR_KEY = 'nt-notif-limpa-at'
+
+function getLimpaAt(): string | null {
+  try { return localStorage.getItem(LIMPAR_KEY) } catch { return null }
+}
 
 export function useNotificacoes(tecnicoNome: string | undefined) {
   const [notificacoes, setNotificacoes] = useState<MecanicoNotificacao[]>([])
   const [naoLidas, setNaoLidas] = useState(0)
+  const limpaAtRef = useRef<string | null>(null)
 
   useEffect(() => {
     if (!tecnicoNome) return
+    limpaAtRef.current = getLimpaAt()
+
+    const filtrar = (lista: MecanicoNotificacao[]) => {
+      const corte = limpaAtRef.current
+      if (!corte) return lista
+      return lista.filter(n => n.created_at > corte)
+    }
 
     const carregar = async () => {
       const { data } = await supabase
@@ -18,8 +32,9 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
         .order('created_at', { ascending: false })
         .limit(50)
       if (data) {
-        setNotificacoes(data)
-        setNaoLidas(data.filter((n) => !n.lida).length)
+        const vis = filtrar(data)
+        setNotificacoes(vis)
+        setNaoLidas(vis.filter((n) => !n.lida).length)
       }
     }
     carregar()
@@ -33,20 +48,10 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
         filter: `tecnico_nome=eq.${tecnicoNome}`,
       }, (payload) => {
         const nova = payload.new as MecanicoNotificacao
+        const corte = limpaAtRef.current
+        if (corte && nova.created_at <= corte) return
         setNotificacoes((prev) => [nova, ...prev].slice(0, 50))
         setNaoLidas((n) => n + 1)
-
-        // Push notification (funciona mesmo com app fechado)
-        fetch('/api/push/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tecnico_nome: tecnicoNome,
-            titulo: nova.titulo,
-            descricao: nova.descricao || '',
-            link: nova.link || '/',
-          }),
-        }).catch(() => { /* ignore */ })
       })
       .subscribe()
 
@@ -68,7 +73,9 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
 
   const limparTodas = useCallback(async () => {
     if (!tecnicoNome) return
-    await supabase.from('mecanico_notificacoes').delete().eq('tecnico_nome', tecnicoNome)
+    const agora = new Date().toISOString()
+    limpaAtRef.current = agora
+    try { localStorage.setItem(LIMPAR_KEY, agora) } catch {}
     setNotificacoes([])
     setNaoLidas(0)
   }, [tecnicoNome])

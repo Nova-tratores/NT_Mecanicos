@@ -14,6 +14,8 @@ interface VeiculoMapa {
   id: number; placa: string; descricao: string; modelo: string
   lat: number; lng: number; velocidade: number; ignicao: boolean
   status: string; motorista: string; na_loja: boolean
+}
+interface VeiculoDetalhe {
   paradas_hoje: Parada[]; tempo_ligado_min: number; pontos_hoje: number
 }
 interface Parada { lat: number; lng: number; inicio: string; fim: string | null; duracao_min: number }
@@ -103,6 +105,8 @@ function MapaTab() {
   const [showClientes, setShowClientes] = useState(false)
   const [showParadas, setShowParadas] = useState(true)
   const [sheetOpen, setSheetOpen] = useState(false)
+  const [detalhe, setDetalhe] = useState<VeiculoDetalhe | null>(null)
+  const [detalheLoading, setDetalheLoading] = useState(false)
 
   useEffect(() => {
     if (!mapRef.current || mapInstance.current) return
@@ -149,28 +153,42 @@ function MapaTab() {
     return () => clearInterval(iv)
   }, [])
 
+  const carregarDetalhe = useCallback(async (veicId: number) => {
+    setDetalheLoading(true)
+    setDetalhe(null)
+    try {
+      const res = await fetch(`/api/rastreamento?acao=veiculo_detalhe&adesao_id=${veicId}`)
+      const data = await res.json()
+      setDetalhe(data)
+    } catch { setDetalhe(null) }
+    setDetalheLoading(false)
+  }, [])
+
+  const abrirVeiculo = useCallback((v: VeiculoMapa) => {
+    setSelected(v); setSheetOpen(true); setRota(null); setDetalhe(null)
+    carregarDetalhe(v.id)
+  }, [carregarDetalhe])
+
   useEffect(() => {
     veiculosLayer.current.clearLayers()
     for (const v of veiculos) {
       if (!v.lat || !v.lng) continue
       const marker = L.marker([v.lat, v.lng], { icon: veiculoIcon(v) })
-      marker.on('click', () => { setSelected(v); setSheetOpen(true); setRota(null) })
+      marker.on('click', () => abrirVeiculo(v))
       veiculosLayer.current.addLayer(marker)
     }
-  }, [veiculos])
+  }, [veiculos, abrirVeiculo])
 
   useEffect(() => {
     paradasLayer.current.clearLayers()
-    if (!showParadas) return
-    for (const v of veiculos) {
-      for (const p of v.paradas_hoje) {
-        if (!p.lat || !p.lng) continue
-        const m = L.marker([p.lat, p.lng], { icon: paradaIcon(p) })
-        m.bindPopup(`<b>${v.placa}</b><br>${fmtHora(p.inicio)} → ${fmtHora(p.fim)}<br>${fmtDuracao(p.duracao_min)}`)
-        paradasLayer.current.addLayer(m)
-      }
+    if (!showParadas || !selected || !detalhe || !Array.isArray(detalhe.paradas_hoje)) return
+    for (const p of detalhe.paradas_hoje) {
+      if (!p.lat || !p.lng) continue
+      const m = L.marker([p.lat, p.lng], { icon: paradaIcon(p) })
+      m.bindPopup(`<b>${selected.placa}</b><br>${fmtHora(p.inicio)} → ${fmtHora(p.fim)}<br>${fmtDuracao(p.duracao_min)}`)
+      paradasLayer.current.addLayer(m)
     }
-  }, [veiculos, showParadas])
+  }, [selected, detalhe, showParadas])
 
   useEffect(() => {
     clientesLayer.current.clearLayers()
@@ -275,7 +293,7 @@ function MapaTab() {
             const isSelected = selected?.id === v.id
             const cor = v.na_loja ? '#9CA3AF' : v.ignicao ? '#16A34A' : '#F59E0B'
             return (
-              <div key={v.id} onClick={() => { setSelected(v); setSheetOpen(true); setRota(null); flyTo(v.lat, v.lng) }} style={{
+              <div key={v.id} onClick={() => { abrirVeiculo(v); flyTo(v.lat, v.lng) }} style={{
                 display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10,
                 background: isSelected ? '#EFF6FF' : colors.surface,
                 border: `1px solid ${isSelected ? '#3B82F6' : colors.border}`, cursor: 'pointer',
@@ -341,8 +359,8 @@ function MapaTab() {
           {/* Stats */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>
             <StatCard icon={<Gauge size={14} color="#3B82F6" />} label="Velocidade" value={`${selected.velocidade} km/h`} />
-            <StatCard icon={<Clock size={14} color="#8B5CF6" />} label="Ligado" value={fmtDuracao(selected.tempo_ligado_min)} />
-            <StatCard icon={<Navigation size={14} color="#10B981" />} label="Pontos" value={String(selected.pontos_hoje)} />
+            <StatCard icon={<Clock size={14} color="#8B5CF6" />} label="Ligado" value={detalhe ? fmtDuracao(detalhe.tempo_ligado_min) : '...'} />
+            <StatCard icon={<Navigation size={14} color="#10B981" />} label="Pontos" value={detalhe ? String(detalhe.pontos_hoje) : '...'} />
           </div>
 
           {/* Route button */}
@@ -373,12 +391,15 @@ function MapaTab() {
           )}
 
           {/* Paradas */}
-          {selected.paradas_hoje.length > 0 && (
+          {detalheLoading && (
+            <div style={{ padding: 16, textAlign: 'center' }}><Loader2 size={18} color="#9CA3AF" className="spinner" /></div>
+          )}
+          {detalhe && Array.isArray(detalhe.paradas_hoje) && detalhe.paradas_hoje.length > 0 && (
             <div>
               <div style={{ fontSize: 11, fontWeight: 700, color: colors.textSubtle, textTransform: 'uppercase', marginBottom: 6 }}>
-                Paradas hoje ({selected.paradas_hoje.length})
+                Paradas hoje ({detalhe.paradas_hoje.length})
               </div>
-              {selected.paradas_hoje.map((p, i) => (
+              {detalhe.paradas_hoje.map((p, i) => (
                 <div key={i} onClick={() => flyTo(p.lat, p.lng)} style={{
                   display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', borderRadius: 8,
                   background: colors.surfaceAlt, marginBottom: 4, cursor: 'pointer',

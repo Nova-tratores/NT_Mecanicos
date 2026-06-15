@@ -176,6 +176,17 @@ export default function AvisosPage() {
       )
     }
 
+    // Push notification pra todos (inclusive admins)
+    fetch('/api/push/send-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        titulo: `Aviso: ${titulo.trim()}`,
+        descricao: conteudo.trim().slice(0, 120),
+        link: '/',
+      }),
+    }).catch(() => {})
+
     setTitulo(''); setConteudo(''); setPrioridade('normal'); setArquivos([]); setShowModal(false); setEnviando(false)
     carregar()
   }

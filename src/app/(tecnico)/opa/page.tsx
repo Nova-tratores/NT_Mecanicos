@@ -35,6 +35,7 @@ export default function OpaTecnicoPage() {
   const [aba, setAba] = useState<'abertos' | 'meus'>('abertos')
   const [showModal, setShowModal] = useState(false)
   const [resolvendo, setResolvendo] = useState<string | null>(null)
+  const [detalheOpa, setDetalheOpa] = useState<Opa | null>(null)
 
   // Form
   const [titulo, setTitulo] = useState('')
@@ -42,6 +43,13 @@ export default function OpaTecnicoPage() {
   const [arquivos, setArquivos] = useState<File[]>([])
   const [enviando, setEnviando] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (showModal) {
+      const t = setTimeout(() => fileRef.current?.click(), 400)
+      return () => clearTimeout(t)
+    }
+  }, [showModal])
 
   const carregar = useCallback(async () => {
     const { data: lista } = await supabase
@@ -97,6 +105,16 @@ export default function OpaTecnicoPage() {
         })
       }
     }
+
+    fetch('/api/push/send-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        titulo: `Opa: ${titulo.trim()}`,
+        descricao: descricao.trim() || 'Novo Opa registrado',
+        link: '/opa',
+      }),
+    }).catch(() => {})
 
     setTitulo(''); setDescricao(''); setArquivos([]); setShowModal(false); setEnviando(false)
     carregar()
@@ -171,9 +189,10 @@ export default function OpaTecnicoPage() {
           {lista.map(opa => {
             const resolvido = opa.status === 'resolvido'
             return (
-              <div key={opa.id} style={{
+              <div key={opa.id} onClick={() => setDetalheOpa(opa)} style={{
                 background: colors.surface, borderRadius: 16, overflow: 'hidden',
                 border: `1px solid ${resolvido ? colors.successBorder : colors.dangerBorder}`, boxShadow: shadow.sm,
+                cursor: 'pointer',
               }}>
                 <div style={{ height: 3, background: resolvido ? colors.success : colors.danger }} />
                 <div style={{ padding: 16 }}>
@@ -229,39 +248,122 @@ export default function OpaTecnicoPage() {
         </div>
       )}
 
+      {/* Modal Detalhe OPA */}
+      {detalheOpa && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 10000 }}
+          onClick={() => setDetalheOpa(null)}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: '#fff', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 480,
+            maxHeight: '92vh', overflow: 'auto', padding: 20,
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <AlertCircle size={20} color={detalheOpa.status === 'resolvido' ? colors.success : colors.danger} />
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+                  background: detalheOpa.status === 'resolvido' ? colors.successBg : colors.dangerBg,
+                  color: detalheOpa.status === 'resolvido' ? colors.success : colors.danger,
+                }}>
+                  {detalheOpa.status === 'resolvido' ? 'Resolvido' : 'Aberto'}
+                </span>
+              </div>
+              <button onClick={() => setDetalheOpa(null)} style={{
+                background: colors.surfaceAlt, border: 'none', width: 32, height: 32, borderRadius: 8,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <X size={16} color={colors.textMuted} />
+              </button>
+            </div>
+
+            <h2 style={{ fontSize: 20, fontWeight: 800, color: colors.text, margin: '0 0 8px' }}>{detalheOpa.titulo}</h2>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: colors.textSubtle, marginBottom: 16 }}>
+              <Clock size={12} /> {fmtData(detalheOpa.created_at)}
+              {detalheOpa.resolvido_por_nome && (
+                <span style={{ color: colors.success, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                  · <CheckCircle2 size={12} /> {detalheOpa.resolvido_por_nome}
+                </span>
+              )}
+            </div>
+
+            {detalheOpa.descricao && (
+              <div style={{
+                fontSize: 14, color: '#374151', lineHeight: 1.7, whiteSpace: 'pre-wrap',
+                background: '#F9FAFB', borderRadius: 12, padding: '14px 16px',
+                border: '1px solid #F3F4F6', marginBottom: 16,
+              }}>
+                {detalheOpa.descricao}
+              </div>
+            )}
+
+            {detalheOpa.anexos && detalheOpa.anexos.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
+                {detalheOpa.anexos.map(a => {
+                  const isVideo = a.tipo?.startsWith('video')
+                  return (
+                    <div key={a.id} style={{ borderRadius: 14, overflow: 'hidden', border: `1px solid ${colors.border}`, background: '#000' }}>
+                      {isVideo
+                        ? <video src={a.url} controls playsInline style={{ width: '100%', maxHeight: 400, objectFit: 'contain', display: 'block' }} />
+                        : <img src={a.url} alt="" style={{ width: '100%', maxHeight: 400, objectFit: 'contain', display: 'block' }} />}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {detalheOpa.status !== 'resolvido' && (
+              <button
+                disabled={resolvendo === detalheOpa.id}
+                onClick={() => { resolver(detalheOpa); setDetalheOpa(null) }}
+                style={{
+                  width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                  padding: 14, borderRadius: 14, border: 'none', background: colors.success, color: '#fff',
+                  fontSize: 15, fontWeight: 700, opacity: resolvendo === detalheOpa.id ? 0.6 : 1,
+                }}>
+                <Check size={18} /> Marcar como Resolvido
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Modal Novo Opa */}
       {showModal && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center', zIndex: 10000 }}>
           <div style={{ background: '#fff', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 480, maxHeight: '92vh', overflow: 'auto', padding: 20 }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <h2 style={{ fontSize: 18, fontWeight: 800, color: colors.text, margin: 0 }}>Novo Opa</h2>
               <button onClick={() => setShowModal(false)} style={{ background: colors.surfaceAlt, border: 'none', width: 32, height: 32, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                 <X size={16} color={colors.textMuted} />
               </button>
             </div>
 
-            <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Título</div>
-              <input value={titulo} onChange={e => setTitulo(e.target.value)} placeholder="O que está fora do lugar?"
-                style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.border}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA' }} />
-            </div>
+            {/* Instrução câmera */}
+            {arquivos.length === 0 && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', marginBottom: 14,
+                background: '#FEF3C7', borderRadius: 12, border: '1px solid #FDE68A',
+              }}>
+                <Camera size={20} color="#D97706" />
+                <div style={{ fontSize: 12, color: '#92400E', fontWeight: 600, lineHeight: 1.5 }}>
+                  Tire uma <strong>foto ou grave um vídeo</strong> do problema primeiro, depois preencha os detalhes.
+                </div>
+              </div>
+            )}
 
             <div style={{ marginBottom: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Descrição</div>
-              <textarea value={descricao} onChange={e => setDescricao(e.target.value)} placeholder="Descreva (opcional)..." rows={4}
-                style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.border}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA', resize: 'vertical' }} />
-            </div>
-
-            <div style={{ marginBottom: 18 }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Fotos / Vídeos</div>
               <input ref={fileRef} type="file" accept="image/*,video/*" capture="environment" multiple
                 onChange={e => { setArquivos(prev => [...prev, ...Array.from(e.target.files || [])]); if (fileRef.current) fileRef.current.value = '' }}
                 style={{ display: 'none' }} />
               <button onClick={() => fileRef.current?.click()} style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%', padding: 14,
-                borderRadius: 10, border: '2px dashed #D1D5DB', background: '#FAFAFA', fontSize: 13, fontWeight: 600, color: '#9CA3AF',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%', padding: 16,
+                borderRadius: 12, border: arquivos.length === 0 ? `2px solid ${colors.danger}` : '2px dashed #D1D5DB',
+                background: arquivos.length === 0 ? '#FEF2F2' : '#FAFAFA',
+                fontSize: 14, fontWeight: 700,
+                color: arquivos.length === 0 ? colors.danger : '#9CA3AF',
               }}>
-                <Camera size={18} /> Tirar foto / vídeo ou escolher
+                <Camera size={20} /> {arquivos.length === 0 ? 'Abrir câmera' : 'Adicionar mais'}
               </button>
               {arquivos.length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
@@ -279,6 +381,18 @@ export default function OpaTecnicoPage() {
                   })}
                 </div>
               )}
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Título</div>
+              <input value={titulo} onChange={e => setTitulo(e.target.value)} placeholder="O que está fora do lugar?"
+                style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.border}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA' }} />
+            </div>
+
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Descrição</div>
+              <textarea value={descricao} onChange={e => setDescricao(e.target.value)} placeholder="Descreva (opcional)..." rows={3}
+                style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.border}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA', resize: 'vertical', fontFamily: 'inherit' }} />
             </div>
 
             <div style={{ display: 'flex', gap: 10 }}>

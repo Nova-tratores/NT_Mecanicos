@@ -10,6 +10,7 @@ const BASE_LNG = -49.3710
 const RAIO_LOJA_KM = 0.8
 
 let tokenCache: { token: string; expiresAt: number } | null = null
+let mapaCache: { data: any[]; expiresAt: number } | null = null
 
 async function getToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expiresAt) return tokenCache.token
@@ -86,88 +87,46 @@ export async function GET(req: NextRequest) {
       return NextResponse.json(data || [])
     }
 
-    // ---- MAPA: posições em tempo real de todos os veículos ----
+    // ---- MAPA: posições rápidas (só última posição) ----
     if (acao === 'veiculos_mapa') {
-      const veicData = await fetchRota('/adesoes', { limit: '200', page: '0' })
-      const adesoes: any[] = veicData.data || []
-      const motData = await fetchRota('/motoristas', { limit: '200', page: '0' })
-      const motoristas: any[] = motData.data || []
+      if (mapaCache && Date.now() < mapaCache.expiresAt) {
+        return NextResponse.json(mapaCache.data)
+      }
 
-      const { data: vinculos } = await supabase.from('tecnico_veiculos').select('*')
+      const [veicData, motData, vincRes] = await Promise.all([
+        fetchRota('/adesoes', { limit: '200', page: '0' }),
+        fetchRota('/motoristas', { limit: '200', page: '0' }),
+        supabase.from('tecnico_veiculos').select('*'),
+      ])
+      const adesoes: any[] = veicData.data || []
+      const motoristas: any[] = motData.data || []
       const vinculoMap: Record<number, any> = {}
-      for (const v of (vinculos || [])) vinculoMap[v.adesao_id] = v
+      for (const v of (vincRes.data || [])) vinculoMap[v.adesao_id] = v
 
       const hoje = new Date().toISOString().slice(0, 10)
       const results: any[] = []
 
-      // Batch de 10 para não sobrecarregar
-      for (let i = 0; i < adesoes.length; i += 10) {
-        const batch = adesoes.slice(i, i + 10)
+      for (let i = 0; i < adesoes.length; i += 15) {
+        const batch = adesoes.slice(i, i + 15)
         const promises = batch.map(async (ad: any) => {
           try {
-            const posData = await fetchRota('/posicoes', {
-              adesao_id: String(ad.id), limit: '2000',
-              dt_posicao_inicial: `${hoje} 00:00:00`,
-              dt_posicao_final: `${hoje} 23:59:59`,
+            const where = JSON.stringify({
+              adesao_id: ad.id,
+              dt_posicao: { $gte: `${hoje}T00:00:00.000-03:00`, $lte: `${hoje}T23:59:59.999-03:00` }
             })
+            const posData = await fetchRota('/posicoes', { where, limit: '3', page: '0' })
             const posicoes: any[] = (posData.data || []).sort((a: any, b: any) =>
               (a.dt_posicao || '').localeCompare(b.dt_posicao || ''))
 
             const ultima = posicoes[posicoes.length - 1]
             if (!ultima) return null
 
-            // Status baseado na última posição
             const dtUlt = new Date(ultima.dt_posicao).getTime()
             const diffMin = (Date.now() - dtUlt) / 60000
             let status = 'Offline'
             if (diffMin < 5) status = 'Online'
             else if (diffMin < 30) status = `${Math.round(diffMin)}min atrás`
 
-            // Detectar paradas (ignição=0, velocidade=0, >5min)
-            const paradas: any[] = []
-            let paradaInicio: any = null
-            for (const p of posicoes) {
-              const ign = p.ignicao === true || p.ignicao === 1
-              const vel = p.velocidade || 0
-              if (!ign && vel === 0) {
-                if (!paradaInicio) paradaInicio = p
-              } else {
-                if (paradaInicio) {
-                  const durMin = (new Date(p.dt_posicao).getTime() - new Date(paradaInicio.dt_posicao).getTime()) / 60000
-                  if (durMin >= 5) {
-                    paradas.push({
-                      lat: paradaInicio.latitude, lng: paradaInicio.longitude,
-                      inicio: paradaInicio.dt_posicao, fim: p.dt_posicao,
-                      duracao_min: Math.round(durMin),
-                    })
-                  }
-                  paradaInicio = null
-                }
-              }
-            }
-            // Parada em andamento
-            if (paradaInicio) {
-              const durMin = (Date.now() - new Date(paradaInicio.dt_posicao).getTime()) / 60000
-              if (durMin >= 5) {
-                paradas.push({
-                  lat: paradaInicio.latitude, lng: paradaInicio.longitude,
-                  inicio: paradaInicio.dt_posicao, fim: null,
-                  duracao_min: Math.round(durMin),
-                })
-              }
-            }
-
-            // Tempo ligado
-            let tempoLigado = 0
-            for (let j = 1; j < posicoes.length; j++) {
-              const prev = posicoes[j - 1]
-              if (prev.ignicao === true || prev.ignicao === 1) {
-                const diff = (new Date(posicoes[j].dt_posicao).getTime() - new Date(prev.dt_posicao).getTime()) / 60000
-                if (diff < 30) tempoLigado += diff
-              }
-            }
-
-            // Motorista atual
             const motAtual = motoristas.filter((m: any) => m.adesao_id === ad.id && m.final !== 1)
               .sort((a: any, b: any) => (b.dt_inicio || '').localeCompare(a.dt_inicio || ''))[0]
             const vinculo = vinculoMap[ad.id]
@@ -180,9 +139,6 @@ export async function GET(req: NextRequest) {
               ignicao: ultima.ignicao === true || ultima.ignicao === 1,
               status,
               motorista: motAtual?.motorista?.nome || vinculo?.tecnico_nome || '',
-              paradas_hoje: paradas,
-              tempo_ligado_min: Math.round(tempoLigado),
-              pontos_hoje: posicoes.length,
               na_loja: naLoja(ultima.latitude, ultima.longitude),
             }
           } catch { return null }
@@ -191,7 +147,70 @@ export async function GET(req: NextRequest) {
         results.push(...batchRes.filter(Boolean))
       }
 
+      mapaCache = { data: results, expiresAt: Date.now() + 25_000 }
       return NextResponse.json(results)
+    }
+
+    // ---- Detalhes de UM veículo (paradas, tempo_ligado, pontos) ----
+    if (acao === 'veiculo_detalhe') {
+      const adesaoId = sp.get('adesao_id')
+      if (!adesaoId) return NextResponse.json({ error: 'adesao_id obrigatório' }, { status: 400 })
+
+      const hoje = new Date().toISOString().slice(0, 10)
+      const where = JSON.stringify({
+        adesao_id: Number(adesaoId),
+        dt_posicao: { $gte: `${hoje}T00:00:00.000-03:00`, $lte: `${hoje}T23:59:59.999-03:00` }
+      })
+      const posData = await fetchRota('/posicoes', { where, limit: '2000', page: '0' })
+      const posicoes: any[] = (posData.data || []).sort((a: any, b: any) =>
+        (a.dt_posicao || '').localeCompare(b.dt_posicao || ''))
+
+      const paradas: any[] = []
+      let paradaInicio: any = null
+      for (const p of posicoes) {
+        const ign = p.ignicao === true || p.ignicao === 1
+        const vel = p.velocidade || 0
+        if (!ign && vel === 0) {
+          if (!paradaInicio) paradaInicio = p
+        } else {
+          if (paradaInicio) {
+            const durMin = (new Date(p.dt_posicao).getTime() - new Date(paradaInicio.dt_posicao).getTime()) / 60000
+            if (durMin >= 5) {
+              paradas.push({
+                lat: paradaInicio.latitude, lng: paradaInicio.longitude,
+                inicio: paradaInicio.dt_posicao, fim: p.dt_posicao,
+                duracao_min: Math.round(durMin),
+              })
+            }
+            paradaInicio = null
+          }
+        }
+      }
+      if (paradaInicio) {
+        const durMin = (Date.now() - new Date(paradaInicio.dt_posicao).getTime()) / 60000
+        if (durMin >= 5) {
+          paradas.push({
+            lat: paradaInicio.latitude, lng: paradaInicio.longitude,
+            inicio: paradaInicio.dt_posicao, fim: null,
+            duracao_min: Math.round(durMin),
+          })
+        }
+      }
+
+      let tempoLigado = 0
+      for (let j = 1; j < posicoes.length; j++) {
+        const prev = posicoes[j - 1]
+        if (prev.ignicao === true || prev.ignicao === 1) {
+          const diff = (new Date(posicoes[j].dt_posicao).getTime() - new Date(prev.dt_posicao).getTime()) / 60000
+          if (diff < 30) tempoLigado += diff
+        }
+      }
+
+      return NextResponse.json({
+        paradas_hoje: paradas,
+        tempo_ligado_min: Math.round(tempoLigado),
+        pontos_hoje: posicoes.length,
+      })
     }
 
     // ---- Posições brutas de um veículo (para rota) ----
@@ -201,11 +220,11 @@ export async function GET(req: NextRequest) {
       const limit = sp.get('limit') || '2000'
       if (!adesaoId) return NextResponse.json({ error: 'adesao_id obrigatório' }, { status: 400 })
 
-      const posData = await fetchRota('/posicoes', {
-        adesao_id: adesaoId, limit,
-        dt_posicao_inicial: `${data} 00:00:00`,
-        dt_posicao_final: `${data} 23:59:59`,
+      const where = JSON.stringify({
+        adesao_id: Number(adesaoId),
+        dt_posicao: { $gte: `${data}T00:00:00.000-03:00`, $lte: `${data}T23:59:59.999-03:00` }
       })
+      const posData = await fetchRota('/posicoes', { where, limit, page: '0' })
       const posicoes = (posData.data || []).sort((a: any, b: any) =>
         (a.dt_posicao || '').localeCompare(b.dt_posicao || ''))
         .map((p: any) => ({
