@@ -292,7 +292,7 @@ export default function OpaTecnicoPage() {
 
             <h2 style={{ fontSize: 20, fontWeight: 800, color: colors.text, margin: '0 0 8px' }}>{detalheOpa.titulo}</h2>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: colors.textSubtle, marginBottom: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: colors.textSubtle, marginBottom: 16, flexWrap: 'wrap' }}>
               <Clock size={12} /> {fmtData(detalheOpa.created_at)}
               {detalheOpa.resolvido_por_nome && (
                 <span style={{ color: colors.success, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>

@@ -29,7 +29,7 @@ function addOpaViewLocal(id: string) {
 }
 
 interface OpaPopup {
-  id: string; titulo: string; descricao: string | null; criado_por_nome: string | null
+  id: string; titulo: string; descricao: string | null
   created_at: string; anexos: { id: string; url: string; tipo: string | null }[]
 }
 
@@ -121,7 +121,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     try {
       const { data: opas } = await withTimeout(supabase
         .from('portal_opas')
-        .select('id, titulo, descricao, criado_por_nome, created_at')
+        .select('id, titulo, descricao, created_at')
         .eq('status', 'aberto')
         .order('created_at', { ascending: true }))
       if (!opas || opas.length === 0) { setOpasPendentes([]); return }
@@ -179,8 +179,10 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     if (!user?.tecnico_nome) return
     const nome = user.nome_pos || user.tecnico_nome
 
-    // Se offline e nunca fez prefetch, agenda para quando voltar online (sem bloquear)
-    if (!navigator.onLine && !hasPrefetchedBefore()) {
+    const firstTime = !hasPrefetchedBefore()
+    const progress = firstTime ? setPrefetchMsg : undefined
+
+    if (!navigator.onLine && firstTime) {
       setPrefetchStatus('idle')
       const handleOnline = async () => {
         setPrefetchStatus('loading')
@@ -192,14 +194,14 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     }
 
     if (navigator.onLine) {
-      setPrefetchStatus('loading')
-      prefetchAll(nome, user.tecnico_nome, setPrefetchMsg).then(ok => {
-        setPrefetchStatus(ok ? 'done' : 'idle')
+      if (firstTime) setPrefetchStatus('loading')
+      prefetchAll(nome, user.tecnico_nome, progress).then(ok => {
+        if (firstTime) setPrefetchStatus(ok ? 'done' : 'idle')
       })
     }
 
     const handleOnline = () => {
-      prefetchAll(nome, user.tecnico_nome, setPrefetchMsg)
+      prefetchAll(nome, user.tecnico_nome, undefined)
     }
     window.addEventListener('online', handleOnline)
     return () => window.removeEventListener('online', handleOnline)
@@ -480,12 +482,6 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
                           </div>
                         )
                       })}
-                    </div>
-                  )}
-
-                  {opa.criado_por_nome && (
-                    <div style={{ fontSize: 11, color: '#9CA3AF', marginBottom: 14 }}>
-                      Criado por <strong>{opa.criado_por_nome}</strong> · {new Date(opa.created_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                     </div>
                   )}
 

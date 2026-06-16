@@ -7,7 +7,7 @@ import { supabase } from './supabase'
 import { offlineSet, offlineGet } from './offlineCache'
 
 const PREFETCH_KEY = 'nt-prefetch-timestamp'
-const MIN_INTERVAL = 60_000 // no mínimo 1 min entre prefetches
+const MIN_INTERVAL = 15 * 60_000 // 15 min entre prefetches
 
 /** Retorna true se já rodou pelo menos um prefetch com sucesso */
 export function hasPrefetchedBefore(): boolean {
