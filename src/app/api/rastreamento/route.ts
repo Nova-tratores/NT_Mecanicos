@@ -104,6 +104,7 @@ export async function GET(req: NextRequest) {
       for (const v of (vincRes.data || [])) vinculoMap[v.adesao_id] = v
 
       const hoje = new Date().toISOString().slice(0, 10)
+      const tresDiasAtras = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
       const results: any[] = []
 
       for (let i = 0; i < adesoes.length; i += 15) {
@@ -112,9 +113,9 @@ export async function GET(req: NextRequest) {
           try {
             const where = JSON.stringify({
               adesao_id: ad.id,
-              dt_posicao: { $gte: `${hoje}T00:00:00.000-03:00`, $lte: `${hoje}T23:59:59.999-03:00` }
+              dt_posicao: { $gte: `${tresDiasAtras}T00:00:00.000-03:00`, $lte: `${hoje}T23:59:59.999-03:00` }
             })
-            const posData = await fetchRota('/posicoes', { where, limit: '3', page: '0' })
+            const posData = await fetchRota('/posicoes', { where, limit: '5', page: '0' })
             const posicoes: any[] = (posData.data || []).sort((a: any, b: any) =>
               (a.dt_posicao || '').localeCompare(b.dt_posicao || ''))
 
@@ -140,6 +141,8 @@ export async function GET(req: NextRequest) {
               status,
               motorista: motAtual?.motorista?.nome || vinculo?.tecnico_nome || '',
               na_loja: naLoja(ultima.latitude, ultima.longitude),
+              dt_posicao: ultima.dt_posicao || null,
+              tecnico: vinculo?.tecnico_nome || '',
             }
           } catch { return null }
         })
@@ -156,10 +159,10 @@ export async function GET(req: NextRequest) {
       const adesaoId = sp.get('adesao_id')
       if (!adesaoId) return NextResponse.json({ error: 'adesao_id obrigatório' }, { status: 400 })
 
-      const hoje = new Date().toISOString().slice(0, 10)
+      const dia = sp.get('data') || new Date().toISOString().slice(0, 10)
       const where = JSON.stringify({
         adesao_id: Number(adesaoId),
-        dt_posicao: { $gte: `${hoje}T00:00:00.000-03:00`, $lte: `${hoje}T23:59:59.999-03:00` }
+        dt_posicao: { $gte: `${dia}T00:00:00.000-03:00`, $lte: `${dia}T23:59:59.999-03:00` }
       })
       const posData = await fetchRota('/posicoes', { where, limit: '2000', page: '0' })
       const posicoes: any[] = (posData.data || []).sort((a: any, b: any) =>
@@ -206,10 +209,19 @@ export async function GET(req: NextRequest) {
         }
       }
 
+      let kmHoje = 0
+      for (let k = 1; k < posicoes.length; k++) {
+        const d = distanciaKm(posicoes[k - 1].latitude, posicoes[k - 1].longitude, posicoes[k].latitude, posicoes[k].longitude)
+        if (d < 5) kmHoje += d
+      }
+      const tempoParado = paradas.reduce((s: number, p: any) => s + p.duracao_min, 0)
+
       return NextResponse.json({
         paradas_hoje: paradas,
         tempo_ligado_min: Math.round(tempoLigado),
         pontos_hoje: posicoes.length,
+        km_hoje: Math.round(kmHoje * 10) / 10,
+        tempo_parado_min: Math.round(tempoParado),
       })
     }
 

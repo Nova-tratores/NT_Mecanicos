@@ -40,7 +40,6 @@ export default function RequisicaoDetailPage() {
         })
         .eq('id', req.id)
 
-      // Notificar técnico
       await supabase.from('mecanico_notificacoes').insert({
         tecnico_nome: req.tecnico_nome,
         tipo: 'requisicao_' + novoStatus,
@@ -49,6 +48,17 @@ export default function RequisicaoDetailPage() {
         link: `/requisicoes/${req.id}`,
         lida: false,
       })
+
+      fetch('/api/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tecnico_nome: req.tecnico_nome,
+          titulo: `Requisição #${req.id} ${novoStatus}`,
+          descricao: req.material_solicitado.substring(0, 100),
+          link: `/requisicoes/${req.id}`,
+        }),
+      }).catch(() => {})
 
       alert(novoStatus === 'aprovada' ? 'Requisição aprovada!' : 'Requisição recusada.')
       router.push('/admin/requisicoes')
@@ -90,7 +100,6 @@ export default function RequisicaoDetailPage() {
         }
       }
 
-      // Notificar técnico
       await supabase.from('mecanico_notificacoes').insert({
         tecnico_nome: req.tecnico_nome,
         tipo: 'cancelamento_aprovado',
@@ -99,6 +108,17 @@ export default function RequisicaoDetailPage() {
         link: `/requisicoes/${req.id}`,
         lida: false,
       })
+
+      fetch('/api/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tecnico_nome: req.tecnico_nome,
+          titulo: `Cancelamento aprovado - Req #${req.id}`,
+          descricao: `Sua solicitação de cancelamento foi aprovada.`,
+          link: `/requisicoes/${req.id}`,
+        }),
+      }).catch(() => {})
 
       alert('Cancelamento aprovado! Requisição desvinculada do POS.')
       router.push('/admin/requisicoes')
@@ -119,7 +139,6 @@ export default function RequisicaoDetailPage() {
         .update({ cancelamento_status: 'recusado' })
         .eq('id', req.id)
 
-      // Notificar técnico
       await supabase.from('mecanico_notificacoes').insert({
         tecnico_nome: req.tecnico_nome,
         tipo: 'cancelamento_recusado',
@@ -128,6 +147,17 @@ export default function RequisicaoDetailPage() {
         link: `/requisicoes/${req.id}`,
         lida: false,
       })
+
+      fetch('/api/push/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tecnico_nome: req.tecnico_nome,
+          titulo: `Cancelamento recusado - Req #${req.id}`,
+          descricao: `Sua solicitação de cancelamento foi recusada.`,
+          link: `/requisicoes/${req.id}`,
+        }),
+      }).catch(() => {})
 
       alert('Cancelamento recusado.')
       router.push('/admin/requisicoes')

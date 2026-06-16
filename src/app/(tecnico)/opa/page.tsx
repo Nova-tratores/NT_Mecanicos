@@ -116,6 +116,21 @@ export default function OpaTecnicoPage() {
       }),
     }).catch(() => {})
 
+    supabase.from('mecanico_usuarios').select('tecnico_nome').eq('ativo', true).then(({ data: tecs }) => {
+      if (tecs?.length) {
+        supabase.from('mecanico_notificacoes').insert(
+          tecs.map(t => ({
+            tecnico_nome: t.tecnico_nome,
+            tipo: 'opa',
+            titulo: `OPA: ${titulo.trim()}`,
+            descricao: descricao.trim() || 'Novo OPA registrado',
+            link: '/opa',
+            lida: false,
+          }))
+        )
+      }
+    })
+
     setTitulo(''); setDescricao(''); setArquivos([]); setShowModal(false); setEnviando(false)
     carregar()
   }

@@ -30,7 +30,15 @@
       "Bash(xargs grep -l \"useAdmin\\\\|useCurrentUser\")",
       "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\push\\\\send-all\" -Force)",
       "Bash(xargs grep -l \"push_subscriptions\")",
-      "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\clientes\\\\projeto\" -Force)"
+      "PowerShell(New-Item -ItemType Directory -Path \"c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\clientes\\\\projeto\" -Force)",
+      "Bash(xargs grep -l \"rastreamento\\\\|mapa\\\\|vehicle\\\\|marker\" -i)",
+      "Bash(xargs cat)",
+      "PowerShell(New-Item -ItemType Directory -Force \"c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\opa\\\\escalar\")",
+      "Bash(xargs grep -l \"Ordem_Servico\\\\|os\\\\|OS\")",
+      "PowerShell(New-Item -ItemType Directory -Force \"c:\\\\projetos\\\\mecanicos\\\\src\\\\app\\\\api\\\\os\\\\check-notify\")",
+      "PowerShell($proc = Get-Process -Name \"node\" -ErrorAction SilentlyContinue; if \\($proc\\) { \"Dev server running \\(PIDs: $\\($proc.Id -join ', '\\)\\)\" } else { \"No node process found\" })",
+      "PowerShell(Invoke-RestMethod -Uri \"http://localhost:3000/api/rastreamento?acao=posicoes&adesao_id=1\" -Method GET -ErrorAction Stop)",
+      "PowerShell(try { $r = Invoke-RestMethod -Uri \"http://localhost:3000/api/rastreamento?acao=veiculos_mapa\" -Method GET -TimeoutSec 15; \"Status: OK, Count: $\\($r.Count\\)\" } catch { \"Error: $\\($_.Exception.Message\\)\" })"
     ]
   }
 }

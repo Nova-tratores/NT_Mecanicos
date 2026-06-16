@@ -9,7 +9,7 @@ import OfflineSync from '@/components/OfflineSync'
 import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
 import dynamic from 'next/dynamic'
 const CheckinDiario = dynamic(() => import('@/components/CheckinDiario'), { ssr: false })
-import { Megaphone, WifiOff, Download, AlertCircle, Film, Image as ImageIcon } from 'lucide-react'
+import { Megaphone, WifiOff, Download, AlertCircle, AlertTriangle, Film, Image as ImageIcon } from 'lucide-react'
 
 // ── Avisos confirmados: cache local para nunca mostrar de novo ──
 const AVISOS_CONFIRMADOS_KEY = 'nt-avisos-confirmados'
@@ -31,6 +31,23 @@ function addOpaViewLocal(id: string) {
 interface OpaPopup {
   id: string; titulo: string; descricao: string | null; criado_por_nome: string | null
   created_at: string; anexos: { id: string; url: string; tipo: string | null }[]
+}
+
+interface OcorrenciaPopup {
+  id: number; tipo: string; descricao: string; pontos: number; created_at: string
+}
+
+const OCORRENCIA_VIEWS_KEY = 'nt-ocorrencia-views'
+function getOcorrenciaViewsLocal(): Set<number> {
+  try {
+    const raw = localStorage.getItem(OCORRENCIA_VIEWS_KEY)
+    return raw ? new Set(JSON.parse(raw)) : new Set()
+  } catch { return new Set() }
+}
+function addOcorrenciaViewLocal(id: number) {
+  const set = getOcorrenciaViewsLocal()
+  set.add(id)
+  localStorage.setItem(OCORRENCIA_VIEWS_KEY, JSON.stringify([...set]))
 }
 
 function getAvisosConfirmadosLocal(): Set<number> {
@@ -61,6 +78,10 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   // ── OPA popup state ──
   const [opasPendentes, setOpasPendentes] = useState<OpaPopup[]>([])
   const [opaConfirmando, setOpaConfirmando] = useState(false)
+
+  // ── Ocorrências OPA state ──
+  const [ocorrenciasPendentes, setOcorrenciasPendentes] = useState<OcorrenciaPopup[]>([])
+  const [ocorrenciaConfirmando, setOcorrenciaConfirmando] = useState(false)
 
   // ── Prefetch state ──
   const [prefetchStatus, setPrefetchStatus] = useState<'idle' | 'loading' | 'done' | 'need-internet'>('idle')
@@ -220,6 +241,30 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     return () => { supabase.removeChannel(ch) }
   }, [carregarOpasPendentes])
 
+  const carregarOcorrenciasPendentes = useCallback(async () => {
+    if (!user?.tecnico_nome) return
+    if (!navigator.onLine) return
+    try {
+      await fetch('/api/opa/escalar', { method: 'POST' }).catch(() => {})
+      const { data } = await withTimeout(supabase
+        .from('mecanico_ocorrencias')
+        .select('id, tipo, descricao, pontos, created_at')
+        .eq('tecnico_nome', user.tecnico_nome)
+        .in('tipo', ['opa_dia1', 'opa_dia2'])
+        .order('created_at', { ascending: true }))
+      if (!data?.length) { setOcorrenciasPendentes([]); return }
+      const localSet = getOcorrenciaViewsLocal()
+      setOcorrenciasPendentes(data.filter(o => !localSet.has(o.id)))
+    } catch {}
+  }, [user?.tecnico_nome])
+
+  useEffect(() => { carregarOcorrenciasPendentes() }, [carregarOcorrenciasPendentes])
+
+  useEffect(() => {
+    if (!user?.tecnico_nome || !navigator.onLine) return
+    fetch('/api/os/check-notify', { method: 'POST' }).catch(() => {})
+  }, [user?.tecnico_nome])
+
   const confirmarAviso = async () => {
     if (!user?.tecnico_nome || avisosPendentes.length === 0) return
     setConfirmando(true)
@@ -255,6 +300,15 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
       }, { onConflict: 'opa_id,user_id' })
     } catch {}
     setOpaConfirmando(false)
+  }
+
+  const confirmarOcorrencia = async () => {
+    if (ocorrenciasPendentes.length === 0) return
+    setOcorrenciaConfirmando(true)
+    const oc = ocorrenciasPendentes[0]
+    addOcorrenciaViewLocal(oc.id)
+    setOcorrenciasPendentes(prev => prev.filter(o => o.id !== oc.id))
+    setOcorrenciaConfirmando(false)
   }
 
   if (loading) {
@@ -442,6 +496,77 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
                     opacity: opaConfirmando ? 0.7 : 1,
                   }}>
                     {opaConfirmando ? 'Confirmando...' : 'Li e Entendi'}
+                  </button>
+                </div>
+              </div>
+            )
+          })()}
+        </div>
+      )}
+
+      {/* Popup bloqueante de ocorrência OPA */}
+      {ocorrenciasPendentes.length > 0 && avisosPendentes.length === 0 && opasPendentes.length === 0 && (
+        <div style={{
+          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000,
+          padding: 16,
+        }}>
+          {(() => {
+            const oc = ocorrenciasPendentes[0]
+            const dias = oc.tipo === 'opa_dia2' ? 2 : 1
+            return (
+              <div style={{
+                background: '#fff', borderRadius: 20, width: '100%', maxWidth: 400,
+                overflow: 'hidden', boxShadow: '0 20px 50px rgba(0,0,0,0.4)',
+              }}>
+                <div style={{ height: 5, background: '#7C2D12' }} />
+                <div style={{ padding: '24px 20px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
+                    <div style={{
+                      width: 52, height: 52, borderRadius: 14, background: '#FEF2F2',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                    }}>
+                      <AlertTriangle size={28} color="#DC2626" />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, color: '#EF4444', letterSpacing: 1, textTransform: 'uppercase' }}>
+                        Ocorrência {ocorrenciasPendentes.length > 1 ? `(1 de ${ocorrenciasPendentes.length})` : ''}
+                      </div>
+                      <div style={{ fontSize: 17, fontWeight: 800, color: '#111' }}>Você levou uma ocorrência</div>
+                    </div>
+                  </div>
+
+                  <div style={{
+                    background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 12,
+                    padding: '14px 16px', marginBottom: 14,
+                  }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: '#991B1B', marginBottom: 6 }}>
+                      OPA não resolvida há {dias} dia(s)
+                    </div>
+                    <div style={{ fontSize: 13, color: '#7F1D1D', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                      {oc.descricao}
+                    </div>
+                  </div>
+
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    padding: '10px', background: '#FEE2E2', borderRadius: 10, marginBottom: 14,
+                  }}>
+                    <span style={{ fontSize: 22, fontWeight: 900, color: '#DC2626' }}>{oc.pontos}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#991B1B' }}>pontos</span>
+                  </div>
+
+                  <div style={{ fontSize: 11, color: '#9CA3AF', marginBottom: 14, textAlign: 'center' }}>
+                    {new Date(oc.created_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  </div>
+
+                  <button onClick={confirmarOcorrencia} disabled={ocorrenciaConfirmando} style={{
+                    width: '100%', padding: 15, borderRadius: 14,
+                    background: '#7C2D12', color: '#fff', border: 'none',
+                    fontSize: 16, fontWeight: 800, cursor: ocorrenciaConfirmando ? 'not-allowed' : 'pointer',
+                    opacity: ocorrenciaConfirmando ? 0.7 : 1,
+                  }}>
+                    {ocorrenciaConfirmando ? 'Confirmando...' : 'Li e Entendi'}
                   </button>
                 </div>
               </div>

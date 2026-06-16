@@ -167,12 +167,11 @@ export default function AvisosPage() {
     })
 
     // Notificar mecânicos
-    const { data: tecs } = await supabase.from('portal_permissoes')
-      .select('mecanico_tecnico_nome').not('mecanico_tecnico_nome', 'is', null)
+    const { data: tecs } = await supabase.from('mecanico_usuarios')
+      .select('tecnico_nome').eq('ativo', true)
     if (tecs?.length) {
-      const nomes = [...new Set(tecs.map((t: any) => t.mecanico_tecnico_nome).filter(Boolean))]
       await supabase.from('mecanico_notificacoes').insert(
-        nomes.map(n => ({ tecnico_nome: n, tipo: 'aviso', titulo: `Aviso: ${titulo.trim()}`, descricao: conteudo.trim().slice(0, 200), link: '/', lida: false }))
+        tecs.map(t => ({ tecnico_nome: t.tecnico_nome, tipo: 'aviso', titulo: `Aviso: ${titulo.trim()}`, descricao: conteudo.trim().slice(0, 200), link: '/', lida: false }))
       )
     }
 

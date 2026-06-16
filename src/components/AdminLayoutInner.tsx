@@ -143,6 +143,11 @@ export default function AdminLayoutInner({ children }: { children: React.ReactNo
   }, [admin?.id])
 
   useEffect(() => {
+    fetch('/api/opa/escalar', { method: 'POST' }).catch(() => {})
+    fetch('/api/os/check-notify', { method: 'POST' }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
     carregarOpasPendentes()
     const ch = supabase.channel('opa_popup_admin')
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'portal_opas' }, () => carregarOpasPendentes())

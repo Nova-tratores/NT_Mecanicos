@@ -7,6 +7,7 @@ import 'leaflet/dist/leaflet.css'
 import {
   Car, Users, MapPin, Navigation, RefreshCw, Loader2, ChevronDown,
   X, Clock, Gauge, Route, Eye, EyeOff, Link2, Unlink, Save, AlertTriangle,
+  Search, Copy,
 } from 'lucide-react'
 
 // ---- Types ----
@@ -14,9 +15,11 @@ interface VeiculoMapa {
   id: number; placa: string; descricao: string; modelo: string
   lat: number; lng: number; velocidade: number; ignicao: boolean
   status: string; motorista: string; na_loja: boolean
+  dt_posicao: string | null; tecnico: string
 }
 interface VeiculoDetalhe {
   paradas_hoje: Parada[]; tempo_ligado_min: number; pontos_hoje: number
+  km_hoje: number; tempo_parado_min: number
 }
 interface Parada { lat: number; lng: number; inicio: string; fim: string | null; duracao_min: number }
 interface Cliente { id: string; nome: string; cnpj: string; cidade: string; estado: string; lat: number; lng: number }
@@ -35,12 +38,16 @@ function fmtDuracao(min: number) {
   return `${Math.floor(min / 60)}h${r > 0 ? r + 'min' : ''}`
 }
 
+function primeiroNome(n: string) { return n.split(' ')[0] || n }
+
 function veiculoIcon(v: VeiculoMapa): L.DivIcon {
   const cor = v.na_loja ? '#9CA3AF' : v.ignicao ? '#16A34A' : '#F59E0B'
+  const nome = v.tecnico || v.motorista || ''
+  const label = nome ? `${primeiroNome(nome)} · ${v.placa}` : v.placa
   return L.divIcon({
     className: '', iconSize: [36, 44], iconAnchor: [18, 44], popupAnchor: [0, -44],
-    html: `<div style="display:flex;flex-direction:column;align-items:center">
-      <div style="background:${cor};color:#fff;font-size:9px;font-weight:800;padding:2px 6px;border-radius:6px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);max-width:90px;overflow:hidden;text-overflow:ellipsis">${v.placa}</div>
+    html: `<div style="display:flex;flex-direction:column;align-items:center${v.na_loja ? ';opacity:0.7' : ''}">
+      <div style="background:${cor};color:#fff;font-size:9px;font-weight:800;padding:3px 7px;border-radius:6px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);max-width:130px;overflow:hidden;text-overflow:ellipsis">${label}</div>
       <div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:6px solid ${cor}"></div>
     </div>`,
   })
@@ -107,6 +114,8 @@ function MapaTab() {
   const [sheetOpen, setSheetOpen] = useState(false)
   const [detalhe, setDetalhe] = useState<VeiculoDetalhe | null>(null)
   const [detalheLoading, setDetalheLoading] = useState(false)
+  const [busca, setBusca] = useState('')
+  const [filtroStatus, setFiltroStatus] = useState<'todos' | 'movimento' | 'parado' | 'na_loja'>('todos')
 
   useEffect(() => {
     if (!mapRef.current || mapInstance.current) return
@@ -149,25 +158,68 @@ function MapaTab() {
         const data = await res.json()
         if (Array.isArray(data)) setVeiculos(data)
       } catch {}
-    }, 30000)
+    }, 15000)
     return () => clearInterval(iv)
   }, [])
 
-  const carregarDetalhe = useCallback(async (veicId: number) => {
+  const carregarDetalhe = useCallback(async (veicId: number, dtPosicao?: string | null) => {
     setDetalheLoading(true)
     setDetalhe(null)
     try {
-      const res = await fetch(`/api/rastreamento?acao=veiculo_detalhe&adesao_id=${veicId}`)
+      let url = `/api/rastreamento?acao=veiculo_detalhe&adesao_id=${veicId}`
+      if (dtPosicao) {
+        const d = new Date(dtPosicao)
+        url += `&data=${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }
+      const res = await fetch(url)
       const data = await res.json()
       setDetalhe(data)
     } catch { setDetalhe(null) }
     setDetalheLoading(false)
   }, [])
 
+  const carregarRota = useCallback(async (veicId: number, dtPosicao?: string | null) => {
+    setRotaLoading(true)
+    rotaLayer.current.clearLayers()
+    try {
+      let url = `/api/rastreamento?acao=posicoes&adesao_id=${veicId}`
+      if (dtPosicao) {
+        const d = new Date(dtPosicao)
+        url += `&data=${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+      }
+      const res = await fetch(url)
+      const data = await res.json()
+      const pontos: RotaPonto[] = data.posicoes || []
+      if (pontos.length > 1) {
+        const latlngs: L.LatLngExpression[] = pontos.map(p => [p.lat, p.lng])
+        L.polyline(latlngs, { color: '#1E3A5F', weight: 6, opacity: 0.4 }).addTo(rotaLayer.current)
+        L.polyline(latlngs, { color: '#3B82F6', weight: 3, opacity: 0.9 }).addTo(rotaLayer.current)
+        const arrowStep = Math.max(1, Math.floor(pontos.length / 14))
+        for (let ai = arrowStep; ai < pontos.length - 1; ai += arrowStep) {
+          const ap1 = pontos[ai - 1], ap2 = pontos[ai]
+          const ang = Math.atan2(ap2.lng - ap1.lng, ap2.lat - ap1.lat) * 180 / Math.PI
+          L.marker([ap2.lat, ap2.lng], {
+            icon: L.divIcon({ className: '', iconSize: [10, 10], iconAnchor: [5, 5],
+              html: `<div style="width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-bottom:7px solid #2563EB;transform:rotate(${ang}deg);filter:drop-shadow(0 1px 1px rgba(0,0,0,.2))"></div>` }),
+          }).addTo(rotaLayer.current)
+        }
+        L.circleMarker([pontos[0].lat, pontos[0].lng], { radius: 7, fillColor: '#16A34A', fillOpacity: 1, color: '#fff', weight: 2 })
+          .bindPopup(`<b>Início</b><br>${fmtHora(pontos[0].dt)}`).addTo(rotaLayer.current)
+        const last = pontos[pontos.length - 1]
+        L.circleMarker([last.lat, last.lng], { radius: 7, fillColor: '#EF4444', fillOpacity: 1, color: '#fff', weight: 2 })
+          .bindPopup(`<b>Última posição</b><br>${fmtHora(last.dt)}`).addTo(rotaLayer.current)
+        mapInstance.current?.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] })
+      }
+      setRota({ pontos, km: data.km_total || 0 })
+    } catch (e) { console.error(e) }
+    setRotaLoading(false)
+  }, [])
+
   const abrirVeiculo = useCallback((v: VeiculoMapa) => {
     setSelected(v); setSheetOpen(true); setRota(null); setDetalhe(null)
-    carregarDetalhe(v.id)
-  }, [carregarDetalhe])
+    carregarDetalhe(v.id, v.dt_posicao)
+    carregarRota(v.id, v.dt_posicao)
+  }, [carregarDetalhe, carregarRota])
 
   useEffect(() => {
     veiculosLayer.current.clearLayers()
@@ -199,28 +251,6 @@ function MapaTab() {
       clientesLayer.current.addLayer(m)
     }
   }, [clientes, showClientes])
-
-  const carregarRota = async (veicId: number) => {
-    setRotaLoading(true)
-    rotaLayer.current.clearLayers()
-    try {
-      const res = await fetch(`/api/rastreamento?acao=posicoes&adesao_id=${veicId}`)
-      const data = await res.json()
-      const pontos: RotaPonto[] = data.posicoes || []
-      if (pontos.length > 1) {
-        const latlngs: L.LatLngExpression[] = pontos.map(p => [p.lat, p.lng])
-        L.polyline(latlngs, { color: '#3B82F6', weight: 3, opacity: 0.8 }).addTo(rotaLayer.current)
-        L.circleMarker([pontos[0].lat, pontos[0].lng], { radius: 7, fillColor: '#16A34A', fillOpacity: 1, color: '#fff', weight: 2 })
-          .bindPopup(`<b>Início</b><br>${fmtHora(pontos[0].dt)}`).addTo(rotaLayer.current)
-        const last = pontos[pontos.length - 1]
-        L.circleMarker([last.lat, last.lng], { radius: 7, fillColor: '#EF4444', fillOpacity: 1, color: '#fff', weight: 2 })
-          .bindPopup(`<b>Última posição</b><br>${fmtHora(last.dt)}`).addTo(rotaLayer.current)
-        mapInstance.current?.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] })
-      }
-      setRota({ pontos, km: data.km_total || 0 })
-    } catch (e) { console.error(e) }
-    setRotaLoading(false)
-  }
 
   const clearRota = () => { rotaLayer.current.clearLayers(); setRota(null) }
   const flyTo = (lat: number, lng: number) => mapInstance.current?.flyTo([lat, lng], 15, { duration: 0.8 })
@@ -287,31 +317,72 @@ function MapaTab() {
 
       {/* Vehicle list */}
       <div style={{ marginTop: 10 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: colors.textSubtle, textTransform: 'uppercase', marginBottom: 6, paddingLeft: 4 }}>Veículos</div>
+        {/* Search */}
+        <div style={{ position: 'relative', marginBottom: 8 }}>
+          <Search size={14} color={colors.textMuted} style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)' }} />
+          <input value={busca} onChange={e => setBusca(e.target.value)} placeholder="Buscar veículo ou técnico..." style={{
+            width: '100%', padding: '9px 10px 9px 32px', borderRadius: 10, border: `1px solid ${colors.border}`,
+            fontSize: 12, background: colors.surface, color: colors.text, boxSizing: 'border-box', fontFamily: 'inherit',
+          }} />
+        </div>
+        {/* Status filter */}
+        <div style={{ display: 'flex', gap: 4, marginBottom: 8, overflowX: 'auto' }}>
+          {([
+            ['todos', `Todos (${veiculos.length})`],
+            ['movimento', `Movimento (${veiculos.filter(v => v.ignicao && !v.na_loja).length})`],
+            ['parado', `Parado (${veiculos.filter(v => !v.ignicao && !v.na_loja).length})`],
+            ['na_loja', `Na Loja (${veiculos.filter(v => v.na_loja).length})`],
+          ] as const).map(([key, label]) => (
+            <button key={key} onClick={() => setFiltroStatus(key as any)} style={{
+              padding: '6px 10px', borderRadius: 8, border: 'none', fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap',
+              background: filtroStatus === key ? '#1E3A5F' : colors.surfaceAlt,
+              color: filtroStatus === key ? '#fff' : colors.textMuted,
+            }}>{label}</button>
+          ))}
+        </div>
+        {/* List */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          {veiculos.map(v => {
-            const isSelected = selected?.id === v.id
-            const cor = v.na_loja ? '#9CA3AF' : v.ignicao ? '#16A34A' : '#F59E0B'
-            return (
-              <div key={v.id} onClick={() => { abrirVeiculo(v); flyTo(v.lat, v.lng) }} style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10,
-                background: isSelected ? '#EFF6FF' : colors.surface,
-                border: `1px solid ${isSelected ? '#3B82F6' : colors.border}`, cursor: 'pointer',
-              }}>
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: cor, flexShrink: 0 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: colors.text }}>{v.placa}</div>
-                  <div style={{ fontSize: 10, color: colors.textSubtle, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {v.motorista || v.descricao || 'Sem motorista'}
+          {veiculos
+            .filter(v => {
+              if (filtroStatus === 'movimento') return v.ignicao && !v.na_loja
+              if (filtroStatus === 'parado') return !v.ignicao && !v.na_loja
+              if (filtroStatus === 'na_loja') return v.na_loja
+              return true
+            })
+            .filter(v => {
+              if (!busca.trim()) return true
+              const b = busca.toLowerCase()
+              return v.placa.toLowerCase().includes(b) || (v.tecnico || v.motorista || v.descricao || '').toLowerCase().includes(b)
+            })
+            .map(v => {
+              const isSelected = selected?.id === v.id
+              const cor = v.na_loja ? '#9CA3AF' : v.ignicao ? '#16A34A' : '#F59E0B'
+              const nome = v.tecnico || v.motorista || v.descricao || ''
+              return (
+                <div key={v.id} onClick={() => { abrirVeiculo(v); flyTo(v.lat, v.lng) }} style={{
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', borderRadius: 10,
+                  background: isSelected ? '#EFF6FF' : colors.surface,
+                  border: `1px solid ${isSelected ? '#3B82F6' : colors.border}`, cursor: 'pointer',
+                }}>
+                  <div style={{ width: 10, height: 10, borderRadius: '50%', background: cor, flexShrink: 0, boxShadow: `0 0 0 3px ${cor}33` }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ fontSize: 14, fontWeight: 800, color: colors.text }}>{v.placa}</span>
+                      {v.tecnico && <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 5px', borderRadius: 4, background: '#EFF6FF', color: '#2563EB' }}>TÉC</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: colors.textSubtle, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {nome || 'Sem motorista'}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, color: cor }}>
+                      {v.na_loja ? 'Na Loja' : v.ignicao ? (v.velocidade > 0 ? `${v.velocidade} km/h` : 'Ligado') : v.status}
+                    </div>
+                    {v.dt_posicao && <div style={{ fontSize: 9, color: colors.textSubtle }}>{fmtHora(v.dt_posicao)}</div>}
                   </div>
                 </div>
-                <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                  <div style={{ fontSize: 10, fontWeight: 700, color: cor }}>{v.status}</div>
-                  {v.velocidade > 0 && <div style={{ fontSize: 9, color: colors.textSubtle }}>{v.velocidade} km/h</div>}
-                </div>
-              </div>
-            )
-          })}
+              )
+            })}
         </div>
       </div>
 
@@ -342,36 +413,64 @@ function MapaTab() {
             </div>
             <div style={{ flex: 1 }}>
               <div style={{ fontSize: 18, fontWeight: 800, color: colors.text }}>{selected.placa}</div>
-              <div style={{ fontSize: 12, color: colors.textSubtle }}>{selected.motorista || selected.descricao || '---'}</div>
+              <div style={{ fontSize: 12, color: colors.textSubtle }}>{selected.tecnico || selected.motorista || selected.descricao || '---'}</div>
             </div>
             <div style={{
               padding: '4px 10px', borderRadius: 8, fontSize: 11, fontWeight: 700,
-              background: selected.ignicao ? '#DCFCE7' : '#FEE2E2',
-              color: selected.ignicao ? '#16A34A' : '#EF4444',
+              background: selected.na_loja ? '#F3F4F6' : selected.ignicao ? '#DCFCE7' : '#FEE2E2',
+              color: selected.na_loja ? '#6B7280' : selected.ignicao ? '#16A34A' : '#EF4444',
             }}>
-              {selected.ignicao ? 'Ligado' : 'Desligado'}
+              {selected.na_loja ? 'Na Loja' : selected.ignicao ? 'Ligado' : 'Desligado'}
             </div>
             <button onClick={() => setSheetOpen(false)} style={{ background: 'none', border: 'none', padding: 4, cursor: 'pointer' }}>
               <X size={18} color="#9CA3AF" />
             </button>
           </div>
 
+          {/* Position info */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, padding: '8px 10px', background: colors.surfaceAlt, borderRadius: 8 }}>
+            <MapPin size={13} color={colors.textMuted} />
+            <span style={{ flex: 1, fontSize: 11, color: colors.textSubtle }}>
+              {selected.dt_posicao ? fmtHora(selected.dt_posicao) : '--'} · {selected.lat?.toFixed(5)}, {selected.lng?.toFixed(5)}
+            </span>
+            <button onClick={() => navigator.clipboard?.writeText(`${selected.lat?.toFixed(6)}, ${selected.lng?.toFixed(6)}`)} style={{
+              background: 'none', border: 'none', padding: 2, cursor: 'pointer',
+            }}>
+              <Copy size={13} color={colors.textMuted} />
+            </button>
+          </div>
+
           {/* Stats */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginBottom: 14 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 6, marginBottom: 12 }}>
             <StatCard icon={<Gauge size={14} color="#3B82F6" />} label="Velocidade" value={`${selected.velocidade} km/h`} />
             <StatCard icon={<Clock size={14} color="#8B5CF6" />} label="Ligado" value={detalhe ? fmtDuracao(detalhe.tempo_ligado_min) : '...'} />
-            <StatCard icon={<Navigation size={14} color="#10B981" />} label="Pontos" value={detalhe ? String(detalhe.pontos_hoje) : '...'} />
+            <StatCard icon={<Route size={14} color="#10B981" />} label="KM Hoje" value={detalhe ? `${detalhe.km_hoje}` : '...'} />
+            <StatCard icon={<MapPin size={14} color="#F59E0B" />} label="Pontos" value={detalhe ? String(detalhe.pontos_hoje) : '...'} />
           </div>
+
+          {/* Resumo do Dia */}
+          {detalhe && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 12 }}>
+              <div style={{ padding: '10px', background: '#DCFCE7', borderRadius: 10, textAlign: 'center' }}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: '#166534', textTransform: 'uppercase', marginBottom: 2 }}>Dirigindo</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#16A34A' }}>{fmtDuracao(detalhe.tempo_ligado_min)}</div>
+              </div>
+              <div style={{ padding: '10px', background: '#FEE2E2', borderRadius: 10, textAlign: 'center' }}>
+                <div style={{ fontSize: 9, fontWeight: 700, color: '#991B1B', textTransform: 'uppercase', marginBottom: 2 }}>Parado</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: '#EF4444' }}>{fmtDuracao(detalhe.tempo_parado_min)}</div>
+              </div>
+            </div>
+          )}
 
           {/* Route button */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-            <button onClick={() => carregarRota(selected.id)} disabled={rotaLoading} style={{
+            <button onClick={() => carregarRota(selected.id, selected.dt_posicao)} disabled={rotaLoading} style={{
               flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               padding: '11px 0', borderRadius: 10, border: 'none', fontSize: 13, fontWeight: 700,
               background: '#1E3A5F', color: '#fff',
             }}>
               {rotaLoading ? <Loader2 size={14} className="spinner" /> : <Route size={14} />}
-              {rotaLoading ? 'Carregando...' : 'Ver rota do dia'}
+              {rotaLoading ? 'Carregando...' : rota ? 'Atualizar rota' : 'Ver rota do dia'}
             </button>
             <button onClick={() => flyTo(selected.lat, selected.lng)} style={{
               display: 'flex', alignItems: 'center', justifyContent: 'center',
