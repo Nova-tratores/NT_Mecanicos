@@ -9,7 +9,7 @@ import OfflineSync from '@/components/OfflineSync'
 import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
 import dynamic from 'next/dynamic'
 const CheckinDiario = dynamic(() => import('@/components/CheckinDiario'), { ssr: false })
-import { Megaphone, WifiOff, Download, AlertCircle, AlertTriangle, Film, Image as ImageIcon } from 'lucide-react'
+import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon } from 'lucide-react'
 
 // ── Avisos confirmados: cache local para nunca mostrar de novo ──
 const AVISOS_CONFIRMADOS_KEY = 'nt-avisos-confirmados'
@@ -83,9 +83,6 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   const [ocorrenciasPendentes, setOcorrenciasPendentes] = useState<OcorrenciaPopup[]>([])
   const [ocorrenciaConfirmando, setOcorrenciaConfirmando] = useState(false)
 
-  // ── Prefetch state ──
-  const [prefetchStatus, setPrefetchStatus] = useState<'idle' | 'loading' | 'done' | 'need-internet'>('idle')
-  const [prefetchMsg, setPrefetchMsg] = useState('')
 
   const carregarAvisosPendentes = useCallback(async () => {
     if (!user?.tecnico_nome) return
@@ -179,30 +176,17 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     if (!user?.tecnico_nome) return
     const nome = user.nome_pos || user.tecnico_nome
 
-    const firstTime = !hasPrefetchedBefore()
-    const progress = firstTime ? setPrefetchMsg : undefined
-
-    if (!navigator.onLine && firstTime) {
-      setPrefetchStatus('idle')
-      const handleOnline = async () => {
-        setPrefetchStatus('loading')
-        const ok = await prefetchAll(nome, user.tecnico_nome, setPrefetchMsg)
-        setPrefetchStatus(ok ? 'done' : 'idle')
-      }
+    if (!navigator.onLine && !hasPrefetchedBefore()) {
+      const handleOnline = () => { prefetchAll(nome, user.tecnico_nome) }
       window.addEventListener('online', handleOnline)
       return () => window.removeEventListener('online', handleOnline)
     }
 
     if (navigator.onLine) {
-      if (firstTime) setPrefetchStatus('loading')
-      prefetchAll(nome, user.tecnico_nome, progress).then(ok => {
-        if (firstTime) setPrefetchStatus(ok ? 'done' : 'idle')
-      })
+      prefetchAll(nome, user.tecnico_nome)
     }
 
-    const handleOnline = () => {
-      prefetchAll(nome, user.tecnico_nome, undefined)
-    }
+    const handleOnline = () => { prefetchAll(nome, user.tecnico_nome) }
     window.addEventListener('online', handleOnline)
     return () => window.removeEventListener('online', handleOnline)
   }, [user?.tecnico_nome, user?.nome_pos])
@@ -338,18 +322,6 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     <div style={{ minHeight: '100vh', paddingBottom: 24 }}>
       <OfflineSync />
 
-      {/* Banner de prefetch em andamento */}
-      {prefetchStatus === 'loading' && prefetchMsg && (
-        <div style={{
-          position: 'fixed', bottom: 20, left: 16, right: 16, zIndex: 9998,
-          background: '#1E3A5F', color: '#fff', padding: '12px 18px',
-          borderRadius: 14, display: 'flex', alignItems: 'center', gap: 10,
-          fontSize: 13, fontWeight: 600, boxShadow: '0 8px 24px rgba(0,0,0,0.3)',
-        }}>
-          <Download size={16} className="spinner" />
-          {prefetchMsg}
-        </div>
-      )}
 
       <HeaderMobile
         notificacoes={notificacoes}
