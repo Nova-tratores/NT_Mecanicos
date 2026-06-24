@@ -301,6 +301,10 @@
       "PowerShell(git add \"src/lib/prefetch.ts\" \"src/components/ServiceWorkerRegister.tsx\" \"src/components/TecnicoLayoutInner.tsx\" \"public/sw.js\")",
       "PowerShell(git add \"public/sw.js\")",
       "PowerShell(git add \"public/sw.js\" \"src/components/TecnicoLayoutInner.tsx\")"
+    ],
+    "additionalDirectories": [
+      "c:\\projetos\\portal\\src\\lib\\requisicoes",
+      "c:\\projetos\\portal\\src\\lib\\ppv"
     ]
   }
 }
