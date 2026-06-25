@@ -300,11 +300,27 @@
       "PowerShell(git add \"src/components/TecnicoLayoutInner.tsx\" \"public/sw.js\")",
       "PowerShell(git add \"src/lib/prefetch.ts\" \"src/components/ServiceWorkerRegister.tsx\" \"src/components/TecnicoLayoutInner.tsx\" \"public/sw.js\")",
       "PowerShell(git add \"public/sw.js\")",
-      "PowerShell(git add \"public/sw.js\" \"src/components/TecnicoLayoutInner.tsx\")"
+      "PowerShell(git add \"public/sw.js\" \"src/components/TecnicoLayoutInner.tsx\")",
+      "PowerShell(cd c:\\\\projetos\\\\portal; if \\(Test-Path package.json\\) { \\(Get-Content package.json -Raw | ConvertFrom-Json\\).scripts | ConvertTo-Json })",
+      "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TOTAL error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"error TS\" | Select-Object -First 15)",
+      "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"error TS\" | Select-Object -First 15)",
+      "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count)",
+      "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"error TS\" | Select-Object -First 10)",
+      "PowerShell(cd c:\\\\projetos\\\\portal; try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/api/financeiro/sync-os?os=5071&dryRun=1&desde=2026-01-01\" -UseBasicParsing -TimeoutSec 90; $r.Content } catch { \"ERRO: \" + $_.Exception.Message })",
+      "PowerShell(cd c:\\\\projetos\\\\portal; try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/api/financeiro/sync-os?os=5071&desde=2026-01-01\" -UseBasicParsing -TimeoutSec 120; $j = $r.Content | ConvertFrom-Json; \"resultado: \" + $j.resultado; \"card_id novo: \" + $j.card_id } catch { \"ERRO: \" + $_.Exception.Message })",
+      "PowerShell(cd c:\\\\projetos\\\\portal; try { $r = Invoke-WebRequest -Uri \"http://localhost:3000/api/financeiro/sync-os?os=5071&desde=2026-01-01\" -UseBasicParsing -TimeoutSec 120; $j = $r.Content | ConvertFrom-Json; \"resultado: \" + $j.resultado; \"card novo: \" + $j.card_id } catch { \"ERRO: \" + $_.Exception.Message })"
     ],
     "additionalDirectories": [
       "c:\\projetos\\portal\\src\\lib\\requisicoes",
-      "c:\\projetos\\portal\\src\\lib\\ppv"
+      "c:\\projetos\\portal\\src\\lib\\ppv",
+      "c:\\projetos\\portal\\src\\app\\(portal)\\requisicoes",
+      "c:\\projetos\\portal\\src\\components\\requisicoes",
+      "c:\\projetos\\portal\\src\\components\\pos",
+      "c:\\projetos\\portal\\src\\app\\api\\pos\\ordens\\[id]\\print",
+      "c:\\projetos\\portal\\src\\components\\orcamentos",
+      "c:\\projetos\\portal\\src\\components",
+      "c:\\projetos\\portal\\src\\app\\api\\orcamentos\\expirar",
+      "c:\\projetos\\portal"
     ]
   }
 }
