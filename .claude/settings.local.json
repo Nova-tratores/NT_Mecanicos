@@ -316,7 +316,10 @@
       "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"error TS\" | Select-Object -First 8; \"--- testa auto-print no HTML ---\"; try { $h = \\(Invoke-WebRequest \"http://localhost:3000/api/pos/ordens/OS-0001/print?auto=1\" -UseBasicParsing -TimeoutSec 20\\).Content; if \\($h -match \"window.print\"\\) { \"OK: HTML contem window.print\\(\\)\" } else { \"sem window.print \\(verificar OS existente\\)\" } } catch { \"ERRO: $\\($_.Exception.Message\\)\" })",
       "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"error TS\" | Select-Object -First 8)",
       "Bash(rg -oh --no-filename 'process\\\\.env\\\\.[A-Z0-9_]+' src)",
-      "Bash(rg --only-matching --no-filename 'process\\\\.env\\\\.[A-Z0-9_]+' src)"
+      "Bash(rg --only-matching --no-filename 'process\\\\.env\\\\.[A-Z0-9_]+' src)",
+      "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"requisicoes|executar\" | Select-Object -First 8)",
+      "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"TratorinoChat|TratorilsonRoom\" | Select-Object -First 6)",
+      "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"PPVContext|ppv.page|ModalRevisoes\" | Select-Object -First 8)"
     ],
     "additionalDirectories": [
       "c:\\projetos\\portal\\src\\lib\\requisicoes",
