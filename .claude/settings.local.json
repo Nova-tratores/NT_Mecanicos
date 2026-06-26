@@ -319,7 +319,11 @@
       "Bash(rg --only-matching --no-filename 'process\\\\.env\\\\.[A-Z0-9_]+' src)",
       "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"requisicoes|executar\" | Select-Object -First 8)",
       "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"TratorinoChat|TratorilsonRoom\" | Select-Object -First 6)",
-      "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"PPVContext|ppv.page|ModalRevisoes\" | Select-Object -First 8)"
+      "PowerShell(cd c:\\\\projetos\\\\portal; $out = npx tsc --noEmit -p tsconfig.json 2>&1; \"TS error lines: \" + \\($out | Select-String -Pattern \"error TS\"\\).Count; $out | Select-String -Pattern \"PPVContext|ppv.page|ModalRevisoes\" | Select-Object -First 8)",
+      "Bash(netstat -ano)",
+      "Bash(curl -s -w \"HTTP:%{http_code}\\\\n\" \"http://localhost:3001/api/rastreamento?acao=veiculos_mapa\" --max-time 90 -o /tmp/r1.txt)",
+      "Bash(curl -s -w \"HTTP:%{http_code}\\\\n\" \"http://localhost:3001/api/rastreamento?acao=veiculos_mapa\" --max-time 90 -o /tmp/r2.txt)",
+      "Bash(echo \"TS errors: $\\(npx tsc --noEmit 2>&1)"
     ],
     "additionalDirectories": [
       "c:\\projetos\\portal\\src\\lib\\requisicoes",

@@ -4,6 +4,8 @@ import { createClient } from '@supabase/supabase-js'
 const API_URL = process.env.ROTAEXATA_API_URL || 'https://api.rotaexata.com.br'
 const EMAIL = process.env.ROTAEXATA_EMAIL || ''
 const PASSWORD = process.env.ROTAEXATA_PASSWORD || ''
+// O gateway da Rota Exata responde 502 sem User-Agent (o fetch do Node não envia um por padrão)
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -16,7 +18,7 @@ async function getToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expiresAt) return tokenCache.token
   const res = await fetch(`${API_URL}/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
     body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
   })
   if (!res.ok) throw new Error(`Login Rota Exata falhou: ${res.status}`)
@@ -76,7 +78,7 @@ export async function POST(req: NextRequest) {
     // Buscar motorista_id do tecnico no Rota Exata (usuarios com motorista=1)
     const token = await getToken()
     const usrRes = await fetch(`${API_URL}/usuarios?limit=200&page=0`, {
-      headers: { Authorization: token },
+      headers: { Authorization: token, 'User-Agent': UA },
     })
     if (!usrRes.ok) throw new Error(`Rota Exata usuarios: ${usrRes.status}`)
     const usrData = await usrRes.json()
@@ -97,7 +99,7 @@ export async function POST(req: NextRequest) {
     // Desvincular motorista atual desse veiculo no Rota Exata (se houver)
     const where = JSON.stringify({ adesao_id: adesaoId })
     const motRes = await fetch(`${API_URL}/motoristas?where=${encodeURIComponent(where)}&limit=10&page=0`, {
-      headers: { Authorization: token },
+      headers: { Authorization: token, 'User-Agent': UA },
     })
     if (motRes.ok) {
       const motData = await motRes.json()
@@ -106,7 +108,7 @@ export async function POST(req: NextRequest) {
         if (ativo._id) {
           await fetch(`${API_URL}/motoristas/${ativo._id}`, {
             method: 'DELETE',
-            headers: { Authorization: token },
+            headers: { Authorization: token, 'User-Agent': UA },
           })
         }
       }
@@ -115,7 +117,7 @@ export async function POST(req: NextRequest) {
     // Vincular novo motorista ao veiculo no Rota Exata
     const vincRes = await fetch(`${API_URL}/motoristas`, {
       method: 'POST',
-      headers: { Authorization: token, 'Content-Type': 'application/json' },
+      headers: { Authorization: token, 'Content-Type': 'application/json', 'User-Agent': UA },
       body: JSON.stringify({ adesao_id: adesaoId, motorista_id: motorista.id }),
     })
 

@@ -9,6 +9,10 @@ const BASE_LAT = -23.2085
 const BASE_LNG = -49.3710
 const RAIO_LOJA_KM = 0.8
 
+// O gateway da Rota Exata responde 502 quando a requisição não tem User-Agent
+// (o fetch do Node não envia um por padrão). Mandamos um de navegador em toda chamada.
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+
 let tokenCache: { token: string; expiresAt: number } | null = null
 let mapaCache: { data: any[]; expiresAt: number } | null = null
 
@@ -16,7 +20,7 @@ async function getToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expiresAt) return tokenCache.token
   const res = await fetch(`${API_URL}/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
     body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
   })
   if (!res.ok) throw new Error(`Login Rota Exata falhou: ${res.status}`)
@@ -30,7 +34,7 @@ async function fetchRota(endpoint: string, params?: Record<string, string>): Pro
   const token = await getToken()
   let url = `${API_URL}${endpoint}`
   if (params) url += '?' + Object.entries(params).map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')
-  const res = await fetch(url, { headers: { Authorization: token } })
+  const res = await fetch(url, { headers: { Authorization: token, 'User-Agent': UA } })
   if (res.status === 404) return { data: [] }
   if (!res.ok) throw new Error(`Rota Exata ${endpoint}: ${res.status}`)
   return res.json()
@@ -297,7 +301,7 @@ export async function POST(req: NextRequest) {
       const token = await getToken()
       const res = await fetch(`${API_URL}/motoristas`, {
         method: 'POST',
-        headers: { Authorization: token, 'Content-Type': 'application/json' },
+        headers: { Authorization: token, 'Content-Type': 'application/json', 'User-Agent': UA },
         body: JSON.stringify({ adesao_id, motorista_id }),
       })
       if (!res.ok) { const t = await res.text(); return NextResponse.json({ error: t }, { status: res.status }) }
@@ -308,7 +312,7 @@ export async function POST(req: NextRequest) {
       const { vinculo_id } = body
       if (!vinculo_id) return NextResponse.json({ error: 'vinculo_id obrigatório' }, { status: 400 })
       const token = await getToken()
-      const res = await fetch(`${API_URL}/motoristas/${vinculo_id}`, { method: 'DELETE', headers: { Authorization: token } })
+      const res = await fetch(`${API_URL}/motoristas/${vinculo_id}`, { method: 'DELETE', headers: { Authorization: token, 'User-Agent': UA } })
       if (!res.ok) { const t = await res.text(); return NextResponse.json({ error: t }, { status: res.status }) }
       return NextResponse.json(await res.json())
     }

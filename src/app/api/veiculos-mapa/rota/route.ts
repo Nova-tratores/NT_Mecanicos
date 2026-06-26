@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from 'next/server'
 const API_URL = process.env.ROTAEXATA_API_URL || 'https://api.rotaexata.com.br'
 const EMAIL = process.env.ROTAEXATA_EMAIL || ''
 const PASSWORD = process.env.ROTAEXATA_PASSWORD || ''
+// O gateway da Rota Exata responde 502 sem User-Agent (o fetch do Node não envia um por padrão)
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 let tokenCache: { token: string; expiresAt: number } | null = null
 
@@ -10,7 +12,7 @@ async function getToken(): Promise<string> {
   if (tokenCache && Date.now() < tokenCache.expiresAt) return tokenCache.token
   const res = await fetch(`${API_URL}/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'User-Agent': UA },
     body: JSON.stringify({ email: EMAIL, password: PASSWORD }),
   })
   if (!res.ok) throw new Error(`Login falhou: ${res.status}`)
@@ -38,7 +40,7 @@ export async function GET(request: NextRequest) {
     // Buscar todas as posicoes do dia (ate 500)
     const posRes = await fetch(
       `${API_URL}/posicoes?where=${where}&limit=500&page=0&sort=dt_posicao`,
-      { headers: { Authorization: token } },
+      { headers: { Authorization: token, 'User-Agent': UA } },
     )
     if (!posRes.ok) return NextResponse.json([])
 
