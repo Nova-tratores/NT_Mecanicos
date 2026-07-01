@@ -325,7 +325,18 @@
       "Bash(curl -s -w \"HTTP:%{http_code}\\\\n\" \"http://localhost:3001/api/rastreamento?acao=veiculos_mapa\" --max-time 90 -o /tmp/r2.txt)",
       "Bash(echo \"TS errors: $\\(npx tsc --noEmit 2>&1)",
       "Bash(echo \"TS errors: $\\(npx tsc --noEmit -p tsconfig.json 2>&1)",
-      "Bash(curl -s -o /tmp/kan.html -w \"%{http_code}\" \"http://localhost:3000/financeiro/kanban\" --max-time 90)"
+      "Bash(curl -s -o /tmp/kan.html -w \"%{http_code}\" \"http://localhost:3000/financeiro/kanban\" --max-time 90)",
+      "Bash(node -e 'let s=\"\";process.stdin.on\\(\"data\",d=>s+=d\\).on\\(\"end\",\\(\\)=>{const o=JSON.parse\\(s\\)[0]||{};console.log\\(\"colunas:\",Object.keys\\(o\\).join\\(\", \"\\)\\)}\\)')",
+      "Bash(node -e 'let s=\"\";process.stdin.on\\(\"data\",d=>s+=d\\).on\\(\"end\",\\(\\)=>{const o=JSON.parse\\(s\\)[0];let sv=o.servicos; if\\(typeof sv===\"string\"\\)sv=JSON.parse\\(sv\\); console.log\\(\"OS\",o.num_os,\"| 1o servico keys:\", Object.keys\\(sv[0]||{}\\).join\\(\", \"\\)\\); console.log\\(\"amostra:\", JSON.stringify\\(sv[0]\\)\\);}\\)')",
+      "Bash(command -v psql)",
+      "Bash(echo \"psql? $\\(command -v psql || echo nao\\)\")",
+      "Bash(grep -nE \"os-card-title|os-section-title|\\\\{/\\\\* ──|STATUS|Equipe|Atendimento|Almoço|almoço|Aliment|aliment|Garantia|Status|TÉCNICO|Técnico\" src/components/pos/OSDrawer.tsx)",
+      "Bash(awk '/\\\\.ppv-btn-save \\\\{/{f=1} f{print} f&&/}/{f=0}' src/app/globals.css)",
+      "Bash(curl -s -o /dev/null -w \"HTTP %{http_code}\\\\n\" \"http://localhost:3000/ppv\" --max-time 90)",
+      "Bash(awk '/\\\\.ppv-drawer-body \\\\{/{f=1} f{print} f&&/}/{f=0}' src/app/globals.css)",
+      "Bash(grep -nE \"ppv-drawer-body|ppv-drawer-footer|</div>\\\\s*$\" src/components/ppv/PPVDrawer.tsx)",
+      "Bash(sed -n '1,12p' src/app/api/ppv/pedidos/route.ts)",
+      "Bash(sed -n '1,26p' src/app/api/pos/financeiro/route.ts)"
     ],
     "additionalDirectories": [
       "c:\\projetos\\portal\\src\\lib\\requisicoes",
