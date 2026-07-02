@@ -336,7 +336,8 @@
       "Bash(awk '/\\\\.ppv-drawer-body \\\\{/{f=1} f{print} f&&/}/{f=0}' src/app/globals.css)",
       "Bash(grep -nE \"ppv-drawer-body|ppv-drawer-footer|</div>\\\\s*$\" src/components/ppv/PPVDrawer.tsx)",
       "Bash(sed -n '1,12p' src/app/api/ppv/pedidos/route.ts)",
-      "Bash(sed -n '1,26p' src/app/api/pos/financeiro/route.ts)"
+      "Bash(sed -n '1,26p' src/app/api/pos/financeiro/route.ts)",
+      "Bash(node -e 'let s=\"\";process.stdin.on\\(\"data\",d=>s+=d\\).on\\(\"end\",\\(\\)=>{try{const o=JSON.parse\\(s\\)[0]||{};console.log\\(Object.keys\\(o\\).join\\(\", \"\\)\\)}catch\\(e\\){console.log\\(\"erro\",s.slice\\(0,200\\)\\)}}\\)')"
     ],
     "additionalDirectories": [
       "c:\\projetos\\portal\\src\\lib\\requisicoes",
