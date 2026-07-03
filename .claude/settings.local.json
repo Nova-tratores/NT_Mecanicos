@@ -337,7 +337,15 @@
       "Bash(grep -nE \"ppv-drawer-body|ppv-drawer-footer|</div>\\\\s*$\" src/components/ppv/PPVDrawer.tsx)",
       "Bash(sed -n '1,12p' src/app/api/ppv/pedidos/route.ts)",
       "Bash(sed -n '1,26p' src/app/api/pos/financeiro/route.ts)",
-      "Bash(node -e 'let s=\"\";process.stdin.on\\(\"data\",d=>s+=d\\).on\\(\"end\",\\(\\)=>{try{const o=JSON.parse\\(s\\)[0]||{};console.log\\(Object.keys\\(o\\).join\\(\", \"\\)\\)}catch\\(e\\){console.log\\(\"erro\",s.slice\\(0,200\\)\\)}}\\)')"
+      "Bash(node -e 'let s=\"\";process.stdin.on\\(\"data\",d=>s+=d\\).on\\(\"end\",\\(\\)=>{try{const o=JSON.parse\\(s\\)[0]||{};console.log\\(Object.keys\\(o\\).join\\(\", \"\\)\\)}catch\\(e\\){console.log\\(\"erro\",s.slice\\(0,200\\)\\)}}\\)')",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" \"http://localhost:3001\" --max-time 8)",
+      "Bash(echo \"000\")",
+      "Bash(echo 'localhost:3001 -> __TRACKED_VAR__')",
+      "Bash(npm run *)",
+      "Bash(grep -nE \"function OsEnviadasTab|/\\\\* ═══ Sub-aba Enviadas|const CAMPOS_FOTO|FOTO_CAMPOS\" src/app/'\\(tecnico\\)'/os/page.tsx)",
+      "Bash(npx tsc *)",
+      "Bash(curl -s -o /dev/null -w \"home HTTP %{http_code}\\\\n\" \"http://localhost:3001/\" --max-time 60)",
+      "Bash(git push *)"
     ],
     "additionalDirectories": [
       "c:\\projetos\\portal\\src\\lib\\requisicoes",
