@@ -146,6 +146,19 @@ function getFaseInfo(status: string): { label: string; color: string; bg: string
   return { label: status, color: colors.textMuted, bg: colors.border }
 }
 
+/* Extrai o texto que vem depois de "Solicitação do Cliente:" na descrição.
+   Ex.: "Modelo: Chassis: ... Solicitação do cliente: TRATOR AQUECENDO Serviço Realizado:"
+   → "TRATOR AQUECENDO". Se não achar, retorna vazio. */
+function extrairSolicitacao(serv?: string | null): string {
+  if (!serv) return ''
+  const txt = serv.replace(/\s+/g, ' ').trim()
+  const m = txt.match(/solicita[çc][ãa]o do cliente\s*:?\s*(.*)/i)
+  if (!m) return ''
+  // Corta no próximo rótulo conhecido (Serviço Realizado)
+  const val = m[1].split(/servi[çc]o\s+realizado/i)[0]
+  return val.trim()
+}
+
 /* ═══ Card de OS (estilo remap) ═══ */
 function OsCard({
   os,
@@ -161,6 +174,7 @@ function OsCard({
   const fase = getFaseInfo(os.Status)
   const Icon = preenchida ? CheckCircle2 : FileText
   const iconBg = preenchida ? colors.success : colors.warning
+  const solicitacao = extrairSolicitacao(os.Serv_Solicitado) || os.Tipo_Servico
 
   return (
     <Link
@@ -206,7 +220,9 @@ function OsCard({
               <MapPin size={11} /> {cidade}
             </span>
           )}
-          <span>{os.Tipo_Servico}{os.ID_PPV ? ` · ${os.ID_PPV}` : ''}</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {solicitacao}{os.ID_PPV ? ` · ${os.ID_PPV}` : ''}
+          </span>
         </div>
       </div>
       <ChevronRight size={18} color={colors.textSubtle} style={{ flexShrink: 0 }} />
