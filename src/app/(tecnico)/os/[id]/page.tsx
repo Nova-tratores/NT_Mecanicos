@@ -343,6 +343,11 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       }
     }
 
+    // Atualiza o cache de leitura para a tela de preencher enxergar os horários
+    // salvos (importante offline, quando o registro ainda está só na fila).
+    const cachedTec = (await getCachedOSTec(id)) || {}
+    offlineSet(`prefetch:os-tec:${id}`, { ...cachedTec, ...payload })
+
     setHorariosRegistrados(true)
     setSalvando(false)
     clearBackup()

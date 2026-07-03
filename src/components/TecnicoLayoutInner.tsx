@@ -197,28 +197,10 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     }
   }, [user?.tecnico_nome, user?.nome_pos])
 
-  // ── Interceptor de navegação SÓ quando offline ──
-  // Online: deixa o Next fazer navegação SPA (instantânea).
-  // Offline: força recarga (window.location.href) — mais confiável com o SW
-  // servindo do cache.
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (navigator.onLine) return // online = SPA rápida do Next
-
-      const anchor = (e.target as HTMLElement).closest('a')
-      if (!anchor) return
-
-      const href = anchor.getAttribute('href')
-      if (!href || href.startsWith('http') || href.startsWith('#') || href.startsWith('mailto:')) return
-      if (href === window.location.pathname) return
-
-      e.preventDefault()
-      e.stopPropagation()
-      window.location.href = href
-    }
-    document.addEventListener('click', handler, true)
-    return () => document.removeEventListener('click', handler, true)
-  }, [])
+  // Navegação: usamos a navegação SPA do Next tanto online quanto offline.
+  // O service worker serve os payloads RSC do cache (guardados pela rota),
+  // entao offline tambem funciona sem forçar recarga total — que antes fazia
+  // a pagina "voltar" para outra tela.
 
   useEffect(() => {
     carregarAvisosPendentes()
