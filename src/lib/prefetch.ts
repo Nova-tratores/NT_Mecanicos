@@ -236,7 +236,7 @@ export async function prefetchAll(
     // 6b. Check-in de hoje, garantias, requisicoes e fornecedores (telas offline)
     onProgress?.('Baixando jornada e requisicoes...')
     const hojeRef = new Date().toISOString().split('T')[0]
-    const [checkinsRes, garantiasRes, requisicoesRes, fornecedoresRes] = await Promise.all([
+    const [checkinsRes, garantiasRes, requisicoesRes, fornecedoresRes, permissoesRes] = await Promise.all([
       supabase.from('checkin_diario').select('*').eq('tecnico_nome', tecnicoNome).eq('data', hojeRef).order('id'),
       tecnicoNome
         ? supabase.from('garantias').select('*').eq('tecnico_nome', tecnicoNome).order('created_at', { ascending: false })
@@ -245,11 +245,13 @@ export async function prefetchAll(
         .or(`solicitante.ilike.%${nome}%,solicitante.eq.${tecnicoNome}`)
         .order('data', { ascending: false }).limit(300),
       supabase.from('Fornecedores').select('*').order('nome').then(r => r, () => ({ data: [] })),
+      supabase.from('portal_permissoes').select('user_id, is_admin, modulos_permitidos').then(r => r, () => ({ data: [] })),
     ])
     await offlineSet(`prefetch:checkin:${hojeRef}`, checkinsRes.data || [])
     await offlineSet('prefetch:garantias', garantiasRes.data || [])
     await offlineSet('prefetch:requisicoes', requisicoesRes.data || [])
     await offlineSet('prefetch:fornecedores', fornecedoresRes.data || [])
+    await offlineSet('prefetch:portal-permissoes', permissoesRes.data || [])
 
     // 7. OS enviadas do técnico
     onProgress?.('Baixando OS enviadas...')

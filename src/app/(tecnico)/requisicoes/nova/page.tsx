@@ -260,13 +260,11 @@ export default function NovaSolicitacao() {
       return
     }
 
-    // 2. Notifica portal (bell icon) — so faz sentido online
-    if (navigator.onLine) {
-      notificarPortalReq(
-        'Nova Solicitação de Requisição',
-        `${nomePOS} solicitou: ${materialUpper} (${form.tipo})`
-      )
-    }
+    // 2. Notifica portal (enfileira offline e sobe ao reconectar)
+    notificarPortalReq(
+      'Nova Solicitação de Requisição',
+      `${nomePOS} solicitou: ${materialUpper} (${form.tipo})`
+    )
 
     // 3. Insere na Supa-Solicitacao_Req (portal recebe realtime + imprime) — enfileira se offline
     await offlineWrite({

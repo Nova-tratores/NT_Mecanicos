@@ -103,12 +103,10 @@ export default function RequisicoesHub() {
     if (!res.ok) {
       alert('Erro ao solicitar cancelamento. Tente novamente.')
     } else {
-      if (navigator.onLine) {
-        notificarPortalReq(
-          'Solicitação de Cancelamento',
-          `Técnico ${nome} solicitou cancelamento da requisição #${id}${req ? ` — ${req.titulo}` : ''}`
-        )
-      }
+      notificarPortalReq(
+        'Solicitação de Cancelamento',
+        `Técnico ${nome} solicitou cancelamento da requisição #${id}${req ? ` — ${req.titulo}` : ''}`
+      )
       cacheInvalidate(cacheKey)
       refresh()
     }

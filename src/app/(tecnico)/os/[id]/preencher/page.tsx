@@ -904,6 +904,10 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       data: { Status: 'Relatório Concluído' }, match: { Id_Ordem: id },
     })
 
+    // Notificar o portal — SEMPRE (online envia na hora; offline enfileira e
+    // sobe ao reconectar). Antes só rodava online e se perdia no envio offline.
+    notificarPortalOS(id, user?.tecnico_nome || '', os?.Os_Cliente || '')
+
     if (queued) {
       setSaving(false)
       setSucesso(true)
@@ -1027,8 +1031,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             }
           }
 
-          // Notificar portal
-          notificarPortalOS(id, user?.tecnico_nome || '', os?.Os_Cliente || '')
         }
       }
     } catch (err) {
