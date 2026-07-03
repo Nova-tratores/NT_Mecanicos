@@ -182,20 +182,29 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
       return () => window.removeEventListener('online', handleOnline)
     }
 
+    // Adia o prefetch para não competir com o carregamento da tela (deixa a UI
+    // responder primeiro; o prefetch é background para offline).
+    let timer: ReturnType<typeof setTimeout> | undefined
     if (navigator.onLine) {
-      prefetchAll(nome, user.tecnico_nome)
+      timer = setTimeout(() => prefetchAll(nome, user.tecnico_nome), 3000)
     }
 
     const handleOnline = () => { prefetchAll(nome, user.tecnico_nome) }
     window.addEventListener('online', handleOnline)
-    return () => window.removeEventListener('online', handleOnline)
+    return () => {
+      if (timer) clearTimeout(timer)
+      window.removeEventListener('online', handleOnline)
+    }
   }, [user?.tecnico_nome, user?.nome_pos])
 
-  // ── Interceptor de navegação offline ──
-  // SEMPRE usa MPA navigation (window.location.href) para links internos.
-  // O SW serve do cache quando offline. Confiabilidade > velocidade de transição.
+  // ── Interceptor de navegação SÓ quando offline ──
+  // Online: deixa o Next fazer navegação SPA (instantânea).
+  // Offline: força recarga (window.location.href) — mais confiável com o SW
+  // servindo do cache.
   useEffect(() => {
     const handler = (e: MouseEvent) => {
+      if (navigator.onLine) return // online = SPA rápida do Next
+
       const anchor = (e.target as HTMLElement).closest('a')
       if (!anchor) return
 

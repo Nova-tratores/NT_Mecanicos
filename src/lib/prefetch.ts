@@ -41,10 +41,8 @@ export async function prefetchAll(
     if (osList && osList.length > 0) {
       await offlineSet('prefetch:os-list', osList)
 
-      // Cache individual de cada OS por ID
-      for (const os of osList) {
-        await offlineSet(`prefetch:os:${os.Id_Ordem}`, os)
-      }
+      // Cache individual de cada OS por ID (em paralelo)
+      await Promise.all(osList.map((os) => offlineSet(`prefetch:os:${os.Id_Ordem}`, os)))
 
       const ids = osList.map((o: { Id_Ordem: string }) => o.Id_Ordem)
       const cnpjs = [...new Set(osList.map((o: { Cnpj_Cliente: string }) => o.Cnpj_Cliente).filter(Boolean))]
@@ -57,9 +55,7 @@ export async function prefetchAll(
         .in('Ordem_Servico', ids)
 
       if (tecEntries) {
-        for (const entry of tecEntries) {
-          await offlineSet(`prefetch:os-tec:${entry.Ordem_Servico}`, entry)
-        }
+        await Promise.all(tecEntries.map((entry) => offlineSet(`prefetch:os-tec:${entry.Ordem_Servico}`, entry)))
       }
 
       // 3. Clientes (cidade + coordenadas + nome — necessario p/ jornada/check-in offline)
@@ -108,16 +104,14 @@ export async function prefetchAll(
       const osComPPV = osList.filter((o: { ID_PPV?: string }) => o.ID_PPV)
       if (osComPPV.length > 0) {
         onProgress?.('Baixando pecas...')
-        for (const os of osComPPV) {
+        // Em paralelo (antes era uma query por vez — principal gargalo)
+        await Promise.all(osComPPV.map(async (os: { ID_PPV?: string }) => {
           const { data: movs } = await supabase
             .from('movimentacoes')
             .select('*')
             .eq('Id_PPV', os.ID_PPV)
-
-          if (movs) {
-            await offlineSet(`prefetch:ppv:${os.ID_PPV}`, movs)
-          }
-        }
+          if (movs) await offlineSet(`prefetch:ppv:${os.ID_PPV}`, movs)
+        }))
       }
 
       // ── Salvar dados compostos com as keys do useCached ──
@@ -286,7 +280,7 @@ export async function prefetchAll(
     // Cachear RSC payloads para TODAS as OS + preencher (navegação client-side offline)
     if (osList && osList.length > 0) {
       const rscHeaders = { RSC: '1', 'Next-Router-Prefetch': '1' }
-      const rscFetches = osList.slice(0, 40).flatMap((os: { Id_Ordem: string }) => [
+      const rscFetches = osList.slice(0, 12).flatMap((os: { Id_Ordem: string }) => [
         fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders }).catch(() => {}),
         fetch(`/os/${os.Id_Ordem}/preencher`, { headers: rscHeaders }).catch(() => {}),
       ])
