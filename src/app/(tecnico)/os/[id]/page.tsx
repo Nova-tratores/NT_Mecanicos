@@ -208,6 +208,14 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
     })
   }, [id])
 
+  // Aquece o RSC da tela de preencher desta OS enquanto ha internet, para que
+  // "Preencher/Editar OS" abra offline (o SW guarda pela rota, ignorando ?_rsc).
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      fetch(`/os/${id}/preencher`, { headers: { RSC: '1', 'Next-Router-Prefetch': '1' } }).catch(() => {})
+    }
+  }, [id])
+
   // Verificar se precisa justificar (atraso >= 2 dias após previsão)
   // 1 dia não é considerado atraso
   useEffect(() => {

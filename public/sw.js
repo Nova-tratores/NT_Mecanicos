@@ -1,5 +1,5 @@
-const ASSETS_CACHE = 'nt-assets-v22';
-const PAGES_CACHE = 'nt-pages-v3';
+const ASSETS_CACHE = 'nt-assets-v23';
+const PAGES_CACHE = 'nt-pages-v4';
 const APP_SHELL_KEY = 'nt-app-shell';
 
 const PRECACHE_URLS = [
@@ -83,8 +83,12 @@ self.addEventListener('fetch', (event) => {
   // Ignorar requests de API (Supabase, /api/*) — dados ficam no IndexedDB
   if (API_PATTERNS.some((p) => p.test(event.request.url))) return;
 
-  // RSC payloads (Next.js app router) — network-first com timeout rápido
+  // RSC payloads (Next.js app router) — network-first com timeout rápido.
+  // IMPORTANTE: o router adiciona ?_rsc=<hash> na URL, diferente a cada request.
+  // Guardamos/buscamos pela ROTA (pathname), ignorando a query, senão offline
+  // dá cache miss e o app "volta pro início".
   if (event.request.headers.get('RSC') === '1') {
+    const rscKey = new URL(event.request.url).pathname + '?__rscq';
     event.respondWith(
       fetchWithTimeout(event.request, 3000)
         .then((response) => {
@@ -93,16 +97,20 @@ self.addEventListener('fetch', (event) => {
             const headers = new Headers(response.headers);
             headers.delete('Vary');
             const cleaned = new Response(response.clone().body, { status: response.status, headers });
-            caches.open(PAGES_CACHE).then((cache) => cache.put(event.request.url, cleaned));
+            caches.open(PAGES_CACHE).then((cache) => cache.put(rscKey, cleaned));
           }
           return response;
         })
         .catch(async () => {
-          // ignoreVary: RSC prefetch vs RSC navigation tem headers diferentes
+          // 1. Match normalizado pela rota (ignora ?_rsc)
+          const byPath = await caches.match(rscKey);
+          if (byPath) return byPath;
+
+          // 2. ignoreVary: RSC prefetch vs RSC navigation tem headers diferentes
           const cached = await caches.match(event.request, { ignoreVary: true });
           if (cached) return cached;
 
-          // Tentar pelo URL direto (sem considerar headers)
+          // 3. Tentar pelo URL direto (sem considerar headers)
           const byUrl = await caches.match(event.request.url);
           if (byUrl) return byUrl;
 
@@ -306,9 +314,9 @@ async function backgroundPrefetch() {
     // 5. Pré-cachear páginas HTML + RSC para navegação offline
     const cache = await caches.open(PAGES_CACHE);
     const rscHeaders2 = { RSC: '1', 'Next-Router-Prefetch': '1' };
-    const pageFetches = osList.slice(0, 20).flatMap(os => [
-      fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}`, r)).catch(() => {}),
-      fetch(`/os/${os.Id_Ordem}/preencher`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}/preencher`, r)).catch(() => {}),
+    const pageFetches = osList.slice(0, 40).flatMap(os => [
+      fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}?__rscq`, r)).catch(() => {}),
+      fetch(`/os/${os.Id_Ordem}/preencher`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}/preencher?__rscq`, r)).catch(() => {}),
     ]);
     await Promise.allSettled(pageFetches);
 

@@ -286,7 +286,7 @@ export async function prefetchAll(
     // Cachear RSC payloads para TODAS as OS + preencher (navegação client-side offline)
     if (osList && osList.length > 0) {
       const rscHeaders = { RSC: '1', 'Next-Router-Prefetch': '1' }
-      const rscFetches = osList.slice(0, 30).flatMap((os: { Id_Ordem: string }) => [
+      const rscFetches = osList.slice(0, 40).flatMap((os: { Id_Ordem: string }) => [
         fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders }).catch(() => {}),
         fetch(`/os/${os.Id_Ordem}/preencher`, { headers: rscHeaders }).catch(() => {}),
       ])
