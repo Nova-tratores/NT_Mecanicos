@@ -7,6 +7,7 @@ import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useFormBackup } from '@/hooks/useFormBackup'
 import type { OrdemServico } from '@/lib/types'
 import { getCachedOS, getCachedOSTec, getCachedCliente } from '@/lib/prefetch'
+import { offlineSet } from '@/lib/offlineCache'
 import {
   ArrowLeft, ClipboardEdit, CheckCircle, MapPin, User, Wrench,
   Briefcase, Clock, Navigation, FileText, Hash, Plus, AlertTriangle, Save,
@@ -155,6 +156,9 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
 
       if (osData) {
         setOs(osData as OrdemServico)
+        // Cache-on-read: garante que esta OS abra offline mesmo se o prefetch
+        // não a pegou (throttle, OS nova, etc.)
+        offlineSet(`prefetch:os:${id}`, osData)
         if (osData.Cnpj_Cliente) {
           const { data: cli } = await supabase
             .from('Clientes')
@@ -162,9 +166,11 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
             .eq('cnpj_cpf', osData.Cnpj_Cliente)
             .maybeSingle()
           if (cli?.cidade) setCidade(cli.cidade)
+          offlineSet(`prefetch:cliente:${osData.Cnpj_Cliente}`, { cnpj_cpf: osData.Cnpj_Cliente, cidade: cli?.cidade || '' })
         }
       }
       if (preench) {
+        offlineSet(`prefetch:os-tec:${id}`, preench)
         setExistingId(preench.IdOs)
         setJaPreenchida(true)
         setStatusPreench(preench.Status)

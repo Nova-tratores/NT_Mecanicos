@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase'
 import { offlineWrite } from '@/lib/offlineWrite'
 import type { OrdemServico } from '@/lib/types'
 import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV } from '@/lib/prefetch'
+import { offlineSet } from '@/lib/offlineCache'
 import FotoUpload from '@/components/FotoUpload'
 import SignaturePad from '@/components/SignaturePad'
 import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown, ImagePlus, X } from 'lucide-react'
@@ -150,6 +151,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         movs = cached as MovimentacaoPPV[] | null
       } else {
         movs = res.data as MovimentacaoPPV[] | null
+        if (movs) offlineSet(`prefetch:ppv:${idPPV}`, movs) // cache-on-read
       }
     } catch {
       const cached = await getCachedPPV(idPPV)
@@ -313,13 +315,15 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
       if (osData) {
         setOs(osData as OrdemServico)
+        offlineSet(`prefetch:os:${id}`, osData) // cache-on-read p/ abrir offline
         if (osData.Projeto) setProjeto(osData.Projeto)
         if (osData.Tipo_Servico) setTipoServico(osData.Tipo_Servico)
       }
-      if (tecData) setTecnicos(tecData.map((t: { UsuNome: string }) => t.UsuNome).filter(Boolean))
-      if (veicData) setVeiculos(veicData as { IdPlaca: number; NumPlaca: string }[])
+      if (tecData) { setTecnicos(tecData.map((t: { UsuNome: string }) => t.UsuNome).filter(Boolean)); offlineSet('prefetch:tecnicos', tecData) }
+      if (veicData) { setVeiculos(veicData as { IdPlaca: number; NumPlaca: string }[]); offlineSet('prefetch:veiculos', veicData) }
 
       if (existing) {
+        offlineSet(`prefetch:os-tec:${id}`, existing)
         setExistingId(existing.IdOs)
         setTecResp1(existing.TecResp1 || '')
         setTemTec2(existing.TemTec || false)
