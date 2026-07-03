@@ -175,18 +175,28 @@ function OsCard({
   const Icon = preenchida ? CheckCircle2 : FileText
   const iconBg = preenchida ? colors.success : colors.warning
   const solicitacao = extrairSolicitacao(os.Serv_Solicitado) || os.Tipo_Servico
+  // Atrasada para preencher: previsão de execução vencida (a lista Abertas já exclui enviadas)
+  const prev = os.Previsao_Execucao?.trim?.() || ''
+  const atrasada = !!prev && prev < getHoje()
 
   return (
     <Link
       href={`/os/${os.Id_Ordem}`}
       className="hb"
       style={{
+        position: 'relative', overflow: 'hidden',
         display: 'flex', alignItems: 'center', gap: 14, textDecoration: 'none',
         background: colors.surface, borderRadius: 18, padding: 16,
-        border: `1px solid ${colors.border}`, boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+        border: `1px solid ${atrasada ? colors.dangerBorder : colors.border}`,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
         animationDelay: `${Math.min(index * 45, 300)}ms`,
       }}
     >
+      {atrasada && (
+        <span className="animate-pulse-alert" style={{
+          position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: colors.danger,
+        }} />
+      )}
       <div style={{
         width: 50, height: 50, borderRadius: 15, flexShrink: 0, background: iconBg,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -197,6 +207,14 @@ function OsCard({
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginBottom: 3 }}>
           <span style={{ fontSize: 14, fontWeight: 700, color: colors.primary }}>{os.Id_Ordem}</span>
+          {atrasada && (
+            <span className="animate-pulse-alert" style={{
+              fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 6,
+              background: colors.danger, color: '#fff',
+            }}>
+              ATRASADA
+            </span>
+          )}
           <span style={{
             fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 6,
             background: preenchida ? colors.successBg : colors.warningBg,

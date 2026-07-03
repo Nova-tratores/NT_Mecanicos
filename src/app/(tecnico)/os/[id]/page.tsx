@@ -378,6 +378,17 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
     return `${day}/${m}/${y}`
   }
 
+  // Técnico primário x secundário: só o primário preenche o relatório.
+  const nomeTec = user?.nome_pos || user?.tecnico_nome || ''
+  const osAny = os as OrdemServico & { Os_Tecnico?: string | null; Os_Tecnico2?: string | null }
+  const matchTec = (f?: string | null) => !!f && !!nomeTec && f.toLowerCase().includes(nomeTec.toLowerCase())
+  const isSecundario = !matchTec(osAny.Os_Tecnico) && matchTec(osAny.Os_Tecnico2)
+  const tecPrimario = (osAny.Os_Tecnico || '').trim()
+
+  // Atrasada para preencher: previsão vencida e ainda não enviada.
+  const prevExec = (os.Previsao_Execucao || '').trim()
+  const atrasada = !jaEnviada && !!prevExec && prevExec < hoje()
+
   return (
     <div>
       <Link href="/os" style={{
@@ -404,6 +415,45 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
           {os.Status}
         </div>
       </div>
+
+      {/* Faixa vermelha pulsante: OS atrasada para preencher */}
+      {atrasada && (
+        <div className="animate-pulse-alert" style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: '#DC2626', color: '#fff', borderRadius: 14,
+          padding: '14px 16px', marginBottom: 20, fontWeight: 700,
+          boxShadow: '0 6px 18px rgba(220,38,38,0.35)',
+        }}>
+          <AlertTriangle size={20} />
+          <div style={{ fontSize: 14 }}>
+            OS atrasada — previsão de execução venceu em {formatarData(prevExec)}
+          </div>
+        </div>
+      )}
+
+      {/* Técnico secundário: só o primário preenche */}
+      {isSecundario && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          background: '#FFF7ED', border: '1px solid #FED7AA', borderRadius: 16,
+          padding: '16px 18px', marginBottom: 20,
+        }}>
+          <div style={{
+            width: 44, height: 44, borderRadius: 12, flexShrink: 0, background: '#D97706',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <Clock size={22} color="#fff" />
+          </div>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: '#B45309' }}>
+              Aguardando {tecPrimario || 'o técnico responsável'} preencher o relatório
+            </div>
+            <div style={{ fontSize: 13, color: '#92400E', marginTop: 2 }}>
+              Você é o técnico secundário — pode ver as informações, mas o preenchimento é do técnico principal.
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
 
@@ -496,7 +546,7 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       </div>
 
       {/* ========== REGISTRO DE HORÁRIOS (NOVO) ========== */}
-      {!jaEnviada && (
+      {!isSecundario && !jaEnviada && (
         <div className="hb-in" style={{
           background: '#fff', borderRadius: 20, padding: 18,
           boxShadow: '0 1px 3px rgba(0,0,0,0.05)', marginBottom: 20,
@@ -663,8 +713,8 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
         </div>
       )}
 
-      {/* Fill/edit button */}
-      {jaEnviada ? (
+      {/* Fill/edit button (bloqueado para o técnico secundário) */}
+      {!isSecundario && (jaEnviada ? (
         dentroPrazo48h ? (
           <Link href={`/os/${os.Id_Ordem}/preencher`} className="hb" style={{
             display: 'flex', alignItems: 'center', gap: 14,
@@ -735,7 +785,7 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
             </div>
           </div>
         </Link>
-      )}
+      ))}
 
       <div style={{ height: 20 }} />
     </div>
