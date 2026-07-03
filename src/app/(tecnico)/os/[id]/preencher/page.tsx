@@ -9,7 +9,7 @@ import type { OrdemServico } from '@/lib/types'
 import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV } from '@/lib/prefetch'
 import FotoUpload from '@/components/FotoUpload'
 import SignaturePad from '@/components/SignaturePad'
-import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown, ImagePlus } from 'lucide-react'
 import Link from 'next/link'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
 import { notificarPortalOS } from '@/lib/notificarPortal'
@@ -77,6 +77,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [nomResp, setNomResp] = useState('')
   const [fazenda, setFazenda] = useState('')
   const [cidadeLocal, setCidadeLocal] = useState('')
+  const [naOficina, setNaOficina] = useState(false) // serviço realizado na oficina
 
   // Dias (dinâmico)
   const [dias, setDias] = useState<DiaForm[]>([{ data: '', horaInicio: '', horaFim: '', kmTotal: '' }])
@@ -243,8 +244,9 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           setHorimetro((cachedTec.Horimetro as string) || '')
           setNumPlaca((cachedTec.NumPlaca as string) || '')
           setNomResp((cachedTec.NomResp as string) || '')
-          setFazenda((cachedTec.Fazenda as string) || '')
-          setCidadeLocal((cachedTec.Cidade as string) || '')
+          setFazenda(cachedTec.Fazenda === 'Oficina' ? '' : ((cachedTec.Fazenda as string) || ''))
+          setCidadeLocal(cachedTec.Cidade === 'Oficina' ? '' : ((cachedTec.Cidade as string) || ''))
+          setNaOficina(cachedTec.Fazenda === 'Oficina' && cachedTec.Cidade === 'Oficina')
         } else if (user) {
           setTecResp1(user.tecnico_nome)
         }
@@ -324,8 +326,9 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         setHorimetro(existing.Horimetro || '')
         setNumPlaca(existing.NumPlaca || '')
         setNomResp(existing.NomResp || '')
-        setFazenda(existing.Fazenda || '')
-        setCidadeLocal(existing.Cidade || '')
+        setFazenda(existing.Fazenda === 'Oficina' ? '' : (existing.Fazenda || ''))
+        setCidadeLocal(existing.Cidade === 'Oficina' ? '' : (existing.Cidade || ''))
+        setNaOficina(existing.Fazenda === 'Oficina' && existing.Cidade === 'Oficina')
         setFotoHorimetro(existing.FotoHorimetro || '')
         setFotoChassis(existing.FotoChassis || '')
         setFotoFrente(existing.FotoFrente || '')
@@ -434,7 +437,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const getFormData = useCallback(() => ({
     tecResp1, temTec2, tecResp2, diagnostico, servicoRealizado,
     tipoServico, tipoRev, projeto, chassis, marca, modelo, horimetro, numPlaca, nomResp,
-    fazenda, cidadeLocal,
+    fazenda, cidadeLocal, naOficina,
     dias, pecas, ppvRevisado, justificativaPecaExtra,
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
@@ -445,7 +448,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   }), [
     tecResp1, temTec2, tecResp2, diagnostico, servicoRealizado,
     tipoServico, tipoRev, projeto, chassis, marca, modelo, horimetro, numPlaca, nomResp,
-    fazenda, cidadeLocal,
+    fazenda, cidadeLocal, naOficina,
     dias, pecas, ppvRevisado, justificativaPecaExtra,
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
@@ -472,6 +475,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (data.nomResp !== undefined) setNomResp(data.nomResp as string)
     if (data.fazenda !== undefined) setFazenda(data.fazenda as string)
     if (data.cidadeLocal !== undefined) setCidadeLocal(data.cidadeLocal as string)
+    if (data.naOficina !== undefined) setNaOficina(data.naOficina as boolean)
     if (data.dias !== undefined) setDias(data.dias as DiaForm[])
     if (data.pecas !== undefined) setPecas(data.pecas as PecaInfo[])
     if (data.ppvRevisado !== undefined) setPpvRevisado(data.ppvRevisado as boolean)
@@ -592,6 +596,26 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     }
   }
 
+  // Adiciona várias fotos de uma vez nos slots extras vazios (até 5)
+  const addFotosExtras = (files: FileList | null) => {
+    if (!files || files.length === 0) return
+    const slots = [
+      { v: fotoExtra1, set: setFotoExtra1, campo: 'FotoExtra1' },
+      { v: fotoExtra2, set: setFotoExtra2, campo: 'FotoExtra2' },
+      { v: fotoExtra3, set: setFotoExtra3, campo: 'FotoExtra3' },
+      { v: fotoExtra4, set: setFotoExtra4, campo: 'FotoExtra4' },
+      { v: fotoExtra5, set: setFotoExtra5, campo: 'FotoExtra5' },
+    ]
+    const vazios = slots.filter(s => !s.v || s.v.startsWith('blob:'))
+    if (vazios.length === 0) {
+      alert('Você já anexou o máximo de 5 fotos extras.')
+      return
+    }
+    Array.from(files).slice(0, vazios.length).forEach((file, k) => {
+      handleFoto(vazios[k].set, vazios[k].campo, file)
+    })
+  }
+
   const calcTotalHoras = () => {
     let total = 0
     for (const d of dias) {
@@ -654,13 +678,27 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       return
     }
 
-    if (!fazenda.trim()) {
-      mostrarErro('Preencha o nome da Fazenda.', 'campo-fazenda')
-      return
+    // Fazenda/Cidade só são obrigatórias quando o serviço NÃO foi na oficina
+    if (!naOficina) {
+      if (!fazenda.trim()) {
+        mostrarErro('Preencha o nome da Fazenda.', 'campo-fazenda')
+        return
+      }
+      if (!cidadeLocal.trim()) {
+        mostrarErro('Preencha a Cidade.', 'campo-cidade')
+        return
+      }
     }
-    if (!cidadeLocal.trim()) {
-      mostrarErro('Preencha a Cidade.', 'campo-cidade')
-      return
+
+    // Fotos: exigir no mínimo 2 (fora garantia, que tem seções proprias)
+    if (tipoServico !== 'Garantia') {
+      const fotosAnexadas = [
+        fotoHorimetro, fotoChassis, fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5,
+      ].filter(f => f && !f.startsWith('blob:'))
+      if (fotosAnexadas.length < 2) {
+        mostrarErro('Anexe pelo menos 2 fotos do serviço.', 'secao-fotos')
+        return
+      }
     }
 
     // Validar km total de cada dia
@@ -765,8 +803,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       TratorLocal1: '',
       TratorLocal2: '',
       NomResp: nomResp,
-      Fazenda: fazenda,
-      Cidade: cidadeLocal,
+      Fazenda: naOficina ? 'Oficina' : fazenda,
+      Cidade: naOficina ? 'Oficina' : cidadeLocal,
       TotalHora: calcTotalHoras(),
       TotalKm: calcTotalKm(),
       DataInicio: dias[0]?.data || '',
@@ -934,7 +972,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         fotoPecaNova1, fotoPecaNova2,
         fotoPecaInstalada1, fotoPecaInstalada2,
         assCliente, assTecnico,
-        nomResp, fazenda, cidadeServico: cidadeLocal,
+        nomResp, fazenda: naOficina ? 'Oficina' : fazenda, cidadeServico: naOficina ? 'Oficina' : cidadeLocal,
         data: new Date().toISOString().split('T')[0],
         apenasBlob: true,
         downloadFoto,
@@ -1068,7 +1106,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         fotoPecaNova1, fotoPecaNova2,
         fotoPecaInstalada1, fotoPecaInstalada2,
         assCliente, assTecnico,
-        nomResp, fazenda, cidadeServico: cidadeLocal,
+        nomResp, fazenda: naOficina ? 'Oficina' : fazenda, cidadeServico: naOficina ? 'Oficina' : cidadeLocal,
         data: new Date().toISOString().split('T')[0],
       })
     } catch (err) {
@@ -1429,20 +1467,26 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           <label style={labelStyle}><Truck size={14} style={{ verticalAlign: 'middle', marginRight: 4 }} /> Veículo Utilizado</label>
           <select value={numPlaca} onChange={(e) => setNumPlaca(e.target.value)} style={inputStyle}>
             <option value="">Selecione a placa...</option>
+            <option value="OFICINA">Oficina</option>
             {veiculos.map((v) => <option key={v.IdPlaca} value={v.NumPlaca}>{v.NumPlaca}</option>)}
           </select>
         </div>
       </div>
 
       {/* 6. FOTOS */}
-      <div style={sectionStyle}>
+      <div id="secao-fotos" style={sectionStyle}>
         {sectionTitle('Fotos')}
+        <p style={{ fontSize: 12, color: '#6B7280', margin: '-6px 0 12px' }}>
+          Anexe no mínimo <strong>2 fotos</strong> do serviço.
+        </p>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
           <FotoUpload label="Horímetro" value={fotoHorimetro} onChange={(f) => handleFoto(setFotoHorimetro, 'FotoHorimetro', f)} onRemove={() => setFotoHorimetro('')} obrigatorio />
           <FotoUpload label="Chassis" value={fotoChassis} onChange={(f) => handleFoto(setFotoChassis, 'FotoChassis', f)} onRemove={() => setFotoChassis('')} obrigatorio />
         </div>
         {tipoServico === 'Manutenção' && (() => {
-          const temAlgumaExtra = !!(fotoExtra1 || fotoExtra2 || fotoExtra3 || fotoExtra4 || fotoExtra5)
+          const extras = [fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5]
+          const usadas = extras.filter(f => f && !f.startsWith('blob:')).length
+          const temAlgumaExtra = usadas > 0
           return (
             <details open={temAlgumaExtra} style={{ marginTop: 14 }}>
               <summary style={{
@@ -1450,8 +1494,25 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                 padding: '8px 0', listStyle: 'none', display: 'flex', alignItems: 'center', gap: 6,
               }}>
                 <Camera size={14} />
-                Fotos extras (opcional)
+                Fotos extras (opcional) — {usadas}/5
               </summary>
+
+              {/* Adicionar várias de uma vez */}
+              <label style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                marginTop: 10, padding: '12px 14px', borderRadius: 12, cursor: usadas >= 5 ? 'not-allowed' : 'pointer',
+                border: '2px dashed #BFDBFE', background: usadas >= 5 ? '#F3F4F6' : '#EFF6FF',
+                color: usadas >= 5 ? '#9CA3AF' : '#2563EB', fontSize: 13, fontWeight: 600,
+              }}>
+                <ImagePlus size={18} />
+                {usadas >= 5 ? 'Máximo de 5 fotos extras' : 'Adicionar várias fotos de uma vez'}
+                <input
+                  type="file" accept="image/*" multiple disabled={usadas >= 5}
+                  onChange={(e) => { addFotosExtras(e.target.files); e.target.value = '' }}
+                  style={{ display: 'none' }}
+                />
+              </label>
+
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
                 <FotoUpload label="Extra 1" value={fotoExtra1} onChange={(f) => handleFoto(setFotoExtra1, 'FotoExtra1', f)} onRemove={() => setFotoExtra1('')} />
                 <FotoUpload label="Extra 2" value={fotoExtra2} onChange={(f) => handleFoto(setFotoExtra2, 'FotoExtra2', f)} onRemove={() => setFotoExtra2('')} />
@@ -1604,18 +1665,50 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         <label style={labelStyle}>Nome do Responsável pelo Trator (cliente)</label>
         <input type="text" value={nomResp} onChange={(e) => setNomResp(e.target.value)} style={inputStyle}
           placeholder="Nome de quem é responsável pelo equipamento" />
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
-          <div id="campo-fazenda">
-            <label style={labelStyle}>Nome da Fazenda <span style={{ color: '#C41E2A' }}>*</span></label>
-            <input type="text" value={fazenda} onChange={(e) => setFazenda(e.target.value)}
-              style={inputStyle} placeholder="Ex: Fazenda São José" />
-          </div>
-          <div id="campo-cidade">
-            <label style={labelStyle}>Cidade <span style={{ color: '#C41E2A' }}>*</span></label>
-            <input type="text" value={cidadeLocal} onChange={(e) => setCidadeLocal(e.target.value)}
-              style={inputStyle} placeholder="Ex: Ribeirão Preto" />
+
+        {/* Serviço realizado na oficina? */}
+        <div style={{ marginTop: 14 }}>
+          <label style={labelStyle}>Onde o serviço foi realizado?</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={() => setNaOficina(false)} style={{
+              flex: 1, padding: '12px 0', borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+              border: `2px solid ${!naOficina ? '#1E3A5F' : '#E5E7EB'}`,
+              background: !naOficina ? '#1E3A5F' : '#fff', color: !naOficina ? '#fff' : '#6B7280',
+            }}>
+              No cliente
+            </button>
+            <button type="button" onClick={() => setNaOficina(true)} style={{
+              flex: 1, padding: '12px 0', borderRadius: 12, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+              border: `2px solid ${naOficina ? '#059669' : '#E5E7EB'}`,
+              background: naOficina ? '#059669' : '#fff', color: naOficina ? '#fff' : '#6B7280',
+            }}>
+              Na oficina
+            </button>
           </div>
         </div>
+
+        {naOficina ? (
+          <div style={{
+            marginTop: 12, padding: '12px 14px', borderRadius: 12,
+            background: '#ECFDF5', border: '1px solid #A7F3D0',
+            fontSize: 13, color: '#059669', fontWeight: 500,
+          }}>
+            Serviço interno na oficina — não é necessário informar fazenda e cidade.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 12 }}>
+            <div id="campo-fazenda">
+              <label style={labelStyle}>Nome da Fazenda <span style={{ color: '#C41E2A' }}>*</span></label>
+              <input type="text" value={fazenda} onChange={(e) => setFazenda(e.target.value)}
+                style={inputStyle} placeholder="Ex: Fazenda São José" />
+            </div>
+            <div id="campo-cidade">
+              <label style={labelStyle}>Cidade <span style={{ color: '#C41E2A' }}>*</span></label>
+              <input type="text" value={cidadeLocal} onChange={(e) => setCidadeLocal(e.target.value)}
+                style={inputStyle} placeholder="Ex: Ribeirão Preto" />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 10. PEÇAS / SERVIÇOS EXTRAS (no final, não obrigatório) */}
