@@ -3,6 +3,8 @@ import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { geocodificar, rotaDaOficina } from '@/lib/ors'
+import { offlineWrite } from '@/lib/offlineWrite'
+import { getCachedCheckin, getCachedVeiculos, getCachedOSList } from '@/lib/prefetch'
 import {
   Car, MapPin, Clock, Navigation, Plus, Trash2, Edit3, Check, X,
   Loader2, Wrench, ArrowLeft, Route,
@@ -50,30 +52,58 @@ export default function JornadaPage() {
   const nomeBusca = user?.nome_pos || user?.tecnico_nome || ''
   const hoje = new Date().toISOString().split('T')[0]
 
+  // Fallback offline: le tudo do cache do IndexedDB (prefetch)
+  const carregarDoCache = useCallback(async () => {
+    const [checkins, veics, osList] = await Promise.all([
+      getCachedCheckin(hoje),
+      getCachedVeiculos(),
+      getCachedOSList(),
+    ])
+    setEntries((checkins || []) as unknown as CheckinEntry[])
+    if (veics) setVeiculos(veics)
+    if (osList) {
+      setOrdens((osList as unknown as Record<string, unknown>[]).map((o) => ({
+        Id_Ordem: String(o.Id_Ordem),
+        Os_Cliente: String(o.Os_Cliente || ''),
+        Endereco_Cliente: String(o.Endereco_Cliente || ''),
+        Qtd_HR: (o.Qtd_HR as number) ?? null,
+      })))
+    }
+    setLoading(false)
+  }, [hoje])
+
   const carregar = useCallback(async () => {
     if (!tecnicoNome) return
     setLoading(true)
 
-    const [entriesRes, veicRes, osRes] = await Promise.all([
-      supabase
-        .from('checkin_diario')
-        .select('id, placa, id_ordem, cliente, destino, distancia_km, tempo_estimado_min, lat_destino, lng_destino')
-        .eq('tecnico_nome', tecnicoNome)
-        .eq('data', hoje)
-        .order('id'),
-      supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca'),
-      supabase
-        .from('Ordem_Servico')
-        .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Qtd_HR')
-        .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
-        .or(`Os_Tecnico.ilike.%${nomeBusca}%,Os_Tecnico2.ilike.%${nomeBusca}%`),
-    ])
+    if (!navigator.onLine) { await carregarDoCache(); return }
 
-    setEntries((entriesRes.data || []) as CheckinEntry[])
-    if (veicRes.data) setVeiculos(veicRes.data)
-    if (osRes.data) setOrdens(osRes.data as OrdemOption[])
-    setLoading(false)
-  }, [tecnicoNome, nomeBusca, hoje])
+    try {
+      const [entriesRes, veicRes, osRes] = await Promise.all([
+        supabase
+          .from('checkin_diario')
+          .select('id, placa, id_ordem, cliente, destino, distancia_km, tempo_estimado_min, lat_destino, lng_destino')
+          .eq('tecnico_nome', tecnicoNome)
+          .eq('data', hoje)
+          .order('id'),
+        supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca'),
+        supabase
+          .from('Ordem_Servico')
+          .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Qtd_HR')
+          .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
+          .or(`Os_Tecnico.ilike.%${nomeBusca}%,Os_Tecnico2.ilike.%${nomeBusca}%`),
+      ])
+
+      if (entriesRes.error) throw entriesRes.error
+      setEntries((entriesRes.data || []) as CheckinEntry[])
+      if (veicRes.data) setVeiculos(veicRes.data)
+      if (osRes.data) setOrdens(osRes.data as OrdemOption[])
+      setLoading(false)
+    } catch {
+      // rede instavel — usa cache offline
+      await carregarDoCache()
+    }
+  }, [tecnicoNome, nomeBusca, hoje, carregarDoCache])
 
   useEffect(() => {
     if (user) carregar()
@@ -102,11 +132,13 @@ export default function JornadaPage() {
     setOrdemId('')
   }
 
+  const ficaNaOficina = placa === 'OFICINA'
+
   const salvar = async () => {
-    if (!placa || !ordemId) return
+    if (!placa || (!ficaNaOficina && !ordemId)) return
     setSaving(true)
 
-    const isOficina = ordemId === 'OFICINA'
+    const isOficina = ficaNaOficina || ordemId === 'OFICINA'
     const ordem = isOficina ? null : getOrdem(ordemId)
     let distancia_km: number | null = null
     let tempo_estimado_min: number | null = null
@@ -131,7 +163,7 @@ export default function JornadaPage() {
     const payload = {
       tecnico_nome: tecnicoNome,
       data: hoje,
-      placa,
+      placa: ficaNaOficina ? '' : placa,
       id_ordem: isOficina ? 'OFICINA' : ordemId,
       cliente: isOficina ? 'Oficina' : (ordem?.Os_Cliente || ''),
       destino: isOficina ? 'Oficina - Servico interno' : (ordem?.Endereco_Cliente || ''),
@@ -141,14 +173,15 @@ export default function JornadaPage() {
       tempo_estimado_min: isOficina ? 0 : tempo_estimado_min,
     }
 
+    const online = navigator.onLine
     if (editingId) {
-      await supabase.from('checkin_diario').update(payload).eq('id', editingId)
+      await offlineWrite({ table: 'checkin_diario', action: 'update', data: payload, match: { id: editingId } })
     } else {
-      await supabase.from('checkin_diario').insert(payload)
+      await offlineWrite({ table: 'checkin_diario', action: 'insert', data: payload })
     }
 
-    // Sincronizar veiculo com Rota Exata (em background)
-    if (placa) {
+    // Sincronizar veiculo com Rota Exata (so quando ha placa real e online)
+    if (placa && !ficaNaOficina && online) {
       fetch('/api/sync-veiculo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -158,15 +191,34 @@ export default function JornadaPage() {
 
     closeForm()
     setSaving(false)
-    await carregar()
+
+    if (online) {
+      await carregar()
+    } else {
+      // Offline: atualiza a lista localmente (o registro sobe quando reconectar)
+      const entryLocal: CheckinEntry = {
+        id: editingId ?? -Date.now(),
+        placa: payload.placa, id_ordem: payload.id_ordem, cliente: payload.cliente,
+        destino: payload.destino, distancia_km: payload.distancia_km,
+        tempo_estimado_min: payload.tempo_estimado_min,
+        lat_destino: payload.lat_destino, lng_destino: payload.lng_destino,
+      }
+      setEntries(prev => editingId
+        ? prev.map(e => e.id === editingId ? entryLocal : e)
+        : [...prev, entryLocal])
+    }
   }
 
   const deletar = async (id: number) => {
     if (entries.length <= 1) return // Nao pode deletar a unica entrada
     setDeletingId(id)
-    await supabase.from('checkin_diario').delete().eq('id', id)
+    await offlineWrite({ table: 'checkin_diario', action: 'delete', data: {}, match: { id } })
     setDeletingId(null)
-    await carregar()
+    if (navigator.onLine) {
+      await carregar()
+    } else {
+      setEntries(prev => prev.filter(e => e.id !== id))
+    }
   }
 
   const formatTempo = (min: number) => {
@@ -194,11 +246,12 @@ export default function JornadaPage() {
             {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
           </div>
         </div>
-        <button onClick={openAdd} style={{
+        <button onClick={openAdd} className="hb" style={{
           display: 'flex', alignItems: 'center', gap: 6,
           background: '#C41E2A', color: '#fff', border: 'none',
-          borderRadius: 10, padding: '8px 14px', fontSize: 13,
-          fontWeight: 700, cursor: 'pointer',
+          borderRadius: 12, padding: '10px 16px', fontSize: 13,
+          fontWeight: 600, cursor: 'pointer',
+          boxShadow: '0 4px 12px rgba(196,30,42,0.25)',
         }}>
           <Plus size={16} /> Adicionar
         </button>
@@ -215,32 +268,32 @@ export default function JornadaPage() {
         const totalGeral = totalDeslocamento + totalExecucao
 
         return (
-          <div style={{
+          <div className="hb-in" style={{
             display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8,
           }}>
             <div style={{
-              background: colors.infoBg, borderRadius: 12, padding: '12px 8px',
+              background: colors.infoBg, borderRadius: 16, padding: '14px 8px',
               textAlign: 'center', border: `1px solid ${colors.infoBorder}`,
             }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: colors.info }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: colors.info }}>
                 {totalKm > 0 ? `${totalKm.toFixed(0)} km` : '--'}
               </div>
               <div style={{ fontSize: 10, color: colors.textMuted }}>Deslocamento</div>
             </div>
             <div style={{
-              background: colors.warningBg, borderRadius: 12, padding: '12px 8px',
+              background: colors.warningBg, borderRadius: 16, padding: '14px 8px',
               textAlign: 'center', border: `1px solid ${colors.warningBorder}`,
             }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: colors.warning }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: colors.warning }}>
                 {totalDeslocamento > 0 ? formatTempo(totalDeslocamento) : '--'}
               </div>
               <div style={{ fontSize: 10, color: colors.textMuted }}>Viagem</div>
             </div>
             <div style={{
-              background: colors.successBg, borderRadius: 12, padding: '12px 8px',
+              background: colors.successBg, borderRadius: 16, padding: '14px 8px',
               textAlign: 'center', border: `1px solid ${colors.successBorder}`,
             }}>
-              <div style={{ fontSize: 18, fontWeight: 800, color: colors.success }}>
+              <div style={{ fontSize: 18, fontWeight: 700, color: colors.success }}>
                 {totalGeral > 0 ? formatTempo(totalGeral) : '--'}
               </div>
               <div style={{ fontSize: 10, color: colors.textMuted }}>Total dia</div>
@@ -251,12 +304,12 @@ export default function JornadaPage() {
 
       {/* Lista de destinos */}
       {entries.length === 0 ? (
-        <div style={{
-          background: '#fff', borderRadius: 16, padding: '40px 20px',
-          textAlign: 'center', boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+        <div className="hb-in" style={{
+          background: '#fff', borderRadius: 20, padding: '40px 20px',
+          textAlign: 'center', boxShadow: '0 1px 3px rgba(0,0,0,0.05)', border: '1px solid #F3F4F6',
         }}>
-          <Route size={36} color={colors.border} style={{ marginBottom: 12 }} />
-          <div style={{ fontSize: 16, fontWeight: 700, color: colors.textSubtle, marginBottom: 4 }}>
+          <Route size={36} color={colors.borderStrong} style={{ marginBottom: 12 }} />
+          <div style={{ fontSize: 16, fontWeight: 600, color: colors.textSubtle, marginBottom: 4 }}>
             Nenhum destino registrado
           </div>
           <div style={{ fontSize: 13, color: colors.textMuted }}>
@@ -274,28 +327,30 @@ export default function JornadaPage() {
             const isDeleting = deletingId === entry.id
 
             return (
-              <div key={entry.id} style={{
-                background: '#fff', borderRadius: 16, overflow: 'hidden',
-                boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+              <div key={entry.id} className="hb-in" style={{
+                background: '#fff', borderRadius: 18, overflow: 'hidden',
+                boxShadow: '0 1px 3px rgba(0,0,0,0.05)', border: '1px solid #F3F4F6',
                 borderLeft: `4px solid ${isOficina ? colors.success : colors.primary}`,
                 opacity: isDeleting ? 0.5 : 1,
+                animationDelay: `${Math.min(idx * 60, 300)}ms`,
               }}>
-                <div style={{ padding: '14px 16px' }}>
+                <div style={{ padding: 16 }}>
                   {/* Header da entry */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                       <div style={{
-                        width: 32, height: 32, borderRadius: 10,
-                        background: isOficina ? colors.successBg : colors.primaryBg,
+                        width: 44, height: 44, borderRadius: 13, flexShrink: 0,
+                        background: isOficina ? colors.success : colors.primary,
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
                       }}>
                         {isOficina
-                          ? <Wrench size={16} color={colors.success} />
-                          : <span style={{ fontSize: 14, fontWeight: 800, color: colors.primary }}>{idx + 1}</span>
+                          ? <Wrench size={20} color="#fff" strokeWidth={2.2} />
+                          : <span style={{ fontSize: 17, fontWeight: 700, color: '#fff' }}>{idx + 1}</span>
                         }
                       </div>
                       <div>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>
+                        <div style={{ fontSize: 15, fontWeight: 600, color: colors.text }}>
                           {isOficina ? 'Oficina' : entry.cliente || 'Cliente'}
                         </div>
                         {!isOficina && entry.id_ordem && (
@@ -452,13 +507,15 @@ export default function JornadaPage() {
                   color: placa ? colors.text : '#9CA3AF',
                 }}>
                   <option value="">Selecione o veiculo...</option>
+                  <option value="OFICINA">Oficina — vou ficar na oficina</option>
                   {veiculos.map((v) => (
                     <option key={v.IdPlaca} value={v.NumPlaca}>{v.NumPlaca}</option>
                   ))}
                 </select>
               </div>
 
-              {/* Ordem de Servico */}
+              {/* Ordem de Servico — oculto quando fica na oficina */}
+              {!ficaNaOficina && (
               <div>
                 <label style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
                   <MapPin size={14} /> DESTINO
@@ -479,6 +536,27 @@ export default function JornadaPage() {
                   ))}
                 </select>
               </div>
+              )}
+
+              {/* Aviso: fica na oficina */}
+              {ficaNaOficina && (
+                <div style={{
+                  background: colors.successBg, borderRadius: 12, padding: '14px',
+                  border: `1px solid ${colors.successBorder}`,
+                  display: 'flex', alignItems: 'center', gap: 12,
+                }}>
+                  <div style={{
+                    width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: colors.success,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Wrench size={20} color="#fff" strokeWidth={2.2} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>Vou ficar na oficina</div>
+                    <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>Servico interno, sem deslocamento</div>
+                  </div>
+                </div>
+              )}
 
               {/* Preview da OS selecionada */}
               {ordemId && ordemId !== 'OFICINA' && (() => {
@@ -502,12 +580,15 @@ export default function JornadaPage() {
                 )
               })()}
 
-              <button onClick={salvar} disabled={!placa || !ordemId || saving} style={{
-                width: '100%', padding: '16px 20px', borderRadius: 14,
-                background: placa && ordemId && !saving ? '#C41E2A' : '#E5E7EB',
-                color: placa && ordemId ? '#fff' : '#9CA3AF',
-                fontSize: 16, fontWeight: 800, border: 'none',
-                cursor: placa && ordemId && !saving ? 'pointer' : 'not-allowed',
+              {(() => {
+              const podeSalvar = !!placa && (ficaNaOficina || !!ordemId)
+              return (
+              <button onClick={salvar} disabled={!podeSalvar || saving} className={podeSalvar && !saving ? 'hb' : undefined} style={{
+                width: '100%', padding: '16px 20px', borderRadius: 16,
+                background: podeSalvar && !saving ? '#C41E2A' : '#E5E7EB',
+                color: podeSalvar ? '#fff' : '#9CA3AF',
+                fontSize: 16, fontWeight: 600, border: 'none',
+                cursor: podeSalvar && !saving ? 'pointer' : 'not-allowed',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 opacity: saving ? 0.7 : 1,
               }}>
@@ -523,6 +604,7 @@ export default function JornadaPage() {
                   </>
                 )}
               </button>
+              )})()}
             </div>
           </div>
         </div>

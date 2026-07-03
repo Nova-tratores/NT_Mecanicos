@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
 import { supabase } from '@/lib/supabase'
+import { offlineWrite } from '@/lib/offlineWrite'
 import { cacheInvalidate } from '@/lib/cache'
 import {
   FilePlus, FileCheck, History, ClipboardList, XCircle,
@@ -96,17 +97,18 @@ export default function RequisicoesHub() {
     if (!confirmar) return
     setCancelando(id)
     const req = enviadas.find(r => r.id === id)
-    const { error } = await supabase
-      .from('Requisicao')
-      .update({ status: 'cancelar' })
-      .eq('id', id)
-    if (error) {
+    const res = await offlineWrite({
+      table: 'Requisicao', action: 'update', data: { status: 'cancelar' }, match: { id },
+    })
+    if (!res.ok) {
       alert('Erro ao solicitar cancelamento. Tente novamente.')
     } else {
-      notificarPortalReq(
-        'Solicitação de Cancelamento',
-        `Técnico ${nome} solicitou cancelamento da requisição #${id}${req ? ` — ${req.titulo}` : ''}`
-      )
+      if (navigator.onLine) {
+        notificarPortalReq(
+          'Solicitação de Cancelamento',
+          `Técnico ${nome} solicitou cancelamento da requisição #${id}${req ? ` — ${req.titulo}` : ''}`
+        )
+      }
       cacheInvalidate(cacheKey)
       refresh()
     }

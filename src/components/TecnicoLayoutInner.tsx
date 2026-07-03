@@ -69,8 +69,8 @@ function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
 }
 
 export default function TecnicoLayoutInner({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useCurrentUser()
-  const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '')
+  const { user, loading, logout } = useCurrentUser()
+  const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, remover, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '')
   const [avisosPendentes, setAvisosPendentes] = useState<{ id: number; titulo: string; mensagem: string; prioridade: string }[]>([])
   const [confirmando, setConfirmando] = useState(false)
   const [checkinFeito, setCheckinFeito] = useState<boolean | null>(true) // temporario: desativado para debug
@@ -314,12 +314,13 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
         tecnicoNome={user.tecnico_nome}
         nomeBusca={user.nome_pos || user.tecnico_nome}
         onComplete={() => setCheckinFeito(true)}
+        onLogout={logout}
       />
     )
   }
 
   return (
-    <div style={{ minHeight: '100vh', paddingBottom: 24 }}>
+    <div style={{ minHeight: '100vh', paddingBottom: 24, background: '#F5F6F8' }}>
       <OfflineSync />
 
 
@@ -328,6 +329,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
         naoLidas={naoLidas}
         onMarcarLida={marcarComoLida}
         onMarcarTodasLidas={marcarTodasComoLidas}
+        onRemover={remover}
         onLimparTodas={limparTodas}
         avatarUrl={user.avatar_url}
         userName={user.tecnico_nome}

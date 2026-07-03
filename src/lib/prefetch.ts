@@ -62,20 +62,26 @@ export async function prefetchAll(
         }
       }
 
-      // 3. Clientes (para cidade)
+      // 3. Clientes (cidade + coordenadas + nome — necessario p/ jornada/check-in offline)
       let clientesData: { cnpj_cpf: string; cidade: string }[] = []
       if (cnpjs.length > 0) {
         onProgress?.('Baixando clientes...')
         const { data: clientes } = await supabase
           .from('Clientes')
-          .select('cnpj_cpf, cidade')
+          .select('cnpj_cpf, nome, cidade, latitude, longitude')
           .in('cnpj_cpf', cnpjs)
 
         if (clientes) {
           clientesData = clientes as { cnpj_cpf: string; cidade: string }[]
-          for (const cli of clientes) {
+          // Mapa nome -> coordenadas, usado pelo check-in/jornada (que buscam por nome)
+          const coordsPorNome: Record<string, { lat: number; lng: number }> = {}
+          for (const cli of clientes as { cnpj_cpf: string; nome?: string; cidade: string; latitude?: number; longitude?: number }[]) {
             await offlineSet(`prefetch:cliente:${cli.cnpj_cpf}`, cli)
+            if (cli.nome && cli.latitude && cli.longitude) {
+              coordsPorNome[cli.nome] = { lat: cli.latitude, lng: cli.longitude }
+            }
           }
+          await offlineSet('prefetch:clientes-coords', coordsPorNome)
         }
       }
 
@@ -141,8 +147,8 @@ export async function prefetchAll(
         }
       }
 
-      // Key do useCached na página /os
-      await offlineSet(`os:${nome}`, {
+      // Key do useCached na página /os (a tela usa a versao "v2")
+      await offlineSet(`os:v2:${nome}`, {
         ordens: osList,
         preenchidas: [...preenchidas],
         enviadas: [...enviadas],
@@ -171,18 +177,55 @@ export async function prefetchAll(
         }
       }
 
+      // Contadores reais para o dashboard funcionar offline (antes salvava zeros)
+      onProgress?.('Baixando avisos e garantias...')
+      const [reqPendRes, reqEnvRes, avisosRes, garPendRes, garAbertasRes] = await Promise.all([
+        supabase.from('Requisicao').select('id', { count: 'exact', head: true })
+          .or(`solicitante.ilike.%${nome}%,solicitante.eq.${tecnicoNome}`)
+          .eq('status', 'pedido').is('recibo_fornecedor', null),
+        supabase.from('Requisicao').select('id', { count: 'exact', head: true })
+          .or(`solicitante.ilike.%${nome}%,solicitante.eq.${tecnicoNome}`)
+          .in('status', ['pedido', 'completa', 'aguardando']),
+        supabase.from('avisos_gerais').select('id, titulo, mensagem, prioridade, created_at')
+          .eq('ativo', true).or(`expira_em.is.null,expira_em.gte.${hoje}`)
+          .order('created_at', { ascending: false }).limit(5),
+        tecnicoNome
+          ? supabase.from('garantias').select('id', { count: 'exact', head: true })
+            .eq('tecnico_nome', tecnicoNome).in('status', ['bo_tecnico', 'info_pendente'])
+          : Promise.resolve({ count: 0 }),
+        tecnicoNome
+          ? supabase.from('garantias').select('id', { count: 'exact', head: true })
+            .eq('tecnico_nome', tecnicoNome).not('status', 'in', '("aprovada","rejeitada")')
+          : Promise.resolve({ count: 0 }),
+      ])
+
+      // Filtrar avisos ja confirmados pelo tecnico (mesma logica da home)
+      const todosAvisos = (avisosRes.data || []) as { id: number; created_at: string }[]
+      let avisosFiltrados = todosAvisos
+      let avisosHistorico: typeof todosAvisos = []
+      if (todosAvisos.length > 0 && tecnicoNome) {
+        const { data: confirmados } = await supabase
+          .from('avisos_gerais_confirmados')
+          .select('aviso_id')
+          .eq('tecnico_nome', tecnicoNome)
+          .in('aviso_id', todosAvisos.map(a => a.id))
+        const confirmSet = new Set((confirmados || []).map((c: { aviso_id: number }) => c.aviso_id))
+        avisosFiltrados = todosAvisos.filter(a => !confirmSet.has(a.id))
+        avisosHistorico = todosAvisos.filter(a => confirmSet.has(a.id))
+      }
+
       await offlineSet(`dashboard:${nome}`, {
         osPendentes,
         osAbertas,
         osEnviadas: enviadas.size,
         osAtrasadas,
-        reqPendentes: 0,
-        reqEnviadas: 0,
+        reqPendentes: reqPendRes.count || 0,
+        reqEnviadas: reqEnvRes.count || 0,
         fotosCount: 0,
-        garantiasPendentes: 0,
-        garantiasAbertas: 0,
-        avisos: [],
-        avisosHistorico: [],
+        garantiasPendentes: garPendRes.count || 0,
+        garantiasAbertas: garAbertasRes.count || 0,
+        avisos: avisosFiltrados,
+        avisosHistorico,
       })
     }
 
@@ -195,6 +238,24 @@ export async function prefetchAll(
 
     if (tecnicos) await offlineSet('prefetch:tecnicos', tecnicos)
     if (veiculos) await offlineSet('prefetch:veiculos', veiculos)
+
+    // 6b. Check-in de hoje, garantias, requisicoes e fornecedores (telas offline)
+    onProgress?.('Baixando jornada e requisicoes...')
+    const hojeRef = new Date().toISOString().split('T')[0]
+    const [checkinsRes, garantiasRes, requisicoesRes, fornecedoresRes] = await Promise.all([
+      supabase.from('checkin_diario').select('*').eq('tecnico_nome', tecnicoNome).eq('data', hojeRef).order('id'),
+      tecnicoNome
+        ? supabase.from('garantias').select('*').eq('tecnico_nome', tecnicoNome).order('created_at', { ascending: false })
+        : Promise.resolve({ data: [] }),
+      supabase.from('Requisicao').select('*')
+        .or(`solicitante.ilike.%${nome}%,solicitante.eq.${tecnicoNome}`)
+        .order('data', { ascending: false }).limit(300),
+      supabase.from('Fornecedores').select('*').order('nome').then(r => r, () => ({ data: [] })),
+    ])
+    await offlineSet(`prefetch:checkin:${hojeRef}`, checkinsRes.data || [])
+    await offlineSet('prefetch:garantias', garantiasRes.data || [])
+    await offlineSet('prefetch:requisicoes', requisicoesRes.data || [])
+    await offlineSet('prefetch:fornecedores', fornecedoresRes.data || [])
 
     // 7. OS enviadas do técnico
     onProgress?.('Baixando OS enviadas...')
@@ -278,4 +339,24 @@ export async function getCachedVeiculos() {
 
 export async function getCachedPPV(idPPV: string) {
   return offlineGet<Record<string, unknown>[]>(`prefetch:ppv:${idPPV}`)
+}
+
+export async function getCachedCheckin(data: string) {
+  return offlineGet<Record<string, unknown>[]>(`prefetch:checkin:${data}`)
+}
+
+export async function getCachedGarantias() {
+  return offlineGet<Record<string, unknown>[]>('prefetch:garantias')
+}
+
+export async function getCachedRequisicoes() {
+  return offlineGet<Record<string, unknown>[]>('prefetch:requisicoes')
+}
+
+export async function getCachedFornecedores() {
+  return offlineGet<Record<string, unknown>[]>('prefetch:fornecedores')
+}
+
+export async function getCachedClientesCoords() {
+  return offlineGet<Record<string, { lat: number; lng: number }>>('prefetch:clientes-coords')
 }

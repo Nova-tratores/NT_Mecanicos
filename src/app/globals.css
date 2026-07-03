@@ -75,3 +75,44 @@ body {
   100% { background-position: -100% 0; }
 }
 
+/* ── Remap: blocos animados (home, ordens, etc.) ── */
+@keyframes hbIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes charFloat {
+  0%, 100% { transform: translateY(0) rotate(-3deg); }
+  50%      { transform: translateY(-7px) rotate(3deg); }
+}
+@keyframes modalPop {
+  from { opacity: 0; transform: translateY(20px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.hb, .hb-in {
+  animation: hbIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.hb {
+  transition: transform 0.13s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.hb:active { transform: scale(0.975); }
+.hb > div:first-child {
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.28s ease;
+}
+.hb:active > div:first-child { transform: scale(0.9); }
+@media (hover: hover) {
+  .hb:hover { box-shadow: 0 10px 24px rgba(0,0,0,0.09); transform: translateY(-2px); }
+  .hb:hover > div:first-child { transform: scale(1.08) rotate(-4deg); }
+}
+.char-anim { animation: charFloat 3s ease-in-out infinite; }
+.perfil-modal { animation: modalPop 0.28s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes notifSlide {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(0); }
+}
+.notif-panel { animation: notifSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+@media (prefers-reduced-motion: reduce) {
+  .hb, .hb-in, .char-anim, .perfil-modal, .notif-panel { animation: none; }
+  .hb > div:first-child { transition: none; }
+}
+

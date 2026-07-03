@@ -3,6 +3,8 @@ import { useEffect, useState } from 'react'
 import { use } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { supabase } from '@/lib/supabase'
+import { offlineWrite } from '@/lib/offlineWrite'
+import { getCachedOS, getCachedOSTec, getCachedCliente } from '@/lib/prefetch'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
 import { ArrowLeft, FileDown, Eye, Loader2, FileEdit, Send, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
@@ -35,48 +37,69 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
 
   useEffect(() => {
     if (!user) return
+    const aplicar = (
+      reg: Record<string, unknown> | null,
+      osData: Record<string, unknown> | null,
+      cidadeCli?: string,
+    ) => {
+      if (reg) {
+        setRegistro(reg)
+        if (reg.CartaCorrecao) {
+          setCartaCorrecao(reg.CartaCorrecao as string)
+          setCartaSalva(reg.CartaCorrecao as string)
+        }
+        if (reg.PecasInfo) {
+          try { setPecas(JSON.parse(reg.PecasInfo as string)) } catch { /* */ }
+        }
+      }
+      if (osData) setOsInfo(osData)
+      if (cidadeCli) setCidade(cidadeCli)
+      setLoading(false)
+    }
+
+    const carregarDoCache = async () => {
+      const reg = await getCachedOSTec(id)
+      const osData = await getCachedOS(id)
+      let cidadeCli = ''
+      if (osData?.Cnpj_Cliente) {
+        const cli = await getCachedCliente(osData.Cnpj_Cliente as string)
+        cidadeCli = cli?.cidade || ''
+      }
+      aplicar(reg, osData, cidadeCli)
+    }
+
     const carregar = async () => {
-      // Buscar o registro técnico pela Ordem_Servico
-      const { data: reg } = await supabase
-        .from('Ordem_Servico_Tecnicos')
-        .select('*')
-        .eq('Ordem_Servico', id)
-        .maybeSingle()
+      if (!navigator.onLine) { await carregarDoCache(); return }
+      try {
+        // Buscar o registro técnico pela Ordem_Servico
+        const { data: reg } = await supabase
+          .from('Ordem_Servico_Tecnicos')
+          .select('*')
+          .eq('Ordem_Servico', id)
+          .maybeSingle()
 
-      if (!reg) { setLoading(false); return }
-      setRegistro(reg)
+        if (!reg) { await carregarDoCache(); return }
 
-      // Carregar carta de correção existente
-      if (reg.CartaCorrecao) {
-        setCartaCorrecao(reg.CartaCorrecao as string)
-        setCartaSalva(reg.CartaCorrecao as string)
-      }
+        // Buscar dados da OS original
+        const { data: osData } = await supabase
+          .from('Ordem_Servico')
+          .select('*')
+          .eq('Id_Ordem', id)
+          .maybeSingle()
 
-      // Parsear peças
-      if (reg.PecasInfo) {
-        try { setPecas(JSON.parse(reg.PecasInfo as string)) } catch { /* */ }
-      }
-
-      // Buscar dados da OS original
-      const { data: osData } = await supabase
-        .from('Ordem_Servico')
-        .select('*')
-        .eq('Id_Ordem', id)
-        .maybeSingle()
-      if (osData) {
-        setOsInfo(osData)
-        // Buscar cidade
-        if (osData.Cnpj_Cliente) {
+        let cidadeCli = ''
+        if (osData?.Cnpj_Cliente) {
           const { data: cli } = await supabase
             .from('Clientes')
             .select('cidade')
             .eq('cnpj_cpf', osData.Cnpj_Cliente)
             .maybeSingle()
-          if (cli?.cidade) setCidade(cli.cidade)
+          cidadeCli = cli?.cidade || ''
         }
+        aplicar(reg, osData, cidadeCli)
+      } catch {
+        await carregarDoCache()
       }
-
-      setLoading(false)
     }
     carregar()
   }, [id, user])
@@ -87,10 +110,12 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
       return
     }
     setSalvandoCarta(true)
-    await supabase
-      .from('Ordem_Servico_Tecnicos')
-      .update({ CartaCorrecao: cartaCorrecao.trim() })
-      .eq('Ordem_Servico', id)
+    await offlineWrite({
+      table: 'Ordem_Servico_Tecnicos',
+      action: 'update',
+      data: { CartaCorrecao: cartaCorrecao.trim() },
+      match: { Ordem_Servico: id },
+    })
     setCartaSalva(cartaCorrecao.trim())
     setSalvandoCarta(false)
   }

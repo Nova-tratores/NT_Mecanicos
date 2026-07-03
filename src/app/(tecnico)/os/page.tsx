@@ -5,13 +5,13 @@ import { useCached } from '@/hooks/useCached'
 import { useDebounce } from '@/hooks/useDebounce'
 import { supabase } from '@/lib/supabase'
 import type { OrdemServico } from '@/lib/types'
+import Link from 'next/link'
 import {
-  Wrench, FileText, AlertTriangle, FileCheck, MapPin, CheckCircle2, Send,
-  Calendar,
+  FileText, FileCheck, MapPin, CheckCircle2, Send, ChevronDown, ChevronRight,
 } from 'lucide-react'
 import {
-  PageHeader, StatCard, TabBar, ListRow, EmptyState, PageSpinner,
-  Badge, Section, SearchInput,
+  PageHeader, TabBar, EmptyState, PageSpinner,
+  Section, SearchInput,
 } from '@/components/ui'
 import { colors, radius } from '@/lib/ui'
 
@@ -146,47 +146,71 @@ function getFaseInfo(status: string): { label: string; color: string; bg: string
   return { label: status, color: colors.textMuted, bg: colors.border }
 }
 
-/* ═══ Card de OS compacto (Preencher) ═══ */
+/* ═══ Card de OS (estilo remap) ═══ */
 function OsCard({
   os,
   cidade,
   preenchida,
+  index = 0,
 }: {
   os: OrdemServico
   cidade?: string
   preenchida: boolean
+  index?: number
 }) {
   const fase = getFaseInfo(os.Status)
+  const Icon = preenchida ? CheckCircle2 : FileText
+  const iconBg = preenchida ? colors.success : colors.warning
 
   return (
-    <ListRow
+    <Link
       href={`/os/${os.Id_Ordem}`}
-      icon={preenchida ? CheckCircle2 : FileText}
-      iconColor={preenchida ? colors.success : colors.warning}
-      iconBg={preenchida ? colors.successBg : colors.warningBg}
-      badge={
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 14, fontWeight: 700, color: colors.primary }}>
-            {os.Id_Ordem}
-          </span>
-          <Badge status={preenchida ? 'preenchida' : 'pendente'}>
+      className="hb"
+      style={{
+        display: 'flex', alignItems: 'center', gap: 14, textDecoration: 'none',
+        background: colors.surface, borderRadius: 18, padding: 16,
+        border: `1px solid ${colors.border}`, boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+        animationDelay: `${Math.min(index * 45, 300)}ms`,
+      }}
+    >
+      <div style={{
+        width: 50, height: 50, borderRadius: 15, flexShrink: 0, background: iconBg,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
+      }}>
+        <Icon size={24} color="#fff" strokeWidth={2.2} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginBottom: 3 }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: colors.primary }}>{os.Id_Ordem}</span>
+          <span style={{
+            fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 6,
+            background: preenchida ? colors.successBg : colors.warningBg,
+            color: preenchida ? colors.success : colors.warning,
+          }}>
             {preenchida ? 'Preenchida' : 'Pendente'}
-          </Badge>
-          <Badge bg={fase.bg} color={fase.color}>{fase.label}</Badge>
+          </span>
+          <span style={{
+            fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 6,
+            background: fase.bg, color: fase.color,
+          }}>
+            {fase.label}
+          </span>
         </div>
-      }
-      title={os.Os_Cliente}
-      meta={
-        <>
+        <div style={{ fontSize: 15, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {os.Os_Cliente}
+        </div>
+        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {cidade && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: colors.accent, fontWeight: 600 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: colors.accent }}>
               <MapPin size={11} /> {cidade}
             </span>
           )}
           <span>{os.Tipo_Servico}{os.ID_PPV ? ` · ${os.ID_PPV}` : ''}</span>
-        </>
-      }
-    />
+        </div>
+      </div>
+      <ChevronRight size={18} color={colors.textSubtle} style={{ flexShrink: 0 }} />
+    </Link>
   )
 }
 
@@ -201,7 +225,7 @@ export default function OrdensHub() {
     { skip: !user },
   )
 
-  const [aba, setAba] = useState<'preencher' | 'abertas' | 'enviadas'>('preencher')
+  const [aba, setAba] = useState<'abertas' | 'enviadas'>('abertas')
   const [busca, setBusca] = useState('')
   const buscaDebounced = useDebounce(busca, 300)
   const [resultadoBusca, setResultadoBusca] = useState<OrdemServico[]>([])
@@ -320,124 +344,71 @@ export default function OrdensHub() {
 
       <PageHeader title="Ordens" />
 
-      {/* Métricas */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-        <StatCard value={atrasadas.length + preencher.length} label="Preencher" tone="danger" />
-        <StatCard value={abertasOrcamento.length + abertasExecucao.length + abertasOutras.length} label="Abertas" tone="warning" />
-        <StatCard value={enviadasCount} label="Enviadas" tone="success" />
-      </div>
-
       {/* Tabs */}
       <TabBar
         value={aba}
         onChange={setAba}
         options={[
-          { value: 'preencher', label: 'Preencher', icon: AlertTriangle },
-          { value: 'abertas', label: 'Abertas', icon: Wrench },
+          { value: 'abertas', label: 'Abertas', icon: FileText },
           { value: 'enviadas', label: 'Enviadas', icon: FileCheck },
         ]}
       />
 
-      {/* ═══ ABA PREENCHER ═══ */}
-      {aba === 'preencher' && (
+      {/* ═══ ABA ABERTAS (preencher + abertas juntas) ═══ */}
+      {aba === 'abertas' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <SearchInput value={busca} onChange={setBusca} placeholder="Buscar OS, cliente ou PPV..." />
 
-          {busca.trim() && (
+          {busca.trim() ? (
             <Section label="Resultados">
               {buscando ? (
                 <PageSpinner />
               ) : resultadoBusca.length === 0 ? (
                 <EmptyState icon={FileText} title="Nenhuma OS encontrada" />
               ) : (
-                resultadoBusca.map(os => (
-                  <OsCard
-                    key={os.Id_Ordem}
-                    os={os}
-                    cidade={buscaCidadeMap[os.Cnpj_Cliente]}
-                    preenchida={preenchidas.has(String(os.Id_Ordem))}
-                  />
+                resultadoBusca.map((os, i) => (
+                  <OsCard key={os.Id_Ordem} os={os} cidade={buscaCidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
                 ))
               )}
             </Section>
-          )}
-
-          {loading ? (
+          ) : loading ? (
             <PageSpinner />
-          ) : (atrasadas.length === 0 && preencher.length === 0) ? (
-            <EmptyState
-              icon={AlertTriangle}
-              title="Nenhuma OS para preencher"
-              subtitle="Voce esta em dia!"
-            />
-          ) : !busca.trim() && (
-            <>
-              {/* Atrasadas — Aguardando ordem Técnico > 1 dia */}
-              {atrasadas.length > 0 && (
-                <Section label="Atrasadas" icon={AlertTriangle} color={colors.danger} count={atrasadas.length}>
-                  <div style={{
-                    background: colors.dangerBg,
-                    borderRadius: radius.xl,
-                    padding: 10,
-                    border: `1px solid ${colors.dangerBorder}`,
-                    display: 'flex', flexDirection: 'column', gap: 8,
-                  }}>
-                    {atrasadas.map(os => (
-                      <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
-                    ))}
-                  </div>
-                </Section>
-              )}
-
-              {/* Preencher — previsão vencida, não atrasada */}
-              {preencher.length > 0 && (
-                <Section label="Preencher" icon={FileText} color={colors.warning} count={preencher.length}>
-                  {preencher.map(os => (
-                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
-                  ))}
-                </Section>
-              )}
-            </>
-          )}
-        </div>
-      )}
-
-      {/* ═══ ABA ABERTAS (separadas por fase) ═══ */}
-      {aba === 'abertas' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {loading ? (
-            <PageSpinner />
-          ) : (abertasExecucao.length === 0 && abertasOrcamento.length === 0 && abertasOutras.length === 0) ? (
-            <EmptyState
-              icon={Wrench}
-              title="Nenhuma OS aberta"
-              subtitle="Quando houver ordens, elas aparecerão aqui"
-            />
+          ) : (atrasadas.length === 0 && preencher.length === 0 && abertasExecucao.length === 0 && abertasOrcamento.length === 0 && abertasOutras.length === 0) ? (
+            <EmptyState icon={FileText} title="Nenhuma OS aberta" subtitle="Voce esta em dia" />
           ) : (
             <>
-              {/* Em Execução */}
+              {atrasadas.length > 0 && (
+                <Section label="Atrasadas">
+                  {atrasadas.map((os, i) => (
+                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
+                  ))}
+                </Section>
+              )}
+              {preencher.length > 0 && (
+                <Section label="Preencher">
+                  {preencher.map((os, i) => (
+                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
+                  ))}
+                </Section>
+              )}
               {abertasExecucao.length > 0 && (
-                <Section label="Em Execução" icon={Wrench} color={colors.info} count={abertasExecucao.length}>
-                  {abertasExecucao.map(os => (
-                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
+                <Section label="Em Execução">
+                  {abertasExecucao.map((os, i) => (
+                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
                   ))}
                 </Section>
               )}
-
-              {/* Orçamento (Futuros) */}
               {abertasOrcamento.length > 0 && (
-                <Section label="Futuros" icon={Calendar} color={colors.accent} count={abertasOrcamento.length}>
-                  {abertasOrcamento.map(os => (
-                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
+                <Section label="Futuros">
+                  {abertasOrcamento.map((os, i) => (
+                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
                   ))}
                 </Section>
               )}
-
-              {/* Outras fases */}
               {abertasOutras.length > 0 && (
-                <Section label="Outras fases" icon={FileText} color={colors.textMuted} count={abertasOutras.length}>
-                  {abertasOutras.map(os => (
-                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} />
+                <Section label="Outras fases">
+                  {abertasOutras.map((os, i) => (
+                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
                   ))}
                 </Section>
               )}
@@ -454,14 +425,28 @@ export default function OrdensHub() {
   )
 }
 
+/* ═══ Fotos anexadas na OS (colunas de Ordem_Servico_Tecnicos) ═══ */
+const FOTO_CAMPOS_ENV: Record<string, string> = {
+  FotoHorimetro: 'Horimetro', FotoChassis: 'Chassis', FotoFrente: 'Frente',
+  FotoDireita: 'Direita', FotoEsquerda: 'Esquerda', FotoTraseira: 'Traseira', FotoVolante: 'Volante',
+  FotoFalha1: 'Falha 1', FotoFalha2: 'Falha 2', FotoFalha3: 'Falha 3', FotoFalha4: 'Falha 4',
+  FotoPecaNova1: 'Peca Nova 1', FotoPecaNova2: 'Peca Nova 2',
+  FotoPecaInstalada1: 'Peca Instalada 1', FotoPecaInstalada2: 'Peca Instalada 2', FotoAlmoco: 'Almoco',
+}
+const FOTO_KEYS_ENV = Object.keys(FOTO_CAMPOS_ENV)
+
 /* ═══ Sub-aba Enviadas ═══ */
 function OsEnviadasTab({ nome }: { nome: string }) {
+  const [busca, setBusca] = useState('')
+  const [expandido, setExpandido] = useState<string | null>(null)
+  const [fotosPorOs, setFotosPorOs] = useState<Record<string, { label: string; url: string }[] | 'loading'>>({})
+
   const { data: ordens, loading } = useCached(
-    `os-enviadas:v5:${nome}`,
+    `os-enviadas:v6:${nome}`,
     async () => {
       type RegTec = {
         id: number; Ordem_Servico: string; TecResp1: string | null; TecResp2: string | null;
-        Data: string; TipoServico: string | null; Status: string; pdf_criado: boolean;
+        Data: string; TipoServico: string | null; Status: string; pdf_criado: boolean; cliente?: string | null;
       }
       // Coluna se chama "Data" — NÃO "Data_Abertura" (esse era um nome inventado
       // que causava HTTP 400 silencioso e fazia a query inteira retornar []).
@@ -520,17 +505,14 @@ function OsEnviadasTab({ nome }: { nome: string }) {
         const osFinalizada = FASES_FINALIZADAS.has(os.Status)
 
         if (algumEnviado) {
-          finais.push(algumEnviado)
+          finais.push({ ...algumEnviado, cliente: os.Os_Cliente })
         } else if (osFinalizada) {
-          finais.push(regs[0] || {
-            id: 0,
-            Ordem_Servico: idOs,
-            TecResp1: nome,
-            TecResp2: null,
-            Data: os.Data || '',
-            TipoServico: os.Tipo_Servico,
-            Status: 'enviado',
-            pdf_criado: false,
+          finais.push({
+            ...(regs[0] || {
+              id: 0, Ordem_Servico: idOs, TecResp1: nome, TecResp2: null,
+              Data: os.Data || '', TipoServico: os.Tipo_Servico, Status: 'enviado', pdf_criado: false,
+            }),
+            cliente: os.Os_Cliente,
           })
         }
       }
@@ -540,37 +522,107 @@ function OsEnviadasTab({ nome }: { nome: string }) {
     { skip: !nome },
   )
 
-  if (loading) return <PageSpinner />
-
-  if (!ordens || ordens.length === 0) {
-    return (
-      <EmptyState
-        icon={Send}
-        title="Nenhuma OS enviada"
-        subtitle="Suas ordens preenchidas aparecerão aqui"
-      />
-    )
+  const toggle = async (idOs: string) => {
+    if (expandido === idOs) { setExpandido(null); return }
+    setExpandido(idOs)
+    if (!fotosPorOs[idOs]) {
+      setFotosPorOs(p => ({ ...p, [idOs]: 'loading' }))
+      const { data } = await supabase
+        .from('Ordem_Servico_Tecnicos')
+        .select(FOTO_KEYS_ENV.join(','))
+        .eq('Ordem_Servico', idOs)
+      const vistos = new Set<string>()
+      const urls: { label: string; url: string }[] = []
+      for (const row of (data || []) as unknown as Record<string, unknown>[]) {
+        for (const k of FOTO_KEYS_ENV) {
+          const u = String(row[k] || '').trim()
+          if (u && !vistos.has(u)) { vistos.add(u); urls.push({ label: FOTO_CAMPOS_ENV[k], url: u }) }
+        }
+      }
+      setFotosPorOs(p => ({ ...p, [idOs]: urls }))
+    }
   }
 
+  if (loading) return <PageSpinner />
+
+  const lista = (ordens || []) as Array<{ id: number; Ordem_Servico: string; TipoServico: string | null; Data: string; cliente?: string | null }>
+  const q = busca.trim().toLowerCase()
+  const filtradas = q
+    ? lista.filter(o => String(o.Ordem_Servico).toLowerCase().includes(q) || (o.cliente || '').toLowerCase().includes(q))
+    : lista
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {ordens.map((os) => (
-        <ListRow
-          key={os.id ?? os.Ordem_Servico}
-          href={`/os-enviadas/${os.Ordem_Servico}`}
-          icon={CheckCircle2}
-          iconColor={colors.success}
-          iconBg={colors.successBg}
-          badge={
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <span style={{ fontSize: 14, fontWeight: 700, color: colors.primary }}>{os.Ordem_Servico}</span>
-              <Badge status="enviada">Enviada</Badge>
-            </div>
-          }
-          title={os.TipoServico || 'Ordem de Serviço'}
-          subtitle={os.Data ? new Date(os.Data).toLocaleDateString('pt-BR') : undefined}
-        />
-      ))}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <SearchInput value={busca} onChange={setBusca} placeholder="Buscar por OS ou cliente..." />
+
+      {lista.length === 0 ? (
+        <EmptyState icon={Send} title="Nenhuma OS enviada" subtitle="Suas ordens preenchidas aparecerão aqui" />
+      ) : filtradas.length === 0 ? (
+        <EmptyState icon={FileText} title="Nada encontrado" />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {filtradas.map((os, i) => {
+            const aberto = expandido === os.Ordem_Servico
+            const fotos = fotosPorOs[os.Ordem_Servico]
+            return (
+              <div
+                key={os.id ?? os.Ordem_Servico}
+                className="hb-in"
+                style={{
+                  background: colors.surface, border: `1px solid ${colors.border}`,
+                  borderRadius: 18, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+                  animationDelay: `${Math.min(i * 45, 300)}ms`,
+                }}
+              >
+                <button onClick={() => toggle(os.Ordem_Servico)} style={{
+                  width: '100%', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
+                  padding: 16, display: 'flex', alignItems: 'center', gap: 14,
+                }}>
+                  <div style={{
+                    width: 50, height: 50, borderRadius: 15, flexShrink: 0, background: colors.success,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
+                  }}>
+                    <FileCheck size={24} color="#fff" strokeWidth={2.2} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{os.cliente || 'Sem cliente'}</div>
+                    <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+                      OS {os.Ordem_Servico}{os.Data ? ` · ${new Date(os.Data).toLocaleDateString('pt-BR')}` : ''}
+                    </div>
+                  </div>
+                  <ChevronDown size={18} color={colors.textSubtle} style={{ transition: 'transform 0.2s', transform: aberto ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
+                </button>
+
+                {aberto && (
+                  <div style={{ padding: '0 16px 16px' }}>
+                    {fotos === 'loading' || fotos === undefined ? (
+                      <div style={{ fontSize: 13, color: colors.textMuted, padding: '8px 0' }}>Carregando fotos...</div>
+                    ) : fotos.length === 0 ? (
+                      <div style={{ fontSize: 13, color: colors.textMuted, padding: '8px 0' }}>Nenhuma foto anexada.</div>
+                    ) : (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(90px, 1fr))', gap: 8 }}>
+                        {fotos.map((f, i) => (
+                          <a key={i} href={f.url} target="_blank" rel="noopener noreferrer" style={{ textDecoration: 'none' }}>
+                            <div style={{ aspectRatio: '1', borderRadius: radius.lg, overflow: 'hidden', border: `1px solid ${colors.border}`, background: colors.surfaceAlt }}>
+                              <img src={f.url} alt={f.label} loading="lazy" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                            </div>
+                            <div style={{ fontSize: 10, color: colors.textMuted, marginTop: 3, textAlign: 'center', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{f.label}</div>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                    <a href={`/os-enviadas/${os.Ordem_Servico}`} style={{
+                      display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 12,
+                      fontSize: 13, color: colors.accent, textDecoration: 'none',
+                    }}>Ver detalhes da ordem</a>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

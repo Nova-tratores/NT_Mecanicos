@@ -46,6 +46,31 @@ export default function ServiceWorkerRegister() {
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
 
+    // Em DESENVOLVIMENTO o service worker so atrapalha: ele cacheia o bundle e
+    // faz o app "voltar" para a versao antiga toda hora. Entao, no dev, em vez de
+    // registrar, desregistramos qualquer SW existente e limpamos os caches.
+    if (process.env.NODE_ENV !== 'production') {
+      navigator.serviceWorker.getRegistrations()
+        .then((regs) => Promise.all(regs.map((r) => r.unregister())))
+        .catch(() => {});
+      if ('caches' in window) {
+        caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(() => {});
+      }
+      return;
+    }
+
+    // Quando um SW novo assume o controle, recarrega UMA vez para pegar a versao
+    // nova na hora (evita ficar preso na versao antiga em cache). So recarrega se
+    // ja havia um controller antes (nao no primeiro registro).
+    const jaTinhaController = !!navigator.serviceWorker.controller;
+    let recarregando = false;
+    const onControllerChange = () => {
+      if (recarregando || !jaTinhaController) return;
+      recarregando = true;
+      window.location.reload();
+    };
+    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
+
     navigator.serviceWorker
       .register('/sw.js')
       .then((reg) => {
@@ -77,6 +102,10 @@ export default function ServiceWorkerRegister() {
       .catch((err) => {
         console.error('SW registration failed:', err);
       });
+
+    return () => {
+      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
+    };
   }, [user]);
 
   return null;

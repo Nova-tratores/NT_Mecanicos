@@ -1,21 +1,50 @@
 'use client'
 import { useState } from 'react'
-import { Bell, X, Trash2 } from 'lucide-react'
+import {
+  Bell, X, Trash2, CheckCheck, FileText, ClipboardList,
+  ShieldCheck, Megaphone, Package, AlertCircle,
+} from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import type { MecanicoNotificacao } from '@/lib/types'
+import { colors } from '@/lib/ui'
 
 interface HeaderMobileProps {
   notificacoes: MecanicoNotificacao[]
   naoLidas: number
   onMarcarLida: (id: number) => void
   onMarcarTodasLidas: () => void
+  onRemover: (id: number) => void
   onLimparTodas: () => void
   avatarUrl?: string | null
   userName?: string | null
 }
 
-export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onMarcarTodasLidas, onLimparTodas, avatarUrl, userName }: HeaderMobileProps) {
+/* Icone + cor por tipo de notificacao */
+function estiloTipo(tipo: string): { icon: typeof Bell; color: string } {
+  const t = (tipo || '').toLowerCase()
+  if (t.includes('os') || t.includes('ordem') || t.includes('relat')) return { icon: FileText, color: colors.primary }
+  if (t.includes('requis')) return { icon: ClipboardList, color: colors.info }
+  if (t.includes('garant')) return { icon: ShieldCheck, color: colors.success }
+  if (t.includes('aviso')) return { icon: Megaphone, color: colors.warning }
+  if (t.includes('nf') || t.includes('peca') || t.includes('peça')) return { icon: Package, color: colors.accent }
+  if (t.includes('opa') || t.includes('alert')) return { icon: AlertCircle, color: colors.danger }
+  return { icon: Bell, color: colors.textMuted }
+}
+
+function tempoRelativo(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime()
+  const min = Math.floor(ms / 60000)
+  if (min < 1) return 'agora'
+  if (min < 60) return `há ${min} min`
+  const h = Math.floor(min / 60)
+  if (h < 24) return `há ${h}h`
+  const d = Math.floor(h / 24)
+  if (d < 7) return `há ${d} dia${d > 1 ? 's' : ''}`
+  return new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
+}
+
+export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onMarcarTodasLidas, onRemover, onLimparTodas, avatarUrl, userName }: HeaderMobileProps) {
   const [showNotifs, setShowNotifs] = useState(false)
 
   return (
@@ -59,6 +88,7 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
               fontWeight: 700, borderRadius: 10, minWidth: 16,
               height: 16, display: 'flex', alignItems: 'center',
               justifyContent: 'center', padding: '0 4px',
+              border: '1.5px solid #C41E2A',
             }}>
               {naoLidas}
             </span>
@@ -66,68 +96,135 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
         </button>
       </header>
 
-      {/* Notification panel */}
+      {/* Painel de notificacoes */}
       {showNotifs && (
         <div style={{
-          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
-          zIndex: 100, background: 'rgba(0,0,0,0.5)',
+          position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.5)',
         }} onClick={() => setShowNotifs(false)}>
-          <div style={{
-            position: 'absolute', top: 0, right: 0, bottom: 0,
-            width: '85%', maxWidth: 340, background: '#fff',
-            boxShadow: '-4px 0 20px rgba(0,0,0,0.15)',
-            display: 'flex', flexDirection: 'column',
-          }} onClick={(e) => e.stopPropagation()}>
+          <div
+            className="notif-panel"
+            style={{
+              position: 'absolute', top: 0, right: 0, bottom: 0,
+              width: '88%', maxWidth: 380, background: '#F5F6F8',
+              borderRadius: '20px 0 0 20px', overflow: 'hidden',
+              boxShadow: '-8px 0 30px rgba(0,0,0,0.2)',
+              display: 'flex', flexDirection: 'column',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
             <div style={{
-              padding: '16px 20px', background: '#C41E2A', color: '#fff',
-              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '18px 18px 14px', background: '#fff',
+              borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
             }}>
-              <span style={{ fontWeight: 700, fontSize: 16 }}>Notificações</span>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                {naoLidas > 0 && (
-                  <button onClick={onMarcarTodasLidas} style={{
-                    background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff',
-                    fontSize: 11, padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div style={{
+                    width: 38, height: 38, borderRadius: 12, background: colors.primary,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: '0 3px 8px rgba(196,30,42,0.3)',
                   }}>
-                    Marcar todas
-                  </button>
-                )}
-                {notificacoes.length > 0 && (
-                  <button onClick={() => { onLimparTodas(); setShowNotifs(false) }} style={{
-                    background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff',
-                    fontSize: 11, padding: '4px 8px', borderRadius: 6, cursor: 'pointer',
-                    display: 'flex', alignItems: 'center', gap: 4,
-                  }}>
-                    <Trash2 size={12} /> Limpar
-                  </button>
-                )}
-                <button onClick={() => setShowNotifs(false)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>
-                  <X size={20} />
-                </button>
-              </div>
-            </div>
-
-            <div style={{ flex: 1, overflowY: 'auto' }}>
-              {notificacoes.length === 0 ? (
-                <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF', fontSize: 14 }}>
-                  Nenhuma notificação
-                </div>
-              ) : notificacoes.map((n) => (
-                <div
-                  key={n.id}
-                  onClick={() => { onMarcarLida(n.id); if (n.link) window.location.href = n.link }}
-                  style={{
-                    padding: '14px 20px', borderBottom: '1px solid #F3F4F6',
-                    background: n.lida ? '#fff' : '#F0F7FF', cursor: 'pointer',
-                  }}
-                >
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#1F2937' }}>{n.titulo}</div>
-                  {n.descricao && <div style={{ fontSize: 12, color: '#6B7280', marginTop: 2 }}>{n.descricao}</div>}
-                  <div style={{ fontSize: 10, color: '#9CA3AF', marginTop: 4 }}>
-                    {new Date(n.created_at).toLocaleString('pt-BR')}
+                    <Bell size={19} color="#fff" strokeWidth={2.2} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>Notificações</div>
+                    <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 1 }}>
+                      {naoLidas > 0 ? `${naoLidas} não lida${naoLidas > 1 ? 's' : ''}` : 'Tudo em dia'}
+                    </div>
                   </div>
                 </div>
-              ))}
+                <button onClick={() => setShowNotifs(false)} style={{
+                  width: 32, height: 32, borderRadius: 10, border: 'none', cursor: 'pointer',
+                  background: colors.surfaceAlt, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <X size={18} color={colors.textMuted} />
+                </button>
+              </div>
+
+              {notificacoes.length > 0 && (
+                <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                  {naoLidas > 0 && (
+                    <button onClick={onMarcarTodasLidas} style={{
+                      flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                      background: colors.surfaceAlt, border: `1px solid ${colors.border}`, color: colors.textMuted,
+                      fontSize: 12, fontWeight: 600, padding: '9px 10px', borderRadius: 10, cursor: 'pointer',
+                    }}>
+                      <CheckCheck size={14} /> Marcar lidas
+                    </button>
+                  )}
+                  <button onClick={() => { onLimparTodas(); setShowNotifs(false) }} style={{
+                    flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                    background: colors.dangerBg, border: `1px solid ${colors.dangerBorder}`, color: colors.danger,
+                    fontSize: 12, fontWeight: 600, padding: '9px 10px', borderRadius: 10, cursor: 'pointer',
+                  }}>
+                    <Trash2 size={14} /> Limpar tudo
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Lista */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {notificacoes.length === 0 ? (
+                <div style={{
+                  flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                  color: colors.textSubtle, gap: 10, padding: 40,
+                }}>
+                  <div style={{
+                    width: 60, height: 60, borderRadius: 18, background: colors.surfaceAlt,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Bell size={26} color={colors.textGhost} />
+                  </div>
+                  <div style={{ fontSize: 14, fontWeight: 500 }}>Nenhuma notificação</div>
+                </div>
+              ) : notificacoes.map((n) => {
+                const { icon: Icon, color } = estiloTipo(n.tipo)
+                return (
+                  <div
+                    key={n.id}
+                    onClick={() => { onMarcarLida(n.id); if (n.link) window.location.href = n.link }}
+                    style={{
+                      position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 12,
+                      padding: 14, borderRadius: 16, cursor: 'pointer',
+                      background: colors.surface,
+                      border: `1px solid ${n.lida ? colors.border : color + '55'}`,
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+                    }}
+                  >
+                    <div style={{
+                      width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: color,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      boxShadow: '0 3px 8px rgba(0,0,0,0.12)',
+                    }}>
+                      <Icon size={19} color="#fff" strokeWidth={2.2} />
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0, paddingRight: 18 }}>
+                      <div style={{ fontSize: 13, fontWeight: n.lida ? 500 : 600, color: colors.text }}>{n.titulo}</div>
+                      {n.descricao && (
+                        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.descricao}</div>
+                      )}
+                      <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 5 }}>{tempoRelativo(n.created_at)}</div>
+                    </div>
+                    {!n.lida && (
+                      <span style={{
+                        position: 'absolute', top: 14, right: 34,
+                        width: 8, height: 8, borderRadius: '50%', background: color,
+                      }} />
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onRemover(n.id) }}
+                      style={{
+                        position: 'absolute', top: 8, right: 8, width: 24, height: 24, borderRadius: 8,
+                        border: 'none', background: 'transparent', cursor: 'pointer',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}
+                    >
+                      <X size={15} color={colors.textSubtle} />
+                    </button>
+                  </div>
+                )
+              })}
             </div>
           </div>
         </div>

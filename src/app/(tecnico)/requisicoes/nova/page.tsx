@@ -4,6 +4,8 @@ import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useFormBackup } from '@/hooks/useFormBackup'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { offlineWrite } from '@/lib/offlineWrite'
+import { getCachedVeiculos, getCachedOSList } from '@/lib/prefetch'
 import { ArrowLeft, Send, CheckCircle, Wrench, Utensils, Package, Truck, Car, Fuel, Tractor, Bike, Search, Building2 } from 'lucide-react'
 import Link from 'next/link'
 import type { OrdemServico } from '@/lib/types'
@@ -98,20 +100,33 @@ export default function NovaSolicitacao() {
     if (!user) return
     const carregar = async () => {
       const nome = user.nome_pos || user.tecnico_nome
-      const [{ data: osData }, { data: veicData }] = await Promise.all([
-        supabase
-          .from('Ordem_Servico')
-          .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Tipo_Servico, ID_PPV')
-          .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
-          .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
-          .order('Id_Ordem', { ascending: false }),
-        supabase
-          .from('SupaPlacas')
-          .select('IdPlaca, NumPlaca')
-          .order('NumPlaca'),
-      ])
-      setOrdens((osData || []) as OSComDetalhes[])
-      setVeiculos(veicData || [])
+      // Offline: le do cache do prefetch
+      if (!navigator.onLine) {
+        const [osList, veics] = await Promise.all([getCachedOSList(), getCachedVeiculos()])
+        if (osList) setOrdens(osList as unknown as OSComDetalhes[])
+        if (veics) setVeiculos(veics)
+        return
+      }
+      try {
+        const [{ data: osData }, { data: veicData }] = await Promise.all([
+          supabase
+            .from('Ordem_Servico')
+            .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Tipo_Servico, ID_PPV')
+            .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
+            .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
+            .order('Id_Ordem', { ascending: false }),
+          supabase
+            .from('SupaPlacas')
+            .select('IdPlaca, NumPlaca')
+            .order('NumPlaca'),
+        ])
+        setOrdens((osData || []) as OSComDetalhes[])
+        setVeiculos(veicData || [])
+      } catch {
+        const [osList, veics] = await Promise.all([getCachedOSList(), getCachedVeiculos()])
+        if (osList) setOrdens(osList as unknown as OSComDetalhes[])
+        if (veics) setVeiculos(veics)
+      }
     }
     carregar()
   }, [user])
@@ -213,59 +228,68 @@ export default function NovaSolicitacao() {
     const idReq = `APP-${Date.now()}`
     const nomePOS = user.nome_pos || user.tecnico_nome
 
-    // 1. Cria na tabela Requisicao (aparece no portal)
-    const { error: errorReq } = await supabase.from('Requisicao').insert({
-      titulo: materialUpper,
-      tipo: form.tipo,
-      solicitante: nomePOS,
-      setor: form.setor,
-      data: hoje,
-      status: 'pedido',
-      veiculo: placaSelecionada ? String(placaSelecionada.IdPlaca) : null,
-      hodometro: form.kilometragem.trim() || form.horimetro.trim() || null,
-      cliente: needsCliente ? form.cliente.trim().toUpperCase() : null,
-      ordem_servico: form.osVinculada || null,
-      Chassis_Modelo: form.chassisModelo.trim().toUpperCase() || null,
-      obs: form.motivo.trim() || null,
-      quem_ferramenta: needsFerramenta ? form.quemFerramenta : null,
-      fornecedor: null,
-      valor_despeza: null,
-      recibo_fornecedor: null,
-      foto_nf: null,
-      boleto_fornecedor: null,
+    // 1. Cria na tabela Requisicao (aparece no portal) — enfileira se offline
+    const resReq = await offlineWrite({
+      table: 'Requisicao',
+      action: 'insert',
+      data: {
+        titulo: materialUpper,
+        tipo: form.tipo,
+        solicitante: nomePOS,
+        setor: form.setor,
+        data: hoje,
+        status: 'pedido',
+        veiculo: placaSelecionada ? String(placaSelecionada.IdPlaca) : null,
+        hodometro: form.kilometragem.trim() || form.horimetro.trim() || null,
+        cliente: needsCliente ? form.cliente.trim().toUpperCase() : null,
+        ordem_servico: form.osVinculada || null,
+        Chassis_Modelo: form.chassisModelo.trim().toUpperCase() || null,
+        obs: form.motivo.trim() || null,
+        quem_ferramenta: needsFerramenta ? form.quemFerramenta : null,
+        fornecedor: null,
+        valor_despeza: null,
+        recibo_fornecedor: null,
+        foto_nf: null,
+        boleto_fornecedor: null,
+      },
     })
 
-    if (errorReq) {
+    if (!resReq.ok) {
       alert('Erro ao enviar solicitação. Tente novamente.')
-      console.error(errorReq)
       setSaving(false)
       return
     }
 
-    // 2. Notifica portal (bell icon)
-    notificarPortalReq(
-      'Nova Solicitação de Requisição',
-      `${nomePOS} solicitou: ${materialUpper} (${form.tipo})`
-    )
+    // 2. Notifica portal (bell icon) — so faz sentido online
+    if (navigator.onLine) {
+      notificarPortalReq(
+        'Nova Solicitação de Requisição',
+        `${nomePOS} solicitou: ${materialUpper} (${form.tipo})`
+      )
+    }
 
-    // 3. Insere na Supa-Solicitacao_Req (portal recebe realtime + imprime)
-    await supabase.from('Supa-Solicitacao_Req').insert({
-      IdReq: idReq,
-      ReqData: new Date().toISOString(),
-      ReqMotivo: form.motivo.trim() || null,
-      Material_Serv_Solicitado: materialUpper,
-      ReqQuem: form.setor,
-      ReqTipo: form.tipo,
-      Cliente: needsCliente ? form.cliente.trim().toUpperCase() : null,
-      OsVinculada: form.osVinculada || null,
-      ModeloChassisTrator: form.chassisModelo.trim().toUpperCase() || null,
-      ReqSolicitante: nomePOS,
-      ReqVeiculo: placaSelecionada ? placaSelecionada.NumPlaca : null,
-      ReqHodometro: form.kilometragem.trim() || form.horimetro.trim() || null,
-      ReqEmail: user.tecnico_email,
-      StatusPipefy: null,
-      NumReq: null,
-      ferramenta_quem: needsFerramenta ? form.quemFerramenta : null,
+    // 3. Insere na Supa-Solicitacao_Req (portal recebe realtime + imprime) — enfileira se offline
+    await offlineWrite({
+      table: 'Supa-Solicitacao_Req',
+      action: 'insert',
+      data: {
+        IdReq: idReq,
+        ReqData: new Date().toISOString(),
+        ReqMotivo: form.motivo.trim() || null,
+        Material_Serv_Solicitado: materialUpper,
+        ReqQuem: form.setor,
+        ReqTipo: form.tipo,
+        Cliente: needsCliente ? form.cliente.trim().toUpperCase() : null,
+        OsVinculada: form.osVinculada || null,
+        ModeloChassisTrator: form.chassisModelo.trim().toUpperCase() || null,
+        ReqSolicitante: nomePOS,
+        ReqVeiculo: placaSelecionada ? placaSelecionada.NumPlaca : null,
+        ReqHodometro: form.kilometragem.trim() || form.horimetro.trim() || null,
+        ReqEmail: user.tecnico_email,
+        StatusPipefy: null,
+        NumReq: null,
+        ferramenta_quem: needsFerramenta ? form.quemFerramenta : null,
+      },
     })
 
     setSucesso(true)

@@ -89,6 +89,12 @@ export async function processQueue(): Promise<number> {
           result = await withTimeout(query)
         } else if (item.action === 'upsert') {
           result = await withTimeout(supabase.from(item.table).upsert(data))
+        } else if (item.action === 'delete' && item.match) {
+          let query = supabase.from(item.table).delete()
+          for (const [k, v] of Object.entries(item.match)) {
+            query = query.eq(k, v)
+          }
+          result = await withTimeout(query)
         }
 
         if (result?.error) {

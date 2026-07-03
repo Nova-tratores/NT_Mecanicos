@@ -22,9 +22,32 @@ interface DiaVisita {
 
 const cardStyle: React.CSSProperties = {
   background: '#fff',
-  borderRadius: 14,
-  padding: 16,
-  boxShadow: '0 1px 4px rgba(0,0,0,0.06)',
+  borderRadius: 18,
+  padding: 18,
+  boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+  border: '1px solid #F3F4F6',
+}
+
+/* Cabeçalho de seção com tile de ícone sólido (estilo remap) */
+function SecHeader({
+  icon: Icon, color, label,
+}: {
+  icon: React.ComponentType<{ size?: number; color?: string; strokeWidth?: number }>
+  color: string
+  label: string
+}) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+      <div style={{
+        width: 36, height: 36, borderRadius: 11, background: color, flexShrink: 0,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: '0 3px 8px rgba(0,0,0,0.12)',
+      }}>
+        <Icon size={18} color="#fff" strokeWidth={2.2} />
+      </div>
+      <span style={{ fontSize: 14, fontWeight: 600, color: '#374151' }}>{label}</span>
+    </div>
+  )
 }
 
 const labelStyle: React.CSSProperties = {
@@ -358,9 +381,10 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       </Link>
 
       {/* Header OS */}
-      <div style={{
-        background: 'linear-gradient(135deg, #C41E2A, #9B1520)', borderRadius: 18,
+      <div className="hb-in" style={{
+        background: 'linear-gradient(135deg, #C41E2A, #9B1520)', borderRadius: 20,
         padding: 20, color: '#fff', marginBottom: 20,
+        boxShadow: '0 8px 20px rgba(196,30,42,0.25)',
       }}>
         <div style={{ fontSize: 12, opacity: 0.7 }}>Ordem de Serviço</div>
         <div style={{ fontSize: 24, fontWeight: 700, marginTop: 4 }}>{os.Id_Ordem}</div>
@@ -376,11 +400,8 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 24 }}>
 
         {/* Client info card */}
-        <div style={cardStyle}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <User size={16} color="#C41E2A" />
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#6B7280' }}>Cliente</span>
-          </div>
+        <div className="hb-in" style={{ ...cardStyle, animationDelay: '60ms' }}>
+          <SecHeader icon={User} color="#C41E2A" label="Cliente" />
           <div style={{ fontSize: 15, fontWeight: 600, color: '#1F2937' }}>{os.Os_Cliente}</div>
           {os.Cnpj_Cliente && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6, fontSize: 13, color: '#6B7280' }}>
@@ -400,11 +421,8 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
         </div>
 
         {/* Service info card */}
-        <div style={cardStyle}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-            <Briefcase size={16} color="#1E3A5F" />
-            <span style={{ fontSize: 13, fontWeight: 700, color: '#6B7280' }}>Serviço</span>
-          </div>
+        <div className="hb-in" style={{ ...cardStyle, animationDelay: '120ms' }}>
+          <SecHeader icon={Briefcase} color="#1E3A5F" label="Serviço" />
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12 }}>
             <div>
@@ -429,7 +447,7 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
 
         {/* Numbers row */}
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <div style={cardStyle}>
+          <div className="hb-in" style={{ ...cardStyle, animationDelay: '180ms' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
               <Clock size={14} color="#1E3A5F" />
               <span style={labelStyle}>Horas</span>
@@ -439,7 +457,7 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
               {typeof os.Qtd_HR === 'number' && <span style={{ fontSize: 13, fontWeight: 500, color: '#6B7280' }}> h</span>}
             </div>
           </div>
-          <div style={cardStyle}>
+          <div className="hb-in" style={{ ...cardStyle, animationDelay: '220ms' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
               <Navigation size={14} color="#1E3A5F" />
               <span style={labelStyle}>Deslocamento</span>
@@ -453,9 +471,10 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
 
         {/* PPV card */}
         {os.ID_PPV && (
-          <div style={{
+          <div className="hb-in" style={{
             ...cardStyle,
             borderLeft: '4px solid #1E3A5F',
+            animationDelay: '260ms',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <FileText size={16} color="#1E3A5F" />
@@ -470,15 +489,23 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
 
       {/* ========== REGISTRO DE HORÁRIOS (NOVO) ========== */}
       {!jaEnviada && (
-        <div style={{
-          background: '#fff', borderRadius: 16, padding: 18,
-          boxShadow: '0 2px 8px rgba(0,0,0,0.06)', marginBottom: 20,
-          border: horariosRegistrados ? '2px solid #10B981' : '2px solid #3B82F6',
+        <div className="hb-in" style={{
+          background: '#fff', borderRadius: 20, padding: 18,
+          boxShadow: '0 1px 3px rgba(0,0,0,0.05)', marginBottom: 20,
+          border: horariosRegistrados ? '1.5px solid #A7F3D0' : '1.5px solid #BFDBFE',
+          animationDelay: '300ms',
         }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Clock size={18} color={horariosRegistrados ? '#059669' : '#2563EB'} />
-              <span style={{ fontSize: 16, fontWeight: 700, color: horariosRegistrados ? '#059669' : '#1E3A5F' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: 11, flexShrink: 0,
+                background: horariosRegistrados ? '#059669' : '#2563EB',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                boxShadow: '0 3px 8px rgba(0,0,0,0.12)',
+              }}>
+                <Clock size={18} color="#fff" strokeWidth={2.2} />
+              </div>
+              <span style={{ fontSize: 16, fontWeight: 600, color: horariosRegistrados ? '#059669' : '#1E3A5F' }}>
                 Registrar Horários
               </span>
             </div>
@@ -616,10 +643,10 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
           )}
 
           {/* Botão salvar */}
-          <button type="button" onClick={salvarHorarios} disabled={salvando} style={{
-            width: '100%', padding: '14px 0', borderRadius: 12,
+          <button type="button" onClick={salvarHorarios} disabled={salvando} className="hb" style={{
+            width: '100%', padding: '14px 0', borderRadius: 14,
             background: salvando ? '#9CA3AF' : '#1E3A5F', color: '#fff',
-            border: 'none', fontSize: 15, fontWeight: 700, cursor: salvando ? 'default' : 'pointer',
+            border: 'none', fontSize: 15, fontWeight: 600, cursor: salvando ? 'default' : 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
           }}>
             <Save size={18} />
@@ -631,9 +658,9 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       {/* Fill/edit button */}
       {jaEnviada ? (
         dentroPrazo48h ? (
-          <Link href={`/os/${os.Id_Ordem}/preencher`} style={{
+          <Link href={`/os/${os.Id_Ordem}/preencher`} className="hb" style={{
             display: 'flex', alignItems: 'center', gap: 14,
-            background: '#D97706', color: '#fff', borderRadius: 16, padding: '22px 20px',
+            background: '#D97706', color: '#fff', borderRadius: 18, padding: '22px 20px',
             textDecoration: 'none',
             boxShadow: '0 6px 20px rgba(217,119,6,0.3)',
           }}>
@@ -676,12 +703,12 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
           </div>
         </div>
       ) : (
-        <Link href={`/os/${os.Id_Ordem}/preencher`} style={{
+        <Link href={`/os/${os.Id_Ordem}/preencher`} className="hb" style={{
           display: 'flex', alignItems: 'center', gap: 14,
           background: jaPreenchida ? '#1E3A5F' : 'linear-gradient(135deg, #C41E2A, #9B1520)',
-          color: '#fff', borderRadius: 16, padding: '22px 20px',
+          color: '#fff', borderRadius: 18, padding: '22px 20px',
           textDecoration: 'none',
-          boxShadow: '0 6px 20px rgba(196,30,42,0.3)',
+          boxShadow: jaPreenchida ? '0 6px 20px rgba(30,58,95,0.3)' : '0 6px 20px rgba(196,30,42,0.3)',
         }}>
           <div style={{
             width: 52, height: 52, borderRadius: 14,

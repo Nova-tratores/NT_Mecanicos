@@ -1122,14 +1122,20 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     boxSizing: 'border-box',
   }
   const labelStyle: React.CSSProperties = {
-    fontSize: 14, fontWeight: 700, color: '#1F2937', display: 'block', marginBottom: 6,
+    fontSize: 14, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 6,
   }
   const sectionStyle: React.CSSProperties = {
-    background: '#fff', borderRadius: 16, padding: 18,
-    boxShadow: '0 2px 8px rgba(0,0,0,0.06)', marginBottom: 16,
+    background: '#fff', borderRadius: 20, padding: 18,
+    boxShadow: '0 1px 3px rgba(0,0,0,0.05)', marginBottom: 14,
+    border: '1px solid #F3F4F6',
+    animation: 'hbIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) backwards',
   }
+  // Cabeçalho de seção com barra de acento colorida (estilo remap)
   const sectionTitle = (text: string, color = '#C41E2A') => (
-    <div style={{ fontSize: 16, fontWeight: 700, color, marginBottom: 14 }}>{text}</div>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+      <div style={{ width: 4, height: 18, borderRadius: 2, background: color, flexShrink: 0 }} />
+      <span style={{ fontSize: 16, fontWeight: 600, color: '#374151' }}>{text}</span>
+    </div>
   )
 
   const updateDia = (index: number, field: keyof DiaForm, value: string) => {
@@ -1161,7 +1167,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         <ArrowLeft size={20} /> Voltar
       </Link>
 
-      <h1 style={{ fontSize: 20, fontWeight: 700, color: '#C41E2A', marginBottom: 4 }}>
+      <h1 style={{ fontSize: 22, fontWeight: 700, color: '#1F2937', marginBottom: 4 }}>
         OS Técnica — {id}
       </h1>
       {os && (
@@ -1834,11 +1840,12 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
               type="button"
               disabled={saving || bloqueado}
               onClick={enviar}
+              className={bloqueado ? undefined : 'hb'}
               style={{
-                width: '100%', padding: '18px 0', borderRadius: 14,
+                width: '100%', padding: '18px 0', borderRadius: 16,
                 background: bloqueado ? '#9CA3AF' : '#C41E2A',
                 color: '#fff',
-                fontSize: 17, fontWeight: 700, border: 'none',
+                fontSize: 17, fontWeight: 600, border: 'none',
                 cursor: (saving || bloqueado) ? 'not-allowed' : 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
                 boxShadow: bloqueado ? 'none' : '0 6px 20px rgba(196,30,42,0.3)',

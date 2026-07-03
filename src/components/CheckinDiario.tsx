@@ -1,8 +1,9 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
-import { Car, MapPin, Navigation, Loader2, Clock, Route, Wrench } from 'lucide-react'
+import { Car, MapPin, Navigation, Loader2, Clock, Route, Wrench, LogOut } from 'lucide-react'
 import { colors } from '@/lib/ui'
+import { offlineWrite } from '@/lib/offlineWrite'
 
 const OFICINA_LAT = parseFloat(process.env.NEXT_PUBLIC_OFICINA_LAT || '-23.6533')
 const OFICINA_LNG = parseFloat(process.env.NEXT_PUBLIC_OFICINA_LNG || '-49.3836')
@@ -26,9 +27,10 @@ interface Props {
   tecnicoNome: string
   nomeBusca: string
   onComplete: () => void
+  onLogout?: () => void
 }
 
-export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Props) {
+export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLogout }: Props) {
   const [veiculos, setVeiculos] = useState<{ IdPlaca: number; NumPlaca: string }[]>([])
   const [ordens, setOrdens] = useState<OrdemOption[]>([])
   const [placa, setPlaca] = useState('')
@@ -215,27 +217,43 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
     })
   }, [rota, ordemId, ordens])
 
+  // Veiculo "OFICINA" = fica na oficina (sem deslocamento). Nesse caso o destino
+  // tambem e a oficina, entao sincronizamos o ordemId automaticamente.
+  const ficaNaOficina = placa === 'OFICINA'
+  useEffect(() => {
+    if (ficaNaOficina) {
+      setOrdemId('OFICINA')
+    } else if (ordemId === 'OFICINA') {
+      setOrdemId('')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ficaNaOficina])
+
   const confirmar = async () => {
     setSaving(true)
-    const isOficina = ordemId === 'OFICINA'
+    const isOficina = ordemId === 'OFICINA' || ficaNaOficina
     const ordem = isOficina ? null : ordens.find((o) => o.Id_Ordem === ordemId)
     const hoje = new Date().toISOString().split('T')[0]
 
-    await supabase.from('checkin_diario').insert({
-      tecnico_nome: tecnicoNome,
-      data: hoje,
-      placa,
-      id_ordem: isOficina ? 'OFICINA' : ordemId,
-      cliente: isOficina ? 'Oficina' : (ordem?.Os_Cliente || ''),
-      destino: isOficina ? 'Oficina - Servico interno' : (ordem?.Endereco_Cliente || ''),
-      lat_destino: isOficina ? OFICINA_LAT : (ordem?.lat || null),
-      lng_destino: isOficina ? OFICINA_LNG : (ordem?.lng || null),
-      distancia_km: isOficina ? 0 : (rota?.distancia_km || null),
-      tempo_estimado_min: isOficina ? 0 : (rota?.tempo_min || null),
+    await offlineWrite({
+      table: 'checkin_diario',
+      action: 'insert',
+      data: {
+        tecnico_nome: tecnicoNome,
+        data: hoje,
+        placa: ficaNaOficina ? '' : placa,
+        id_ordem: isOficina ? 'OFICINA' : ordemId,
+        cliente: isOficina ? 'Oficina' : (ordem?.Os_Cliente || ''),
+        destino: isOficina ? 'Oficina - Servico interno' : (ordem?.Endereco_Cliente || ''),
+        lat_destino: isOficina ? OFICINA_LAT : (ordem?.lat || null),
+        lng_destino: isOficina ? OFICINA_LNG : (ordem?.lng || null),
+        distancia_km: isOficina ? 0 : (rota?.distancia_km || null),
+        tempo_estimado_min: isOficina ? 0 : (rota?.tempo_min || null),
+      },
     })
 
-    // Sincronizar veiculo com Rota Exata (em background, nao bloqueia)
-    if (placa) {
+    // Sincronizar veiculo com Rota Exata (so quando ha placa real e online)
+    if (placa && !ficaNaOficina && navigator.onLine) {
       fetch('/api/sync-veiculo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -248,7 +266,7 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
   }
 
   const ordemSelecionada = ordens.find((o) => o.Id_Ordem === ordemId)
-  const podeSalvar = placa && ordemId
+  const podeSalvar = ficaNaOficina ? true : (placa && ordemId)
 
   if (loading) {
     return (
@@ -269,12 +287,25 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
     }}>
       {/* Header */}
       <div style={{
-        background: '#C41E2A', color: '#fff', padding: '20px 16px',
-        textAlign: 'center', flexShrink: 0,
+        background: 'linear-gradient(135deg, #C41E2A, #9B1520)', color: '#fff', padding: '20px 16px',
+        textAlign: 'center', flexShrink: 0, position: 'relative',
       }}>
+        {onLogout && (
+          <button
+            onClick={onLogout}
+            style={{
+              position: 'absolute', top: 14, right: 12,
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+              background: 'rgba(255,255,255,0.16)', color: '#fff', border: 'none',
+              borderRadius: 999, padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
+            }}
+          >
+            <LogOut size={14} /> Sair
+          </button>
+        )}
         <Route size={28} style={{ marginBottom: 6 }} />
-        <div style={{ fontSize: 20, fontWeight: 800 }}>Iniciar Jornada</div>
-        <div style={{ fontSize: 12, opacity: 0.8, marginTop: 2 }}>
+        <div style={{ fontSize: 20, fontWeight: 700 }}>Iniciar Jornada</div>
+        <div style={{ fontSize: 12, opacity: 0.85, marginTop: 2 }}>
           {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
         </div>
       </div>
@@ -298,13 +329,15 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
             }}
           >
             <option value="">Selecione o veiculo...</option>
+            <option value="OFICINA">Oficina — vou ficar na oficina</option>
             {veiculos.map((v) => (
               <option key={v.IdPlaca} value={v.NumPlaca}>{v.NumPlaca}</option>
             ))}
           </select>
         </div>
 
-        {/* Ordem de Servico */}
+        {/* Ordem de Servico — oculto quando fica na oficina */}
+        {!ficaNaOficina && (
         <div>
           <label style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
             <MapPin size={14} /> DESTINO (ORDEM DE SERVICO)
@@ -338,6 +371,7 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete }: Pr
             })}
           </select>
         </div>
+        )}
 
         {/* Info do destino */}
         {ordemId === 'OFICINA' && (

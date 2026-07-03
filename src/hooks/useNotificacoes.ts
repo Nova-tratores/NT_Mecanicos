@@ -21,7 +21,10 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
     const filtrar = (lista: MecanicoNotificacao[]) => {
       const corte = limpaAtRef.current
       if (!corte) return lista
-      return lista.filter(n => n.created_at > corte)
+      // Comparar por timestamp real (parse), nunca por string — os formatos do
+      // Postgres (com espaço/offset) vs ISO local quebram a comparacao textual.
+      const corteMs = new Date(corte).getTime()
+      return lista.filter(n => new Date(n.created_at).getTime() > corteMs)
     }
 
     const carregar = async () => {
@@ -71,14 +74,28 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
     setNaoLidas(0)
   }, [tecnicoNome])
 
+  // Remove uma notificacao de vez (some do banco, nao volta ao recarregar)
+  const remover = useCallback(async (id: number) => {
+    setNotificacoes((prev) => {
+      const alvo = prev.find(n => n.id === id)
+      if (alvo && !alvo.lida) setNaoLidas((c) => Math.max(0, c - 1))
+      return prev.filter((n) => n.id !== id)
+    })
+    await supabase.from('mecanico_notificacoes').delete().eq('id', id)
+  }, [])
+
   const limparTodas = useCallback(async () => {
     if (!tecnicoNome) return
+    // Cutoff local (fallback imediato, caso o delete no banco falhe)
     const agora = new Date().toISOString()
     limpaAtRef.current = agora
     try { localStorage.setItem(LIMPAR_KEY, agora) } catch {}
     setNotificacoes([])
     setNaoLidas(0)
+    // Apaga de vez do banco — sao notificacoes pessoais do tecnico, entao
+    // limpar = remover para nao voltarem no proximo carregamento.
+    await supabase.from('mecanico_notificacoes').delete().eq('tecnico_nome', tecnicoNome)
   }, [tecnicoNome])
 
-  return { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, limparTodas }
+  return { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, remover, limparTodas }
 }

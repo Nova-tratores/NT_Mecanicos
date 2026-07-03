@@ -68,9 +68,9 @@ export async function offlineSet<T>(key: string, data: T): Promise<void> {
 export interface SyncItem {
   id?: number
   table: string
-  action: 'insert' | 'update' | 'upsert'
+  action: 'insert' | 'update' | 'upsert' | 'delete'
   data: Record<string, unknown>
-  match?: Record<string, unknown> // para updates: { id: 123 }
+  match?: Record<string, unknown> // para updates/deletes: { id: 123 }
   createdAt: number
   retries?: number
 }

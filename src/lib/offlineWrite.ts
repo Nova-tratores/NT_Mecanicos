@@ -11,7 +11,7 @@ const WRITE_TIMEOUT = 8000
 
 interface WriteOptions {
   table: string
-  action: 'insert' | 'update' | 'upsert'
+  action: 'insert' | 'update' | 'upsert' | 'delete'
   data: Record<string, unknown>
   match?: Record<string, unknown>
 }
@@ -61,6 +61,12 @@ export async function offlineWrite(opts: WriteOptions): Promise<{ ok: boolean; q
       result = await withTimeout(query)
     } else if (opts.action === 'upsert') {
       result = await withTimeout(supabase.from(opts.table).upsert(opts.data))
+    } else if (opts.action === 'delete' && opts.match) {
+      let query = supabase.from(opts.table).delete()
+      for (const [k, v] of Object.entries(opts.match)) {
+        query = query.eq(k, v as string | number)
+      }
+      result = await withTimeout(query)
     }
 
     if (result?.error) {

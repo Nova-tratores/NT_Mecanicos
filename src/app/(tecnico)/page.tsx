@@ -1,13 +1,14 @@
 'use client'
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
 import { supabase } from '@/lib/supabase'
 import type { OrdemServico } from '@/lib/types'
 import {
-  Wrench, ClipboardList, User, Megaphone, Camera,
+  FileText, ChevronRight, User, Megaphone,
   Navigation, Clock, MapPin, ShieldCheck,
-  ChevronDown, AlertTriangle, BarChart3, AlertCircle, Headset,
+  BarChart3, AlertCircle, Headset,
+  Camera, Image as ImageIcon, Smile, X, ChevronRight as ArrowRight,
 } from 'lucide-react'
 import Link from 'next/link'
 import { PageSpinner } from '@/components/ui'
@@ -176,8 +177,11 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
   }
 }
 
+// personagens animados que o tecnico pode escolher no lugar da foto
+const PERSONAGENS = ['🧑‍🔧', '👷', '🧔', '👨‍🔧', '🐻', '🦊', '🐼', '🦁', '🐶', '🦉', '🤖', '🐯']
+
 export default function TecnicoHome() {
-  const { user } = useCurrentUser()
+  const { user, refresh } = useCurrentUser()
   const nome = user?.nome_pos || user?.tecnico_nome || ''
 
   const { data, loading, refreshing } = useCached<DashboardData>(
@@ -186,13 +190,55 @@ export default function TecnicoHome() {
     { skip: !user },
   )
 
-  const [openCards, setOpenCards] = useState<Set<string>>(new Set())
   const [showHistorico, setShowHistorico] = useState(false)
-  const toggleCard = (key: string) => setOpenCards(prev => {
-    const next = new Set(prev)
-    next.has(key) ? next.delete(key) : next.add(key)
-    return next
-  })
+  const [avisosModal, setAvisosModal] = useState(false)
+
+  // --- Perfil: foto (camera/galeria) e personagem ---
+  const camRef = useRef<HTMLInputElement>(null)
+  const galRef = useRef<HTMLInputElement>(null)
+  const [uploading, setUploading] = useState(false)
+  const [perfilModal, setPerfilModal] = useState(false)
+  const [escolherPersonagem, setEscolherPersonagem] = useState(false)
+  const [personagem, setPersonagem] = useState<string>('')
+
+  useEffect(() => {
+    if (!user) return
+    const salvo = localStorage.getItem(`mec_personagem_${user.id}`)
+    setPersonagem(salvo || '🧑‍🔧')
+  }, [user])
+
+  const salvarPersonagem = (p: string) => {
+    if (!user) return
+    localStorage.setItem(`mec_personagem_${user.id}`, p)
+    setPersonagem(p)
+    setEscolherPersonagem(false)
+    setPerfilModal(false)
+  }
+
+  const handleFoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !user) return
+    setUploading(true)
+    try {
+      const ext = file.name.split('.').pop() || 'jpg'
+      const path = `avatars/${user.id}.${ext}`
+      const { error: upErr } = await supabase.storage
+        .from('mecanico-files')
+        .upload(path, file, { upsert: true })
+      if (upErr) throw upErr
+      const { data: urlData } = supabase.storage.from('mecanico-files').getPublicUrl(path)
+      const avatarUrl = urlData.publicUrl + '?t=' + Date.now()
+      await supabase.from('mecanico_usuarios').update({ avatar_url: avatarUrl }).eq('id', user.id)
+      if (refresh) refresh()
+      setPerfilModal(false)
+    } catch (err) {
+      console.error('Erro ao enviar foto:', err)
+      alert('Erro ao enviar foto. Tente novamente.')
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
 
 
   if (loading) return <PageSpinner />
@@ -212,6 +258,32 @@ export default function TecnicoHome() {
   }
 
   const dataLabel = new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'short' })
+
+  // estilos compartilhados dos blocos de acao (linha horizontal, largura total)
+  const blocoStyle = {
+    display: 'flex', alignItems: 'center', gap: 14, textDecoration: 'none',
+    background: colors.surface, borderRadius: 20, padding: 18,
+    border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
+  } as const
+  const blocoIcone = {
+    width: 52, height: 52, borderRadius: 16, flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+    boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
+  } as const
+  const blocoTitulo = { fontSize: 16, fontWeight: 600, color: colors.text } as const
+  const blocoSub = { fontSize: 12, color: colors.textMuted, marginTop: 2 } as const
+
+  // estilos das opcoes do modal de perfil
+  const opcaoStyle = {
+    display: 'flex', alignItems: 'center', gap: 12, width: '100%',
+    padding: 12, borderRadius: 14, border: `1px solid ${colors.border}`,
+    background: colors.surface, cursor: 'pointer', textAlign: 'left' as const,
+  } as const
+  const opcaoIcone = {
+    width: 40, height: 40, borderRadius: 12, flexShrink: 0,
+    display: 'flex', alignItems: 'center', justifyContent: 'center',
+  } as const
+  const opcaoTexto = { flex: 1, minWidth: 0, fontSize: 14, fontWeight: 500, color: colors.text } as const
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -235,409 +307,99 @@ export default function TecnicoHome() {
         </span>
       </div>
 
-      {/* ═══ CARD: ORDENS DE SERVICO ═══ */}
-      <div style={{
-        background: colors.surface, borderRadius: 20,
-        border: `1px solid ${colors.border}`, boxShadow: shadow.sm, overflow: 'hidden',
+      {/* ═══ CARD: ORDENS DE SERVICO (link direto) ═══ */}
+      <Link href="/os" className="hb" style={{
+        display: 'flex', alignItems: 'center', gap: 14, textDecoration: 'none',
+        background: colors.surface, borderRadius: 20, padding: 20,
+        border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
+        animationDelay: '0ms',
       }}>
-        <button onClick={() => toggleCard('os')} style={{
-          width: '100%', padding: '20px 20px', background: 'none', border: 'none', cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        <div style={{
+          width: 52, height: 52, borderRadius: 16, background: colors.primary,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <div style={{
-              width: 52, height: 52, borderRadius: 16,
-              background: colors.primaryBg,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            }}>
-              <Wrench size={26} color={colors.primary} />
-            </div>
-            <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: 17, fontWeight: 700, color: colors.text }}>Ordens de Servico</div>
-              <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
-                {osPendentes + osAtrasadas} pendente{osPendentes + osAtrasadas !== 1 ? 's' : ''} · {osAbertas} aberta{osAbertas !== 1 ? 's' : ''} · {osEnviadas} enviada{osEnviadas !== 1 ? 's' : ''}
-              </div>
-            </div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {osAtrasadas > 0 && (
-              <span style={{
-                fontSize: 10, fontWeight: 700, padding: '4px 8px', borderRadius: 8,
-                background: colors.dangerBg, color: colors.danger, border: `1px solid ${colors.dangerBorder}`,
-                display: 'flex', alignItems: 'center', gap: 4,
-              }}>
-                <AlertTriangle size={11} /> {osAtrasadas}
-              </span>
-            )}
-            <ChevronDown size={20} color={colors.textSubtle} style={{
-              transition: 'transform 0.2s', transform: openCards.has('os') ? 'rotate(180deg)' : 'rotate(0deg)',
-            }} />
-          </div>
-        </button>
+          <FileText size={26} color="#fff" strokeWidth={2.2} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 17, fontWeight: 600, color: colors.text }}>Ordens de Servico</div>
+          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>Abertas e enviadas</div>
+        </div>
+        <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
+      </Link>
 
-        {openCards.has('os') && (
-          <div style={{ padding: '0 20px 20px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 14 }}>
-              <div style={{
-                background: osAtrasadas > 0 ? colors.dangerBg : colors.warningBg,
-                borderRadius: 14, padding: '14px 10px', textAlign: 'center',
-                border: `1px solid ${osAtrasadas > 0 ? colors.dangerBorder : colors.warningBorder}`,
-              }}>
-                <div style={{ fontSize: 26, fontWeight: 800, color: osAtrasadas > 0 ? colors.danger : colors.warning }}>
-                  {osPendentes + osAtrasadas}
-                </div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: osAtrasadas > 0 ? colors.danger : colors.warning }}>
-                  Pendentes
-                </div>
-                {osAtrasadas > 0 && (
-                  <div style={{
-                    fontSize: 9, fontWeight: 700, color: colors.danger,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 2, marginTop: 4,
-                  }}>
-                    <AlertTriangle size={9} /> {osAtrasadas} atrasada{osAtrasadas > 1 ? 's' : ''}
-                  </div>
-                )}
-              </div>
-              <div style={{
-                background: colors.infoBg, borderRadius: 14, padding: '14px 10px', textAlign: 'center',
-                border: `1px solid ${colors.infoBorder}`,
-              }}>
-                <div style={{ fontSize: 26, fontWeight: 800, color: colors.info }}>{osAbertas}</div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: colors.info }}>Abertas</div>
-              </div>
-              <div style={{
-                background: colors.successBg, borderRadius: 14, padding: '14px 10px', textAlign: 'center',
-                border: `1px solid ${colors.successBorder}`,
-              }}>
-                <div style={{ fontSize: 26, fontWeight: 800, color: colors.success }}>{osEnviadas}</div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: colors.success }}>Enviadas</div>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', gap: 10 }}>
-              <Link href="/os" style={{
-                flex: 1, textDecoration: 'none', background: colors.primary, color: '#fff',
-                borderRadius: 12, padding: '13px 14px', textAlign: 'center',
-                fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              }}>
-                <Wrench size={16} /> Ver Ordens
-              </Link>
-              <Link href="/fotos" style={{
-                flex: 1, textDecoration: 'none', background: colors.surfaceAlt,
-                borderRadius: 12, padding: '13px 14px', textAlign: 'center',
-                fontSize: 14, fontWeight: 700, color: colors.text,
-                border: `1px solid ${colors.border}`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              }}>
-                <Camera size={16} color={colors.accent} /> Fotos
-                {fotosCount > 0 && (
-                  <span style={{
-                    fontSize: 11, fontWeight: 700, color: colors.accent,
-                    background: colors.accentBg, padding: '2px 8px', borderRadius: 8,
-                  }}>
-                    {fotosCount}
-                  </span>
-                )}
-              </Link>
-            </div>
+      {/* ═══ CARD: AVISOS (abre modal) ═══ */}
+      <button
+        onClick={() => { setShowHistorico(false); setAvisosModal(true) }}
+        className="hb"
+        style={{ ...blocoStyle, animationDelay: '60ms', width: '100%', padding: 20, cursor: 'pointer' }}
+      >
+        <div style={{
+          width: 52, height: 52, borderRadius: 16, background: colors.warning,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
+        }}>
+          <Megaphone size={26} color="#fff" strokeWidth={2.2} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
+          <div style={{ fontSize: 17, fontWeight: 600, color: colors.text }}>Avisos</div>
+          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+            {avisos.length > 0 ? `${avisos.length} aviso${avisos.length > 1 ? 's' : ''} ativo${avisos.length > 1 ? 's' : ''}` : 'Nenhum aviso'}
           </div>
+        </div>
+        {avisos.some(a => a.prioridade === 'urgente') && (
+          <span style={{
+            fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
+            background: colors.danger, color: '#fff', flexShrink: 0,
+          }}>URGENTE</span>
         )}
-      </div>
+        <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
+      </button>
 
-      {/* ═══ CARD: REQUISICOES ═══ */}
-      <div style={{
-        background: colors.surface, borderRadius: 20,
-        border: `1px solid ${colors.border}`, boxShadow: shadow.sm, overflow: 'hidden',
-      }}>
-        <button onClick={() => toggleCard('req')} style={{
-          width: '100%', padding: '20px 20px', background: 'none', border: 'none', cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <div style={{
-              width: 52, height: 52, borderRadius: 16,
-              background: colors.accentBg,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-              position: 'relative',
-            }}>
-              <ClipboardList size={26} color={colors.accent} />
-              {reqPendentes > 0 && (
-                <span style={{
-                  position: 'absolute', top: -4, right: -4,
-                  background: colors.danger, color: '#fff', fontSize: 10,
-                  fontWeight: 700, borderRadius: 10, minWidth: 20, height: 20,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
-                }}>
-                  {reqPendentes}
-                </span>
-              )}
-            </div>
-            <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: 17, fontWeight: 700, color: colors.text }}>Requisicoes</div>
-              <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
-                {reqEnviadas > 0 ? `${reqEnviadas} em aberto` : 'Solicitar pecas'}
-              </div>
-            </div>
+      {/* ═══ BLOCOS DE ACAO ═══ */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {/* Jornada */}
+        <Link href="/jornada" className="hb" style={{ ...blocoStyle, animationDelay: '120ms' }}>
+          <div style={{ ...blocoIcone, background: colors.info }}>
+            <Navigation size={25} color="#fff" strokeWidth={2.2} />
           </div>
-          <ChevronDown size={20} color={colors.textSubtle} style={{
-            transition: 'transform 0.2s', transform: openCards.has('req') ? 'rotate(180deg)' : 'rotate(0deg)',
-          }} />
-        </button>
-
-        {openCards.has('req') && (
-          <div style={{ padding: '0 20px 20px' }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 14 }}>
-              <div style={{
-                background: reqPendentes > 0 ? colors.warningBg : colors.surfaceAlt,
-                borderRadius: 14, padding: '14px 10px', textAlign: 'center',
-                border: `1px solid ${reqPendentes > 0 ? colors.warningBorder : colors.border}`,
-              }}>
-                <div style={{ fontSize: 26, fontWeight: 800, color: reqPendentes > 0 ? colors.warning : colors.textSubtle }}>
-                  {reqPendentes}
-                </div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: reqPendentes > 0 ? colors.warning : colors.textSubtle }}>
-                  Aguardando recibo
-                </div>
-              </div>
-              <div style={{
-                background: colors.infoBg, borderRadius: 14, padding: '14px 10px', textAlign: 'center',
-                border: `1px solid ${colors.infoBorder}`,
-              }}>
-                <div style={{ fontSize: 26, fontWeight: 800, color: colors.info }}>{reqEnviadas}</div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: colors.info }}>Em aberto</div>
-              </div>
-            </div>
-
-            <Link href="/requisicoes" style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-              textDecoration: 'none', background: colors.accent, color: '#fff',
-              borderRadius: 12, padding: '13px 14px',
-              fontSize: 14, fontWeight: 700,
-            }}>
-              <ClipboardList size={16} /> Ver Requisicoes
-            </Link>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={blocoTitulo}>Jornada</div>
+            <div style={blocoSub}>Deslocamentos</div>
           </div>
-        )}
-      </div>
-
-      {/* ═══ CARD: AVISOS ═══ */}
-      <div style={{
-        background: colors.surface, borderRadius: 20,
-        border: `1px solid ${colors.border}`, boxShadow: shadow.sm, overflow: 'hidden',
-      }}>
-        <button onClick={() => toggleCard('avisos')} style={{
-          width: '100%', padding: '20px 20px', background: 'none', border: 'none', cursor: 'pointer',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <div style={{
-              width: 52, height: 52, borderRadius: 16,
-              background: colors.warningBg,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-            }}>
-              <Megaphone size={26} color={colors.warning} />
-            </div>
-            <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: 17, fontWeight: 700, color: colors.text }}>Avisos</div>
-              <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
-                {avisos.length > 0 ? `${avisos.length} aviso${avisos.length > 1 ? 's' : ''} ativo${avisos.length > 1 ? 's' : ''}` : 'Nenhum aviso'}
-              </div>
-            </div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            {avisos.some(a => a.prioridade === 'urgente') && (
-              <span style={{
-                fontSize: 9, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-                background: colors.danger, color: '#fff',
-              }}>URGENTE</span>
-            )}
-            <ChevronDown size={20} color={colors.textSubtle} style={{
-              transition: 'transform 0.2s', transform: openCards.has('avisos') ? 'rotate(180deg)' : 'rotate(0deg)',
-            }} />
-          </div>
-        </button>
-
-        {openCards.has('avisos') && (
-          <div style={{ padding: '0 20px 20px' }}>
-            {avisos.length > 0 ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {avisos.map((av) => (
-                  <div key={av.id} style={{
-                    background: av.prioridade === 'urgente' ? colors.dangerBg : colors.surfaceAlt,
-                    borderRadius: 14, padding: '14px 16px',
-                    border: `1px solid ${av.prioridade === 'urgente' ? colors.dangerBorder : colors.border}`,
-                  }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                      <span style={{
-                        fontSize: 14, fontWeight: 700,
-                        color: av.prioridade === 'urgente' ? colors.danger : colors.text,
-                      }}>
-                        {av.titulo}
-                      </span>
-                      {av.prioridade === 'urgente' && (
-                        <span style={{
-                          fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5,
-                          background: colors.danger, color: '#fff',
-                        }}>URGENTE</span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-                      {av.mensagem.length > 120 ? av.mensagem.slice(0, 120) + '...' : av.mensagem}
-                    </div>
-                    <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 6 }}>
-                      {new Date(av.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div style={{
-                background: colors.surfaceAlt, borderRadius: 14, padding: '24px',
-                textAlign: 'center', color: colors.textSubtle, fontSize: 13,
-              }}>
-                Tudo tranquilo por aqui
-              </div>
-            )}
-
-            {avisosHistorico.length > 0 && (
-              <>
-                <button onClick={() => setShowHistorico(!showHistorico)} style={{
-                  width: '100%', marginTop: 12, padding: '10px 14px', borderRadius: 10,
-                  background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
-                  fontSize: 12, fontWeight: 600, color: colors.textSubtle, cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                }}>
-                  <Clock size={13} />
-                  {showHistorico ? 'Ocultar historico' : `Ver historico (${avisosHistorico.length})`}
-                </button>
-                {showHistorico && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-                    {avisosHistorico.map((av) => (
-                      <div key={av.id} style={{
-                        background: colors.surfaceAlt, borderRadius: 14, padding: '12px 16px',
-                        border: `1px solid ${colors.border}`, opacity: 0.7,
-                      }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                          <span style={{ fontSize: 13, fontWeight: 600, color: colors.textMuted }}>{av.titulo}</span>
-                          <span style={{
-                            fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 5,
-                            background: colors.successBg, color: colors.success,
-                          }}>LIDO</span>
-                        </div>
-                        <div style={{ fontSize: 11, color: colors.textSubtle, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
-                          {av.mensagem.length > 100 ? av.mensagem.slice(0, 100) + '...' : av.mensagem}
-                        </div>
-                        <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 4 }}>
-                          {new Date(av.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* ═══ GRID: ACOES RAPIDAS ═══ */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-        <Link href="/os" style={{
-          background: colors.surface, borderRadius: 20, padding: '20px 16px',
-          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
-          display: 'flex', alignItems: 'center', gap: 14,
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
-            background: colors.primaryBg,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Camera size={22} color={colors.primary} />
-          </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Fotos</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>Enviar fotos</div>
-          </div>
+          <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
 
-        <Link href="/perfil" style={{
-          background: colors.surface, borderRadius: 20, padding: '20px 16px',
-          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
-          display: 'flex', alignItems: 'center', gap: 14,
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 14, overflow: 'hidden', flexShrink: 0,
-            background: user?.avatar_url ? 'transparent' : colors.primaryBg,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            {user?.avatar_url ? (
-              <img src={user.avatar_url} alt="Perfil" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            ) : (
-              <User size={22} color={colors.primary} />
-            )}
+        {/* Mapa de Veiculos */}
+        <Link href="/mapa" className="hb" style={{ ...blocoStyle, animationDelay: '165ms' }}>
+          <div style={{ ...blocoIcone, background: colors.accent }}>
+            <MapPin size={25} color="#fff" strokeWidth={2.2} />
           </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Perfil</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>{user?.tecnico_nome?.split(' ')[0] || 'Meus dados'}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={blocoTitulo}>Mapa de Veiculos</div>
+            <div style={blocoSub}>Ver quem esta perto</div>
           </div>
+          <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
 
-        <Link href="/jornada" style={{
-          background: colors.surface, borderRadius: 20, padding: '20px 16px',
-          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
-          display: 'flex', alignItems: 'center', gap: 14,
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
-            background: colors.infoBg,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Navigation size={22} color={colors.info} />
-          </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Jornada</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>Deslocamentos</div>
-          </div>
-        </Link>
-
-        <Link href="/relatorios" style={{
-          background: colors.surface, borderRadius: 20, padding: '20px 16px',
-          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
-          display: 'flex', alignItems: 'center', gap: 14,
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
-            background: colors.successBg,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <BarChart3 size={22} color={colors.success} />
-          </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Relatórios</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>Faturamento e custos</div>
-          </div>
-        </Link>
-
-        <Link href="/garantias" style={{
+        {/* Garantias */}
+        <Link href="/garantias" className="hb" style={{
+          ...blocoStyle,
+          animationDelay: '210ms',
           background: garantiasPendentes > 0 ? colors.warningBg : colors.surface,
-          borderRadius: 20, padding: '20px 16px',
-          textDecoration: 'none',
           border: `1px solid ${garantiasPendentes > 0 ? colors.warningBorder : colors.border}`,
-          boxShadow: shadow.sm,
-          display: 'flex', alignItems: 'center', gap: 14,
         }}>
           <div style={{
-            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
-            background: garantiasPendentes > 0 ? colors.warning : colors.successBg,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            ...blocoIcone,
+            background: garantiasPendentes > 0 ? colors.warning : colors.success,
             position: 'relative',
           }}>
-            <ShieldCheck size={22} color={garantiasPendentes > 0 ? '#fff' : colors.success} />
+            <ShieldCheck size={25} color="#fff" strokeWidth={2.2} />
             {garantiasPendentes > 0 && (
               <span style={{
                 position: 'absolute', top: -4, right: -4,
                 background: colors.danger, color: '#fff', fontSize: 10,
-                fontWeight: 800, borderRadius: 10, minWidth: 20, height: 20,
+                fontWeight: 700, borderRadius: 10, minWidth: 20, height: 20,
                 display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
                 border: '2px solid #fff', boxShadow: shadow.sm,
               }}>
@@ -645,10 +407,10 @@ export default function TecnicoHome() {
               </span>
             )}
           </div>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Garantias</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={blocoTitulo}>Garantias</div>
             <div style={{
-              fontSize: 11, fontWeight: garantiasPendentes > 0 ? 700 : 500,
+              ...blocoSub,
               color: garantiasPendentes > 0 ? colors.warning : colors.textMuted,
             }}>
               {garantiasPendentes > 0
@@ -658,64 +420,289 @@ export default function TecnicoHome() {
                   : 'Status e B.O.'}
             </div>
           </div>
+          <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
 
-        <Link href="/opa" style={{
-          background: colors.surface, borderRadius: 20, padding: '20px 16px',
-          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
-          display: 'flex', alignItems: 'center', gap: 14,
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
-            background: colors.dangerBg,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <AlertCircle size={22} color={colors.danger} />
+        {/* Opa */}
+        <Link href="/opa" className="hb" style={{ ...blocoStyle, animationDelay: '255ms' }}>
+          <div style={{ ...blocoIcone, background: colors.danger }}>
+            <AlertCircle size={25} color="#fff" strokeWidth={2.2} />
           </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Opa</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>Ocorrencias</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={blocoTitulo}>Opa</div>
+            <div style={blocoSub}>Ocorrencias</div>
           </div>
+          <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
 
-        <Link href="/mapa" style={{
-          background: colors.surface, borderRadius: 20, padding: '20px 16px',
-          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
-          display: 'flex', alignItems: 'center', gap: 14,
-          gridColumn: '1 / -1',
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
-            background: colors.dangerBg,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <MapPin size={22} color={colors.danger} />
+        {/* SAT Digital */}
+        <Link href="/sat" className="hb" style={{ ...blocoStyle, animationDelay: '300ms' }}>
+          <div style={{ ...blocoIcone, background: '#D97706' }}>
+            <Headset size={25} color="#fff" strokeWidth={2.2} />
           </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Mapa de Veiculos</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>Ver quem esta perto</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={blocoTitulo}>SAT Digital</div>
+            <div style={blocoSub}>Solicitar atendimento</div>
           </div>
+          <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
 
-        <Link href="/sat" style={{
-          background: colors.surface, borderRadius: 20, padding: '20px 16px',
-          textDecoration: 'none', border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
-          display: 'flex', alignItems: 'center', gap: 14,
-          gridColumn: '1 / -1',
-        }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 14, flexShrink: 0,
-            background: '#FEF3C7',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <Headset size={22} color="#D97706" />
+        {/* Relatorios */}
+        <Link href="/relatorios" className="hb" style={{ ...blocoStyle, animationDelay: '345ms' }}>
+          <div style={{ ...blocoIcone, background: colors.success }}>
+            <BarChart3 size={25} color="#fff" strokeWidth={2.2} />
           </div>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>SAT Digital</div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>Solicitar atendimento</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={blocoTitulo}>Relatorios</div>
+            <div style={blocoSub}>Faturamento e custos</div>
           </div>
+          <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
+
+        {/* Perfil (bloco maior) */}
+        <div
+          onClick={() => { setEscolherPersonagem(false); setPerfilModal(true) }}
+          className="hb"
+          style={{
+            ...blocoStyle, animationDelay: '390ms', cursor: 'pointer', gap: 16,
+            background: 'linear-gradient(135deg, #1E3A5F, #2B5583)',
+            border: '1px solid #1E3A5F', marginTop: 4,
+          }}
+        >
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <div style={{
+              width: 72, height: 72, borderRadius: '50%', overflow: 'hidden',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: user?.avatar_url ? '#fff' : 'rgba(255,255,255,0.16)',
+              border: '2px solid rgba(255,255,255,0.5)',
+            }}>
+              {user?.avatar_url ? (
+                <img src={user.avatar_url} alt="Perfil" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+              ) : (
+                <span className="char-anim" style={{ fontSize: 42, lineHeight: 1 }}>{personagem}</span>
+              )}
+            </div>
+            <div style={{
+              position: 'absolute', bottom: -2, right: -2, width: 26, height: 26, borderRadius: '50%',
+              background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
+            }}>
+              <Camera size={14} color="#1E3A5F" />
+            </div>
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 18, fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {user?.tecnico_nome || 'Meu perfil'}
+            </div>
+            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
+              {user?.role === 'admin' ? 'Administrador' : 'Tecnico de campo'}
+            </div>
+            <div style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 9,
+              fontSize: 11, color: '#fff', background: 'rgba(255,255,255,0.16)',
+              padding: '4px 10px', borderRadius: 999,
+            }}>
+              <Camera size={12} /> Toque para trocar foto ou personagem
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* inputs ocultos de foto */}
+      <input ref={camRef} type="file" accept="image/*" capture="environment" onChange={handleFoto} style={{ display: 'none' }} />
+      <input ref={galRef} type="file" accept="image/*" onChange={handleFoto} style={{ display: 'none' }} />
+
+      {/* ═══ MODAL: AVISOS ═══ */}
+      {avisosModal && (
+        <div
+          onClick={() => setAvisosModal(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'flex-end', justifyContent: 'center', padding: 16,
+          }}
+        >
+          <div
+            className="perfil-modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: colors.surface, borderRadius: 24, width: '100%', maxWidth: 440,
+              maxHeight: '80vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+              boxShadow: '0 -4px 30px rgba(0,0,0,0.2)',
+              marginBottom: 'env(safe-area-inset-bottom, 0px)',
+            }}
+          >
+            <div style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '18px 20px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <Megaphone size={20} color={colors.warning} />
+                <span style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>Avisos</span>
+              </div>
+              <button
+                onClick={() => setAvisosModal(false)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, lineHeight: 0 }}
+              >
+                <X size={20} color={colors.textMuted} />
+              </button>
+            </div>
+
+            <div style={{ padding: 20, overflowY: 'auto' }}>
+              {avisos.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                  {avisos.map((av) => (
+                    <div key={av.id} style={{
+                      background: av.prioridade === 'urgente' ? colors.dangerBg : colors.surfaceAlt,
+                      borderRadius: 14, padding: '14px 16px',
+                      border: `1px solid ${av.prioridade === 'urgente' ? colors.dangerBorder : colors.border}`,
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                        <span style={{
+                          fontSize: 14, fontWeight: 700,
+                          color: av.prioridade === 'urgente' ? colors.danger : colors.text,
+                        }}>
+                          {av.titulo}
+                        </span>
+                        {av.prioridade === 'urgente' && (
+                          <span style={{
+                            fontSize: 9, fontWeight: 700, padding: '2px 6px', borderRadius: 5,
+                            background: colors.danger, color: '#fff',
+                          }}>URGENTE</span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                        {av.mensagem}
+                      </div>
+                      <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 6 }}>
+                        {new Date(av.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{
+                  background: colors.surfaceAlt, borderRadius: 14, padding: '24px',
+                  textAlign: 'center', color: colors.textSubtle, fontSize: 13,
+                }}>
+                  Tudo tranquilo por aqui
+                </div>
+              )}
+
+              {avisosHistorico.length > 0 && (
+                <>
+                  <button onClick={() => setShowHistorico(!showHistorico)} style={{
+                    width: '100%', marginTop: 12, padding: '10px 14px', borderRadius: 10,
+                    background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
+                    fontSize: 12, fontWeight: 600, color: colors.textSubtle, cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                  }}>
+                    <Clock size={13} />
+                    {showHistorico ? 'Ocultar historico' : `Ver historico (${avisosHistorico.length})`}
+                  </button>
+                  {showHistorico && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
+                      {avisosHistorico.map((av) => (
+                        <div key={av.id} style={{
+                          background: colors.surfaceAlt, borderRadius: 14, padding: '12px 16px',
+                          border: `1px solid ${colors.border}`, opacity: 0.7,
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                            <span style={{ fontSize: 13, fontWeight: 600, color: colors.textMuted }}>{av.titulo}</span>
+                            <span style={{
+                              fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 5,
+                              background: colors.successBg, color: colors.success,
+                            }}>LIDO</span>
+                          </div>
+                          <div style={{ fontSize: 11, color: colors.textSubtle, lineHeight: 1.5, whiteSpace: 'pre-wrap' }}>
+                            {av.mensagem}
+                          </div>
+                          <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 4 }}>
+                            {new Date(av.created_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══ MODAL: FOTO / PERSONAGEM ═══ */}
+      {perfilModal && (
+        <div
+          onClick={() => setPerfilModal(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.5)',
+            display: 'flex', alignItems: 'flex-end', justifyContent: 'center', padding: 16,
+          }}
+        >
+          <div
+            className="perfil-modal"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: colors.surface, borderRadius: 24, width: '100%', maxWidth: 440,
+              padding: 20, boxShadow: '0 -4px 30px rgba(0,0,0,0.2)',
+              marginBottom: 'env(safe-area-inset-bottom, 0px)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+              <div style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>
+                {escolherPersonagem ? 'Escolha um personagem' : 'Foto de perfil'}
+              </div>
+              <button
+                onClick={() => (escolherPersonagem ? setEscolherPersonagem(false) : setPerfilModal(false))}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, lineHeight: 0 }}
+              >
+                <X size={20} color={colors.textMuted} />
+              </button>
+            </div>
+
+            {escolherPersonagem ? (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
+                {PERSONAGENS.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => salvarPersonagem(p)}
+                    style={{
+                      aspectRatio: '1', borderRadius: 16, fontSize: 32, cursor: 'pointer',
+                      border: p === personagem ? `2px solid ${colors.primary}` : `1px solid ${colors.border}`,
+                      background: p === personagem ? colors.primaryBg : colors.surfaceAlt,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}
+                  >
+                    <span className={p === personagem ? 'char-anim' : ''}>{p}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                <button onClick={() => camRef.current?.click()} disabled={uploading} style={opcaoStyle}>
+                  <div style={{ ...opcaoIcone, background: colors.primaryBg }}><Camera size={20} color={colors.primary} /></div>
+                  <span style={opcaoTexto}>Tirar foto</span>
+                  {uploading && <div className="spinner" style={{ width: 16, height: 16 }} />}
+                </button>
+                <button onClick={() => galRef.current?.click()} disabled={uploading} style={opcaoStyle}>
+                  <div style={{ ...opcaoIcone, background: colors.infoBg }}><ImageIcon size={20} color={colors.info} /></div>
+                  <span style={opcaoTexto}>Escolher da galeria</span>
+                </button>
+                <button onClick={() => setEscolherPersonagem(true)} style={opcaoStyle}>
+                  <div style={{ ...opcaoIcone, background: colors.successBg }}><Smile size={20} color={colors.success} /></div>
+                  <span style={opcaoTexto}>Escolher personagem</span>
+                  <ArrowRight size={18} color={colors.textSubtle} />
+                </button>
+                <Link href="/perfil" style={{ ...opcaoStyle, textDecoration: 'none' }}>
+                  <div style={{ ...opcaoIcone, background: colors.surfaceAlt }}><User size={20} color={colors.textMuted} /></div>
+                  <span style={opcaoTexto}>Ver perfil completo</span>
+                  <ArrowRight size={18} color={colors.textSubtle} />
+                </Link>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
     </div>
   )
