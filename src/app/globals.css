@@ -122,6 +122,15 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 .foto-add:active { transform: scale(0.95); }
+.slide-card {
+  animation: hbIn 0.42s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  transition: transform 0.14s ease, box-shadow 0.22s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.slide-card:active { transform: scale(0.96); }
+@media (hover: hover) {
+  .slide-card:hover { box-shadow: 0 12px 26px rgba(0,0,0,0.12); transform: translateY(-3px); }
+}
 @media (prefers-reduced-motion: reduce) {
   .hb, .hb-in, .char-anim, .perfil-modal, .notif-panel, .foto-pop { animation: none; }
   .hb > div:first-child, .foto-add { transition: none; }

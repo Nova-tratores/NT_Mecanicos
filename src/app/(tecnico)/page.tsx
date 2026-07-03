@@ -190,14 +190,15 @@ interface OrdemAberta {
   Serv_Solicitado: string | null
 }
 
-async function fetchOrdensAbertasTodos(): Promise<OrdemAberta[]> {
+async function fetchMinhasOrdensAbertas(nome: string): Promise<OrdemAberta[]> {
+  if (!nome) return []
   const { data } = await supabase
     .from('Ordem_Servico')
     .select('Id_Ordem, Os_Cliente, Os_Tecnico, Status, Tipo_Servico, Serv_Solicitado')
     .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
-    .order('Os_Tecnico', { ascending: true })
+    .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
     .order('Id_Ordem', { ascending: false })
-    .limit(400)
+    .limit(50)
   return (data || []) as OrdemAberta[]
 }
 
@@ -224,22 +225,13 @@ export default function TecnicoHome() {
     { skip: !user },
   )
 
-  // Slider de ordens em aberto de todos os técnicos
-  const { data: ordensAbertas } = useCached<OrdemAberta[]>(
-    'home:ordens-abertas',
-    fetchOrdensAbertasTodos,
+  // Carrossel de ordens em aberto do próprio técnico
+  const { data: minhasOrdens } = useCached<OrdemAberta[]>(
+    `home:minhas-ordens:${nome}`,
+    () => fetchMinhasOrdensAbertas(nome),
     { skip: !user },
   )
-  const gruposOrdens = useMemo(() => {
-    const map = new Map<string, OrdemAberta[]>()
-    for (const o of ordensAbertas || []) {
-      const t = (o.Os_Tecnico || '').trim() || 'Sem técnico'
-      const arr = map.get(t) || []
-      arr.push(o)
-      map.set(t, arr)
-    }
-    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
-  }, [ordensAbertas])
+  const ordensAbertasList = useMemo(() => minhasOrdens || [], [minhasOrdens])
 
   const [showHistorico, setShowHistorico] = useState(false)
   const [avisosModal, setAvisosModal] = useState(false)
@@ -379,52 +371,60 @@ export default function TecnicoHome() {
         <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
       </Link>
 
-      {/* ═══ SLIDER: ordens em aberto por técnico ═══ */}
-      {gruposOrdens.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, textTransform: 'uppercase', letterSpacing: 0.4 }}>
-            Ordens em aberto por técnico
+      {/* ═══ CARROSSEL: minhas ordens em aberto (estilo foto) ═══ */}
+      {ordensAbertasList.length > 0 && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 10 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              Minhas ordens em aberto
+            </span>
+            <span style={{ fontSize: 11, color: colors.textSubtle }}>· {ordensAbertasList.length}</span>
           </div>
-          {gruposOrdens.map(([tec, ords]) => (
-            <div key={tec}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div className="no-scrollbar" style={{
+            display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4,
+            scrollSnapType: 'x mandatory', WebkitOverflowScrolling: 'touch',
+          }}>
+            {ordensAbertasList.map((o, i) => (
+              <Link
+                key={o.Id_Ordem}
+                href={`/os/${o.Id_Ordem}`}
+                className="slide-card"
+                style={{
+                  flex: '0 0 auto', width: 232, scrollSnapAlign: 'start', textDecoration: 'none',
+                  borderRadius: 18, overflow: 'hidden', background: colors.surface,
+                  border: `1px solid ${colors.border}`, boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+                  display: 'flex', flexDirection: 'column',
+                  animationDelay: `${Math.min(i * 70, 500)}ms`,
+                }}
+              >
+                {/* "foto" da OS */}
                 <div style={{
-                  width: 26, height: 26, borderRadius: 8, flexShrink: 0, background: colors.primaryBg,
+                  height: 100, position: 'relative',
+                  background: 'linear-gradient(135deg, #C41E2A, #9B1520)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
-                  <User size={14} color={colors.primary} />
+                  <FileText size={42} color="rgba(255,255,255,0.9)" strokeWidth={1.5} />
+                  <span style={{
+                    position: 'absolute', top: 10, left: 12, fontSize: 13, fontWeight: 700, color: '#fff',
+                  }}>
+                    {o.Id_Ordem}
+                  </span>
                 </div>
-                <span style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>{tec}</span>
-                <span style={{ fontSize: 11, color: colors.textSubtle }}>· {ords.length} aberta{ords.length > 1 ? 's' : ''}</span>
-              </div>
-              <div className="no-scrollbar" style={{
-                display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 2,
-                scrollSnapType: 'x mandatory', WebkitOverflowScrolling: 'touch',
-              }}>
-                {ords.map((o) => (
-                  <Link
-                    key={o.Id_Ordem}
-                    href={`/os/${o.Id_Ordem}`}
-                    className="hb"
-                    style={{
-                      flex: '0 0 auto', width: 208, scrollSnapAlign: 'start', textDecoration: 'none',
-                      background: colors.surface, borderRadius: 16, padding: 14,
-                      border: `1px solid ${colors.border}`, boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-                      display: 'flex', flexDirection: 'column', gap: 3,
-                    }}
-                  >
-                    <span style={{ fontSize: 13, fontWeight: 700, color: colors.primary }}>{o.Id_Ordem}</span>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {o.Os_Cliente || 'Sem cliente'}
-                    </span>
-                    <span style={{ fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {solicitacaoCurta(o.Serv_Solicitado, o.Tipo_Servico) || '—'}
-                    </span>
-                  </Link>
-                ))}
-              </div>
-            </div>
-          ))}
+                {/* info */}
+                <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <span style={{ fontSize: 14, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {o.Os_Cliente || 'Sem cliente'}
+                  </span>
+                  <span style={{ fontSize: 12, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {solicitacaoCurta(o.Serv_Solicitado, o.Tipo_Servico) || '—'}
+                  </span>
+                  <span style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: colors.primary, display: 'flex', alignItems: 'center', gap: 4 }}>
+                    Preencher <ChevronRight size={14} />
+                  </span>
+                </div>
+              </Link>
+            ))}
+          </div>
         </div>
       )}
 
