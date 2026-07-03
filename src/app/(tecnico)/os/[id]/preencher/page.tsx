@@ -7,7 +7,7 @@ import { supabase } from '@/lib/supabase'
 import { offlineWrite } from '@/lib/offlineWrite'
 import type { OrdemServico } from '@/lib/types'
 import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV } from '@/lib/prefetch'
-import { offlineSet } from '@/lib/offlineCache'
+import { offlineSet, addPendingPdf } from '@/lib/offlineCache'
 import FotoUpload from '@/components/FotoUpload'
 import SignaturePad from '@/components/SignaturePad'
 import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown, ImagePlus, X } from 'lucide-react'
@@ -909,6 +909,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     notificarPortalOS(id, user?.tecnico_nome || '', os?.Os_Cliente || '')
 
     if (queued) {
+      // Marca para gerar/anexar o PDF ao reconectar (offline não gera PDF aqui).
+      await addPendingPdf(id)
       setSaving(false)
       setSucesso(true)
       clearBackup()

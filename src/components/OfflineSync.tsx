@@ -1,8 +1,21 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { startAutoSync, processQueue } from '@/lib/syncManager'
-import { getQueueCount } from '@/lib/offlineCache'
+import { getQueueCount, getPendingPdfs, removePendingPdf } from '@/lib/offlineCache'
+import { gerarEAnexarRelatorio } from '@/lib/gerarEAnexarRelatorio'
 import { Wifi, WifiOff, Upload } from 'lucide-react'
+
+// Gera/anexa o PDF das OS enviadas offline (roda depois que a fila sobe os dados)
+async function processarPdfsPendentes() {
+  if (!navigator.onLine) return
+  const list = await getPendingPdfs()
+  for (const osId of list) {
+    try {
+      const ok = await gerarEAnexarRelatorio(osId)
+      if (ok) await removePendingPdf(osId)
+    } catch { /* tenta de novo na proxima reconexao */ }
+  }
+}
 
 export default function OfflineSync() {
   const [online, setOnline] = useState(true)
@@ -20,10 +33,18 @@ export default function OfflineSync() {
     }
     checkQueue()
 
+    // Abriu online com PDFs pendentes (de sessão anterior)? processa em background.
+    let pdfTimer: ReturnType<typeof setTimeout> | undefined
+    if (navigator.onLine) {
+      pdfTimer = setTimeout(() => { processarPdfsPendentes() }, 4000)
+    }
+
     const goOnline = async () => {
       setOnline(true)
       setSyncing(true)
       const count = await processQueue()
+      // Depois de subir os dados, gera/anexa o PDF das OS enviadas offline
+      await processarPdfsPendentes()
       setSyncing(false)
       await checkQueue()
       if (count > 0) {
@@ -46,6 +67,7 @@ export default function OfflineSync() {
       window.removeEventListener('online', goOnline)
       window.removeEventListener('offline', goOffline)
       clearInterval(interval)
+      if (pdfTimer) clearTimeout(pdfTimer)
     }
   }, [])
 

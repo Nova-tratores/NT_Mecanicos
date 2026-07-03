@@ -131,3 +131,24 @@ export async function getQueueCount(): Promise<number> {
   const items = await getQueue()
   return items.length
 }
+
+// ═══ OS enviadas offline aguardando geração do PDF (anexar no portal) ═══
+
+const PENDING_PDF_KEY = 'pending-pdfs'
+
+export async function addPendingPdf(osId: string): Promise<void> {
+  const list = (await offlineGet<string[]>(PENDING_PDF_KEY)) || []
+  if (!list.includes(osId)) {
+    list.push(osId)
+    await offlineSet(PENDING_PDF_KEY, list)
+  }
+}
+
+export async function getPendingPdfs(): Promise<string[]> {
+  return (await offlineGet<string[]>(PENDING_PDF_KEY)) || []
+}
+
+export async function removePendingPdf(osId: string): Promise<void> {
+  const list = (await offlineGet<string[]>(PENDING_PDF_KEY)) || []
+  await offlineSet(PENDING_PDF_KEY, list.filter((x) => x !== osId))
+}
