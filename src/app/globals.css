@@ -38,6 +38,7 @@ body {
 /* Hide scrollbar but allow scroll */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
 
 /* Pulse animation for alerts */
 @keyframes pulse-alert {

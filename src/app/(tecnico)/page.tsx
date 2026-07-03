@@ -1,5 +1,5 @@
 'use client'
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
 import { supabase } from '@/lib/supabase'
@@ -180,6 +180,40 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
 // personagens animados que o tecnico pode escolher no lugar da foto
 const PERSONAGENS = ['🧑‍🔧', '👷', '🧔', '👨‍🔧', '🐻', '🦊', '🐼', '🦁', '🐶', '🦉', '🤖', '🐯']
 
+/* ═══ Slider: ordens em aberto de todos os técnicos ═══ */
+interface OrdemAberta {
+  Id_Ordem: string
+  Os_Cliente: string | null
+  Os_Tecnico: string | null
+  Status: string
+  Tipo_Servico: string | null
+  Serv_Solicitado: string | null
+}
+
+async function fetchOrdensAbertasTodos(): Promise<OrdemAberta[]> {
+  const { data } = await supabase
+    .from('Ordem_Servico')
+    .select('Id_Ordem, Os_Cliente, Os_Tecnico, Status, Tipo_Servico, Serv_Solicitado')
+    .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
+    .order('Os_Tecnico', { ascending: true })
+    .order('Id_Ordem', { ascending: false })
+    .limit(400)
+  return (data || []) as OrdemAberta[]
+}
+
+// Extrai o pedido do cliente ("Solicitação do Cliente: ...")
+function solicitacaoCurta(serv?: string | null, fallback?: string | null): string {
+  if (serv) {
+    const txt = serv.replace(/\s+/g, ' ').trim()
+    const m = txt.match(/solicita[çc][ãa]o do cliente\s*:?\s*(.*)/i)
+    if (m) {
+      const val = m[1].split(/servi[çc]o\s+realizado/i)[0].trim()
+      if (val) return val
+    }
+  }
+  return fallback || ''
+}
+
 export default function TecnicoHome() {
   const { user, refresh } = useCurrentUser()
   const nome = user?.nome_pos || user?.tecnico_nome || ''
@@ -189,6 +223,23 @@ export default function TecnicoHome() {
     () => fetchDashboardData(nome, user?.tecnico_nome || ''),
     { skip: !user },
   )
+
+  // Slider de ordens em aberto de todos os técnicos
+  const { data: ordensAbertas } = useCached<OrdemAberta[]>(
+    'home:ordens-abertas',
+    fetchOrdensAbertasTodos,
+    { skip: !user },
+  )
+  const gruposOrdens = useMemo(() => {
+    const map = new Map<string, OrdemAberta[]>()
+    for (const o of ordensAbertas || []) {
+      const t = (o.Os_Tecnico || '').trim() || 'Sem técnico'
+      const arr = map.get(t) || []
+      arr.push(o)
+      map.set(t, arr)
+    }
+    return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]))
+  }, [ordensAbertas])
 
   const [showHistorico, setShowHistorico] = useState(false)
   const [avisosModal, setAvisosModal] = useState(false)
@@ -327,6 +378,55 @@ export default function TecnicoHome() {
         </div>
         <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
       </Link>
+
+      {/* ═══ SLIDER: ordens em aberto por técnico ═══ */}
+      {gruposOrdens.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+            Ordens em aberto por técnico
+          </div>
+          {gruposOrdens.map(([tec, ords]) => (
+            <div key={tec}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <div style={{
+                  width: 26, height: 26, borderRadius: 8, flexShrink: 0, background: colors.primaryBg,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <User size={14} color={colors.primary} />
+                </div>
+                <span style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>{tec}</span>
+                <span style={{ fontSize: 11, color: colors.textSubtle }}>· {ords.length} aberta{ords.length > 1 ? 's' : ''}</span>
+              </div>
+              <div className="no-scrollbar" style={{
+                display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 2,
+                scrollSnapType: 'x mandatory', WebkitOverflowScrolling: 'touch',
+              }}>
+                {ords.map((o) => (
+                  <Link
+                    key={o.Id_Ordem}
+                    href={`/os/${o.Id_Ordem}`}
+                    className="hb"
+                    style={{
+                      flex: '0 0 auto', width: 208, scrollSnapAlign: 'start', textDecoration: 'none',
+                      background: colors.surface, borderRadius: 16, padding: 14,
+                      border: `1px solid ${colors.border}`, boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+                      display: 'flex', flexDirection: 'column', gap: 3,
+                    }}
+                  >
+                    <span style={{ fontSize: 13, fontWeight: 700, color: colors.primary }}>{o.Id_Ordem}</span>
+                    <span style={{ fontSize: 13, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {o.Os_Cliente || 'Sem cliente'}
+                    </span>
+                    <span style={{ fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {solicitacaoCurta(o.Serv_Solicitado, o.Tipo_Servico) || '—'}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ═══ CARD: AVISOS (abre modal) ═══ */}
       <button
