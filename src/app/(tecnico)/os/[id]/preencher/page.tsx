@@ -9,7 +9,7 @@ import type { OrdemServico } from '@/lib/types'
 import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV } from '@/lib/prefetch'
 import FotoUpload from '@/components/FotoUpload'
 import SignaturePad from '@/components/SignaturePad'
-import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown, ImagePlus } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown, ImagePlus, X } from 'lucide-react'
 import Link from 'next/link'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
 import { notificarPortalOS } from '@/lib/notificarPortal'
@@ -17,7 +17,16 @@ import { criarGarantia, listarPecasOS } from '@/lib/garantias/client'
 import type { PecaOS } from '@/lib/garantias/types'
 import { ShieldCheck, CheckCircle2 } from 'lucide-react'
 
-const TIPOS_SERVICO = ['Manutenção', 'Revisão', 'Montagem Implemento', 'Garantia', 'Entrega Técnica', 'Inspeção Pré Entrega']
+const TIPOS_SERVICO_GRUPOS = [
+  {
+    grupo: 'Trator',
+    itens: ['Revisão Trator', 'Manutenção Trator', 'Entrega Técnica Trator', 'Inspeção Pré Entrega Trator', 'Garantia Trator'],
+  },
+  {
+    grupo: 'Implemento',
+    itens: ['Revisão Implemento', 'Manutenção Implemento', 'Montagem Implemento', 'Entrega Técnica Implemento', 'Inspeção Pré Entrega Implemento', 'Garantia Implemento'],
+  },
+]
 const HORAS_REVISAO = ['50', '300', '600', '900', '1200', '1500', '1800', '2100', '2400', '2700', '3000']
 
 interface DiaForm {
@@ -596,19 +605,24 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     }
   }
 
-  // Adiciona várias fotos de uma vez nos slots extras vazios (até 5)
-  const addFotosExtras = (files: FileList | null) => {
+  // Slots de foto do serviço em ordem: as 2 primeiras alimentam Horimetro/Chassis,
+  // o resto vira Extra1..5 (total de 7). O tecnico so anexa fotos.
+  const fotoSlots = (): { v: string; set: (v: string) => void; campo: string }[] => [
+    { v: fotoHorimetro, set: setFotoHorimetro, campo: 'FotoHorimetro' },
+    { v: fotoChassis, set: setFotoChassis, campo: 'FotoChassis' },
+    { v: fotoExtra1, set: setFotoExtra1, campo: 'FotoExtra1' },
+    { v: fotoExtra2, set: setFotoExtra2, campo: 'FotoExtra2' },
+    { v: fotoExtra3, set: setFotoExtra3, campo: 'FotoExtra3' },
+    { v: fotoExtra4, set: setFotoExtra4, campo: 'FotoExtra4' },
+    { v: fotoExtra5, set: setFotoExtra5, campo: 'FotoExtra5' },
+  ]
+
+  // Adiciona uma ou várias fotos de uma vez nos slots vazios (até 7)
+  const addFotos = (files: FileList | null) => {
     if (!files || files.length === 0) return
-    const slots = [
-      { v: fotoExtra1, set: setFotoExtra1, campo: 'FotoExtra1' },
-      { v: fotoExtra2, set: setFotoExtra2, campo: 'FotoExtra2' },
-      { v: fotoExtra3, set: setFotoExtra3, campo: 'FotoExtra3' },
-      { v: fotoExtra4, set: setFotoExtra4, campo: 'FotoExtra4' },
-      { v: fotoExtra5, set: setFotoExtra5, campo: 'FotoExtra5' },
-    ]
-    const vazios = slots.filter(s => !s.v || s.v.startsWith('blob:'))
+    const vazios = fotoSlots().filter(s => !s.v)
     if (vazios.length === 0) {
-      alert('Você já anexou o máximo de 5 fotos extras.')
+      alert('Você já anexou o máximo de 7 fotos.')
       return
     }
     Array.from(files).slice(0, vazios.length).forEach((file, k) => {
@@ -690,13 +704,18 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       }
     }
 
-    // Fotos: exigir no mínimo 2 (fora garantia, que tem seções proprias)
-    if (tipoServico !== 'Garantia') {
+    // Fotos: garantia tem seções próprias. Implemento exige só 1 (o chassis);
+    // trator exige no mínimo 2.
+    if (!tipoServico.includes('Garantia')) {
       const fotosAnexadas = [
         fotoHorimetro, fotoChassis, fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5,
       ].filter(f => f && !f.startsWith('blob:'))
-      if (fotosAnexadas.length < 2) {
-        mostrarErro('Anexe pelo menos 2 fotos do serviço.', 'secao-fotos')
+      const minFotos = tipoServico.includes('Implemento') ? 1 : 2
+      if (fotosAnexadas.length < minFotos) {
+        mostrarErro(
+          minFotos === 1 ? 'Anexe a foto do chassis do implemento.' : 'Anexe pelo menos 2 fotos do serviço.',
+          'secao-fotos',
+        )
         return
       }
     }
@@ -797,7 +816,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       Chassis: chassis,
       Marca: marca,
       Modelo: modelo,
-      Garantia: tipoServico === 'Garantia',
+      Garantia: tipoServico.includes('Garantia'),
       Horimetro: horimetro,
       NumPlaca: numPlaca,
       TratorLocal1: '',
@@ -955,7 +974,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         marca,
         modelo,
         horimetro,
-        garantia: tipoServico === 'Garantia',
+        garantia: tipoServico.includes('Garantia'),
         numPlaca,
         tratorLocal1: '',
         tratorLocal2: '',
@@ -1014,7 +1033,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
     // Cria a requisição de garantia se for o caso (best-effort — não bloqueia o envio da OS)
     // Permitido sem peças (caso de garantia só com mão de obra / deslocamento).
-    if (tipoServico === 'Garantia') {
+    if (tipoServico.includes('Garantia')) {
       try {
         let pecasParaGarantia: PecaOS[] = []
         if (pecasGarantia.size > 0) {
@@ -1089,7 +1108,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         marca,
         modelo,
         horimetro,
-        garantia: tipoServico === 'Garantia',
+        garantia: tipoServico.includes('Garantia'),
         numPlaca,
         tratorLocal1: '',
         tratorLocal2: '',
@@ -1292,10 +1311,16 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             <label style={labelStyle}>Tipo de Serviço</label>
             <select value={tipoServico} onChange={(e) => setTipoServico(e.target.value)} style={inputStyle}>
               <option value="">Selecione...</option>
-              {TIPOS_SERVICO.map((t) => <option key={t} value={t}>{t}</option>)}
+              {TIPOS_SERVICO_GRUPOS.map((g) => (
+                <optgroup key={g.grupo} label={`━━ ${g.grupo.toUpperCase()} ━━`}>
+                  {g.itens.map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </optgroup>
+              ))}
             </select>
           </div>
-          {tipoServico === 'Revisão' && (
+          {tipoServico.includes('Revisão') && (
             <div>
               <label style={labelStyle}>Revisão de quantas horas?</label>
               <select value={tipoRev} onChange={(e) => setTipoRev(e.target.value)} style={inputStyle}>
@@ -1476,57 +1501,82 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       {/* 6. FOTOS */}
       <div id="secao-fotos" style={sectionStyle}>
         {sectionTitle('Fotos')}
-        <p style={{ fontSize: 12, color: '#6B7280', margin: '-6px 0 12px' }}>
-          Anexe no mínimo <strong>2 fotos</strong> do serviço.
+        <p style={{ fontSize: 13, color: '#6B7280', margin: '-6px 0 12px', lineHeight: 1.5 }}>
+          {tipoServico.includes('Implemento') ? (
+            <>Anexe a foto do <strong style={{ color: '#374151' }}>chassis</strong> do implemento (obrigatória).</>
+          ) : (
+            <>Anexe pelo menos <strong style={{ color: '#374151' }}>2 fotos</strong> do serviço.
+              Não esqueça o <strong style={{ color: '#374151' }}>chassis</strong> e o <strong style={{ color: '#374151' }}>horímetro</strong>.</>
+          )}
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <FotoUpload label="Horímetro" value={fotoHorimetro} onChange={(f) => handleFoto(setFotoHorimetro, 'FotoHorimetro', f)} onRemove={() => setFotoHorimetro('')} obrigatorio />
-          <FotoUpload label="Chassis" value={fotoChassis} onChange={(f) => handleFoto(setFotoChassis, 'FotoChassis', f)} onRemove={() => setFotoChassis('')} obrigatorio />
-        </div>
-        {tipoServico === 'Manutenção' && (() => {
-          const extras = [fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5]
-          const usadas = extras.filter(f => f && !f.startsWith('blob:')).length
-          const temAlgumaExtra = usadas > 0
+        {(() => {
+          const slots = fotoSlots()
+          const anexadas = slots.filter(s => s.v)
+          const podeMais = anexadas.length < 7
           return (
-            <details open={temAlgumaExtra} style={{ marginTop: 14 }}>
-              <summary style={{
-                fontSize: 13, fontWeight: 600, color: '#6B7280', cursor: 'pointer',
-                padding: '8px 0', listStyle: 'none', display: 'flex', alignItems: 'center', gap: 6,
-              }}>
-                <Camera size={14} />
-                Fotos extras (opcional) — {usadas}/5
-              </summary>
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                {slots.map((s) => s.v ? (
+                  <div key={s.campo} className="foto-pop" style={{
+                    position: 'relative', aspectRatio: '1', borderRadius: 14, overflow: 'hidden',
+                    border: '2px solid #E5E7EB', background: '#F9FAFB',
+                  }}>
+                    <img src={s.v} alt="Foto" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                    {s.v.startsWith('blob:') && (
+                      <div style={{
+                        position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.6)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      }}>
+                        <div className="spinner" style={{ width: 22, height: 22 }} />
+                      </div>
+                    )}
+                    <button type="button" onClick={() => s.set('')} style={{
+                      position: 'absolute', top: 5, right: 5, width: 26, height: 26, borderRadius: '50%',
+                      border: 'none', background: 'rgba(17,24,39,0.7)', color: '#fff', cursor: 'pointer',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <X size={15} />
+                    </button>
+                  </div>
+                ) : null)}
 
-              {/* Adicionar várias de uma vez */}
-              <label style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                marginTop: 10, padding: '12px 14px', borderRadius: 12, cursor: usadas >= 5 ? 'not-allowed' : 'pointer',
-                border: '2px dashed #BFDBFE', background: usadas >= 5 ? '#F3F4F6' : '#EFF6FF',
-                color: usadas >= 5 ? '#9CA3AF' : '#2563EB', fontSize: 13, fontWeight: 600,
-              }}>
-                <ImagePlus size={18} />
-                {usadas >= 5 ? 'Máximo de 5 fotos extras' : 'Adicionar várias fotos de uma vez'}
-                <input
-                  type="file" accept="image/*" multiple disabled={usadas >= 5}
-                  onChange={(e) => { addFotosExtras(e.target.files); e.target.value = '' }}
-                  style={{ display: 'none' }}
-                />
-              </label>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
-                <FotoUpload label="Extra 1" value={fotoExtra1} onChange={(f) => handleFoto(setFotoExtra1, 'FotoExtra1', f)} onRemove={() => setFotoExtra1('')} />
-                <FotoUpload label="Extra 2" value={fotoExtra2} onChange={(f) => handleFoto(setFotoExtra2, 'FotoExtra2', f)} onRemove={() => setFotoExtra2('')} />
-                <FotoUpload label="Extra 3" value={fotoExtra3} onChange={(f) => handleFoto(setFotoExtra3, 'FotoExtra3', f)} onRemove={() => setFotoExtra3('')} />
-                <FotoUpload label="Extra 4" value={fotoExtra4} onChange={(f) => handleFoto(setFotoExtra4, 'FotoExtra4', f)} onRemove={() => setFotoExtra4('')} />
-                <FotoUpload label="Extra 5" value={fotoExtra5} onChange={(f) => handleFoto(setFotoExtra5, 'FotoExtra5', f)} onRemove={() => setFotoExtra5('')} />
+                {podeMais && (
+                  <>
+                    <label className="foto-add" style={{
+                      aspectRatio: '1', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      gap: 6, borderRadius: 14, cursor: 'pointer',
+                      border: '2px dashed #C7D2FE', background: '#EFF6FF', color: '#2563EB',
+                    }}>
+                      <Camera size={26} />
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>Câmera</span>
+                      <input type="file" accept="image/*" capture="environment"
+                        onChange={(e) => { addFotos(e.target.files); e.target.value = '' }}
+                        style={{ display: 'none' }} />
+                    </label>
+                    <label className="foto-add" style={{
+                      aspectRatio: '1', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      gap: 6, borderRadius: 14, cursor: 'pointer',
+                      border: '2px dashed #D1D5DB', background: '#FAFAFA', color: '#6B7280',
+                    }}>
+                      <ImagePlus size={26} />
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>Galeria</span>
+                      <input type="file" accept="image/*" multiple
+                        onChange={(e) => { addFotos(e.target.files); e.target.value = '' }}
+                        style={{ display: 'none' }} />
+                    </label>
+                  </>
+                )}
               </div>
-            </details>
+              <p style={{ fontSize: 11, color: '#9CA3AF', marginTop: 8, textAlign: 'right' }}>
+                {anexadas.length}/7 fotos
+              </p>
+            </>
           )
         })()}
       </div>
 
       {/* 7. GARANTIA — Peças solicitadas + Fotos (só aparece se tipo = Garantia) */}
-      {tipoServico === 'Garantia' && (
+      {tipoServico.includes('Garantia') && (
         <>
           {/* Seleção de peças que entram na requisição de garantia */}
           <div style={{ ...sectionStyle, borderLeft: '4px solid #C41E2A' }}>

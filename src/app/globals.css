@@ -111,8 +111,18 @@ body {
   to   { transform: translateX(0); }
 }
 .notif-panel { animation: notifSlide 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+@keyframes fotoPop {
+  from { opacity: 0; transform: scale(0.8); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.foto-pop { animation: fotoPop 0.32s cubic-bezier(0.34, 1.56, 0.64, 1); }
+.foto-add {
+  transition: transform 0.13s ease, background 0.2s ease, border-color 0.2s ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.foto-add:active { transform: scale(0.95); }
 @media (prefers-reduced-motion: reduce) {
-  .hb, .hb-in, .char-anim, .perfil-modal, .notif-panel { animation: none; }
-  .hb > div:first-child { transition: none; }
+  .hb, .hb-in, .char-anim, .perfil-modal, .notif-panel, .foto-pop { animation: none; }
+  .hb > div:first-child, .foto-add { transition: none; }
 }
 
