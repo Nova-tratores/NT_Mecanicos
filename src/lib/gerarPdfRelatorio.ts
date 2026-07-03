@@ -248,7 +248,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
 
   drawRow([
     { label: 'Ordem de Serviço', value: dados.ordemServico },
-    { label: 'Data', value: formatarDataBR(dados.data) },
+    { label: 'Preenchido em', value: formatarDataBR(dados.data) },
     { label: 'Status', value: dados.status },
   ])
 

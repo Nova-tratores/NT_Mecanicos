@@ -346,7 +346,7 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
         <div style={{ fontSize: 15, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>Dados da Ordem</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
           <div><div style={fieldLabel}>OS</div><div style={fieldValue}>{id}</div></div>
-          <div><div style={fieldLabel}>Data</div><div style={fieldValue}>{formatarDataBR((registro.Data as string) || '')}</div></div>
+          <div><div style={fieldLabel}>Preenchido em</div><div style={fieldValue}>{formatarDataBR((registro.Data as string) || '')}</div></div>
           <div><div style={fieldLabel}>Tipo Serviço</div><div style={fieldValue}>{(registro.TipoServico as string) || '-'}</div></div>
           <div><div style={fieldLabel}>Projeto</div><div style={fieldValue}>{(registro.Projeto as string) || '-'}</div></div>
         </div>
