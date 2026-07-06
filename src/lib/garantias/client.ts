@@ -62,7 +62,10 @@ export async function listarMinhasGarantias(tecnicoNome: string): Promise<Garant
     .select(
       '*, montadora:garantia_montadoras(id,nome,cor), pecas:garantia_pecas(id), pendencias:garantia_pendencias(id,tipo,status,descricao,exige_visita), anexos:garantia_anexos(id,categoria,url,nome_arquivo,created_at)'
     )
-    .eq('tecnico_nome', tecnicoNome)
+    // Match case-insensitive: a garantia pode ter sido gravada com o nome do
+    // técnico em caixa diferente (ex.: "PAULO MOTTA" do Tecnicos_Appsheet) do
+    // que o app resolve pro logado ("Paulo Motta" de mecanico_tecnico_nome).
+    .ilike('tecnico_nome', tecnicoNome)
     .order('created_at', { ascending: false })
   if (error) {
     console.error('[garantias] listarMinhasGarantias:', error.message)
@@ -101,7 +104,9 @@ export async function listarOSElegiveis(tecnicoNome: string): Promise<OSElegivel
   const { data: ordens } = await supabase
     .from('Ordem_Servico')
     .select('Id_Ordem, Os_Cliente, Data, Tipo_Servico, Serv_Solicitado, Status')
-    .or(`Os_Tecnico.eq.${tecnicoNome},Os_Tecnico2.eq.${tecnicoNome}`)
+    // Case-insensitive: as OSes guardam o técnico como "PAULO MOTTA" (caixa alta),
+    // mas o app resolve o logado como "Paulo Motta" — .eq não bateria.
+    .or(`Os_Tecnico.ilike.${tecnicoNome},Os_Tecnico2.ilike.${tecnicoNome}`)
     .neq('Status', 'Cancelada')
     .order('Data', { ascending: false })
     .limit(120)
