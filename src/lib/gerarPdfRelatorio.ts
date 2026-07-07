@@ -8,6 +8,7 @@ interface PecaInfo {
   qtdDevolvida: string
   origem: 'ppv' | 'manual'
   naoUsada: boolean
+  qtdOriginal?: string
 }
 
 interface DadosRelatorio {
@@ -374,33 +375,44 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
 
   // --- Peças ---
   if (dados.pecas.length > 0) {
-    drawSectionTitle('PEÇAS UTILIZADAS')
+    drawSectionTitle('PEÇAS')
 
     checkNewPage(10)
     doc.setFillColor(CINZA_CLARO)
     doc.rect(marginL, y, contentW, 6, 'F')
     doc.setFontSize(7)
     doc.setTextColor(AZUL_ESCURO)
-    const pCols = [0, 30, 110, 125, 148]
-    const pHeaders = ['Código', 'Descrição', 'Qtd', 'Devolvida', 'Origem']
+    // Código | Descrição | Usada | Devolvida | Situação
+    const pCols = [0, 28, 98, 116, 140]
+    const pHeaders = ['Código', 'Descrição', 'Usada', 'Devolvida', 'Situação']
     pHeaders.forEach((h, i) => doc.text(h, marginL + pCols[i] + 2, y + 4))
     y += 7
 
     doc.setFontSize(8)
     doc.setTextColor(PRETO)
+    // Mostra TODAS as peças, inclusive as devolvidas/não usadas (antes elas sumiam)
     for (const peca of dados.pecas) {
-      if (peca.naoUsada) continue
+      const usadaNum = parseFloat(peca.qtdUsada || '') || 0
+      const devolveu = peca.devolvida === true
+      // Se não usou nada e devolveu, a qtd devolvida é a original (quando não informada)
+      const devNum = devolveu
+        ? (parseFloat(peca.qtdDevolvida || '') || (peca.naoUsada ? (parseFloat(peca.qtdOriginal || '') || 0) : 0))
+        : 0
+
+      let situacao: string
+      if (usadaNum === 0) situacao = devolveu ? 'Devolvida' : 'Não usada'
+      else if (devolveu && devNum > 0) situacao = 'Parcial'
+      else situacao = 'Usada'
+
       const codeLines = doc.splitTextToSize(peca.codigo || '-', pCols[1] - pCols[0] - 3)
       const descLines = doc.splitTextToSize(peca.descricao || '-', pCols[2] - pCols[1] - 3)
       const rowLines = Math.max(codeLines.length, descLines.length)
       checkNewPage(4 + rowLines * 3.5)
       doc.text(codeLines, marginL + pCols[0] + 2, y + 4)
       doc.text(descLines, marginL + pCols[1] + 2, y + 4)
-      doc.text(peca.qtdUsada || '-', marginL + pCols[2] + 2, y + 4)
-      const devolvido = peca.devolvida === true
-      const devText = devolvido ? `Sim (${peca.qtdDevolvida || '0'})` : 'Não'
-      doc.text(devText, marginL + pCols[3] + 2, y + 4)
-      doc.text(peca.origem === 'ppv' ? 'PPV' : 'Manual', marginL + pCols[4] + 2, y + 4)
+      doc.text(String(usadaNum), marginL + pCols[2] + 2, y + 4)
+      doc.text(devolveu ? String(devNum) : '-', marginL + pCols[3] + 2, y + 4)
+      doc.text(situacao, marginL + pCols[4] + 2, y + 4)
       const rowH = 4 + rowLines * 3.5
       doc.setDrawColor('#E5E7EB')
       doc.setLineWidth(0.2)
