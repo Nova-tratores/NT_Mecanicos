@@ -30,6 +30,21 @@ const TIPOS_SERVICO_GRUPOS = [
 ]
 const HORAS_REVISAO = ['50', '300', '600', '900', '1200', '1500', '1800', '2100', '2400', '2700', '3000']
 
+// Almoços lançados na OS pelo pós-vendas (campo Alimentacoes). Só os de valor > R$1
+// exigem a foto da nota. Devolve {data, valor} ordenado por data.
+function parseAlmocosOS(raw: unknown): { data: string; valor: number }[] {
+  let arr: unknown[] = []
+  if (Array.isArray(raw)) arr = raw
+  else if (typeof raw === 'string') { try { const p = JSON.parse(raw); if (Array.isArray(p)) arr = p } catch {} }
+  return arr
+    .map((a) => {
+      const o = (a || {}) as Record<string, unknown>
+      return { data: String(o.data || '').slice(0, 10), valor: Number(o.valor) || 0 }
+    })
+    .filter((a) => a.data && a.valor > 1)
+    .sort((a, b) => a.data.localeCompare(b.data))
+}
+
 interface DiaForm {
   data: string
   horaInicio: string
@@ -126,10 +141,10 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [fotoExtra4, setFotoExtra4] = useState('')
   const [fotoExtra5, setFotoExtra5] = useState('')
 
-  // Almoço
-  const [temAlmoco, setTemAlmoco] = useState(false)
-  const [valorAlmoco, setValorAlmoco] = useState('')
-  const [fotoAlmoco, setFotoAlmoco] = useState('')
+  // Almoço: os dias/valores vêm da OS (Alimentacoes, lançados pelo pós-vendas).
+  // O técnico anexa a foto da nota de cada dia com valor > R$1. { data → foto }
+  const [almocosOS, setAlmocosOS] = useState<{ data: string; valor: number }[]>([])
+  const [fotosAlmoco, setFotosAlmoco] = useState<Record<string, string>>({})
 
   // Assinaturas
   const [assCliente, setAssCliente] = useState('')
@@ -235,6 +250,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           setOs(cachedOs as unknown as OrdemServico)
           if (cachedOs.Projeto) setProjeto(cachedOs.Projeto as string)
           if (cachedOs.Tipo_Servico) setTipoServico(cachedOs.Tipo_Servico as string)
+          setAlmocosOS(parseAlmocosOS((cachedOs as Record<string, unknown>).Alimentacoes))
         }
         if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
         if (cachedVeiculos) setVeiculos(cachedVeiculos)
@@ -305,6 +321,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           setOs(cachedOs as unknown as OrdemServico)
           if (cachedOs.Projeto) setProjeto(cachedOs.Projeto as string)
           if (cachedOs.Tipo_Servico) setTipoServico(cachedOs.Tipo_Servico as string)
+          setAlmocosOS(parseAlmocosOS((cachedOs as Record<string, unknown>).Alimentacoes))
         }
         if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
         if (cachedVeiculos) setVeiculos(cachedVeiculos)
@@ -318,6 +335,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         offlineSet(`prefetch:os:${id}`, osData) // cache-on-read p/ abrir offline
         if (osData.Projeto) setProjeto(osData.Projeto)
         if (osData.Tipo_Servico) setTipoServico(osData.Tipo_Servico)
+        setAlmocosOS(parseAlmocosOS((osData as Record<string, unknown>).Alimentacoes))
       }
       if (tecData) { setTecnicos(tecData.map((t: { UsuNome: string }) => t.UsuNome).filter(Boolean)); offlineSet('prefetch:tecnicos', tecData) }
       if (veicData) { setVeiculos(veicData as { IdPlaca: number; NumPlaca: string }[]); offlineSet('prefetch:veiculos', veicData) }
@@ -365,9 +383,22 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         setAssCliente(existing.AssCliente || '')
         setAssTecnico(existing.AssTecnico || '')
         setJustificativaPecaExtra(existing.JustificativaPecaExtra || '')
-        if (existing.TemAlmoco) setTemAlmoco(true)
-        if (existing.ValorAlmoco) setValorAlmoco(String(existing.ValorAlmoco))
-        if (existing.FotoAlmoco) setFotoAlmoco(existing.FotoAlmoco)
+        // Fotos de almoço já enviadas (coluna AlmocosFotos = [{data, foto}]).
+        const _fa: Record<string, string> = {}
+        try {
+          const _raw = (existing as Record<string, unknown>).AlmocosFotos
+          const _arr = Array.isArray(_raw) ? _raw : (typeof _raw === 'string' ? JSON.parse(_raw) : [])
+          for (const _x of (_arr || [])) {
+            const _o = (_x || {}) as Record<string, unknown>
+            if (_o.data && _o.foto) _fa[String(_o.data).slice(0, 10)] = String(_o.foto)
+          }
+        } catch {}
+        // Compat com o almoço único antigo: mapeia FotoAlmoco pro 1º dia de almoço da OS.
+        if (Object.keys(_fa).length === 0 && existing.FotoAlmoco) {
+          const _primeiro = parseAlmocosOS((osData as Record<string, unknown> | null)?.Alimentacoes)[0]
+          if (_primeiro) _fa[_primeiro.data] = existing.FotoAlmoco
+        }
+        setFotosAlmoco(_fa)
 
         const diasLoaded: DiaForm[] = []
         if (existing.DataInicio) {
@@ -456,7 +487,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
     fotoPecaNova1, fotoPecaNova2, fotoPecaInstalada1, fotoPecaInstalada2,
     fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5,
-    temAlmoco, valorAlmoco, fotoAlmoco,
+    fotosAlmoco,
     assCliente, assTecnico,
   }), [
     tecResp1, temTec2, tecResp2, diagnostico, servicoRealizado,
@@ -467,7 +498,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
     fotoPecaNova1, fotoPecaNova2, fotoPecaInstalada1, fotoPecaInstalada2,
     fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5,
-    temAlmoco, valorAlmoco, fotoAlmoco,
+    fotosAlmoco,
     assCliente, assTecnico,
   ])
 
@@ -513,9 +544,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (data.fotoExtra3 !== undefined) setFotoExtra3(data.fotoExtra3 as string)
     if (data.fotoExtra4 !== undefined) setFotoExtra4(data.fotoExtra4 as string)
     if (data.fotoExtra5 !== undefined) setFotoExtra5(data.fotoExtra5 as string)
-    if (data.temAlmoco !== undefined) setTemAlmoco(data.temAlmoco as boolean)
-    if (data.valorAlmoco !== undefined) setValorAlmoco(data.valorAlmoco as string)
-    if (data.fotoAlmoco !== undefined) setFotoAlmoco(data.fotoAlmoco as string)
+    if (data.fotosAlmoco !== undefined) setFotosAlmoco(data.fotosAlmoco as Record<string, string>)
     if (data.assCliente !== undefined) setAssCliente(data.assCliente as string)
     if (data.assTecnico !== undefined) setAssTecnico(data.assTecnico as string)
   }, [])
@@ -742,15 +771,13 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       if (!continuar) return
     }
 
-    // Validar almoço — aceitar base64 (data:) como foto válida (salva offline)
-    if (temAlmoco) {
-      if (!valorAlmoco.trim()) {
-        mostrarErro('Informe o valor do almoço.', 'secao-almoco')
-        return
-      }
-      const fotoAlmocoValida = fotoAlmoco && !fotoAlmoco.startsWith('blob:')
-      if (!fotoAlmocoValida) {
-        mostrarErro('Anexe a foto da nota do almoço.', 'secao-almoco')
+    // Validar almoços: cada dia com valor > R$1 lançado na OS precisa da foto da nota.
+    for (const _alm of almocosOS) {
+      const _f = fotosAlmoco[_alm.data]
+      const _valida = _f && !_f.startsWith('blob:')
+      if (!_valida) {
+        const [, _m, _d] = _alm.data.split('-')
+        mostrarErro(`Anexe a nota do almoço do dia ${_d}/${_m}.`, 'secao-almoco')
         return
       }
     }
@@ -782,7 +809,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       fotoFalha1Final, fotoFalha2Final, fotoFalha3Final, fotoFalha4Final,
       fotoPecaNova1Final, fotoPecaNova2Final, fotoPecaInstalada1Final, fotoPecaInstalada2Final,
       fotoExtra1Final, fotoExtra2Final, fotoExtra3Final, fotoExtra4Final, fotoExtra5Final,
-      fotoAlmocoFinal,
     ] = await Promise.all([
       resolverFoto(fotoHorimetro, 'FotoHorimetro'),
       resolverFoto(fotoChassis, 'FotoChassis'),
@@ -804,8 +830,14 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       resolverFoto(fotoExtra3, 'FotoExtra3'),
       resolverFoto(fotoExtra4, 'FotoExtra4'),
       resolverFoto(fotoExtra5, 'FotoExtra5'),
-      temAlmoco ? resolverFoto(fotoAlmoco, 'FotoAlmoco') : Promise.resolve(null),
     ])
+
+    // Resolve as fotos de almoço (uma por dia lançado na OS).
+    const almocosFotos: { data: string; valor: number; foto: string }[] = []
+    for (const _alm of almocosOS) {
+      const _foto = await resolverFoto(fotosAlmoco[_alm.data] || '', `FotoAlmoco_${_alm.data}`)
+      if (_foto) almocosFotos.push({ data: _alm.data, valor: _alm.valor, foto: _foto })
+    }
 
     const payload: Record<string, unknown> = {
       Ordem_Servico: id,
@@ -868,9 +900,10 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       FotoExtra3: fotoExtra3Final,
       FotoExtra4: fotoExtra4Final,
       FotoExtra5: fotoExtra5Final,
-      TemAlmoco: temAlmoco,
-      ValorAlmoco: temAlmoco ? parseFloat(valorAlmoco) || 0 : null,
-      FotoAlmoco: fotoAlmocoFinal,
+      AlmocosFotos: almocosFotos,
+      TemAlmoco: almocosFotos.length > 0,
+      ValorAlmoco: almocosFotos[0]?.valor ?? null,
+      FotoAlmoco: almocosFotos[0]?.foto ?? null,
       AssCliente: assCliente, AssTecnico: assTecnico,
       PecasInfo: JSON.stringify(pecas),
       JustificativaPecaExtra: justificativaPecaExtra || null,
@@ -1447,48 +1480,27 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           </div>
         </div>
 
-        {/* Almoço */}
+        {/* Almoço — anexar a nota de cada dia lançado na OS (valor > R$1) */}
         <div id="secao-almoco" style={{ height: 1, background: '#E5E7EB', margin: '16px 0' }} />
-        <label style={{
-          display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer',
-          padding: '10px 0',
-        }}>
-          <input
-            type="checkbox"
-            checked={temAlmoco}
-            onChange={(e) => {
-              setTemAlmoco(e.target.checked)
-              if (!e.target.checked) { setValorAlmoco(''); setFotoAlmoco('') }
-            }}
-            style={{ width: 20, height: 20, accentColor: '#1E3A5F' }}
-          />
-          <span style={{ fontSize: 14, fontWeight: 600, color: '#374151' }}>Teve almoço nesta OS?</span>
-        </label>
-
-        {temAlmoco && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 4 }}>
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 600, color: '#6B7280', marginBottom: 4, display: 'block' }}>
-                Valor do almoço (R$) <span style={{ color: '#C41E2A' }}>*</span>
-              </label>
-              <input
-                type="text"
-                inputMode="decimal"
-                value={valorAlmoco}
-                onChange={(e) => setValorAlmoco(e.target.value)}
-                placeholder="Ex: 45.00"
-                style={inputStyle}
-              />
-            </div>
-            <div>
-              <FotoUpload
-                label="Nota do almoço"
-                value={fotoAlmoco}
-                onChange={(f) => handleFoto(setFotoAlmoco, 'FotoAlmoco', f)}
-                onRemove={() => setFotoAlmoco('')}
-                obrigatorio
-              />
-            </div>
+        {almocosOS.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <span style={{ fontSize: 14, fontWeight: 600, color: '#374151' }}>
+              Notas de almoço — anexe a nota de cada dia
+            </span>
+            {almocosOS.map((alm) => {
+              const [, m, d] = alm.data.split('-')
+              return (
+                <div key={alm.data}>
+                  <FotoUpload
+                    label={`Nota do almoço — ${d}/${m} · R$ ${alm.valor.toFixed(2)}`}
+                    value={fotosAlmoco[alm.data] || ''}
+                    onChange={(f) => handleFoto((v) => setFotosAlmoco((prev) => ({ ...prev, [alm.data]: v })), `FotoAlmoco_${alm.data}`, f)}
+                    onRemove={() => setFotosAlmoco((prev) => { const n = { ...prev }; delete n[alm.data]; return n })}
+                    obrigatorio
+                  />
+                </div>
+              )
+            })}
           </div>
         )}
       </div>
