@@ -107,7 +107,14 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
   }
 
   // OS com status concluido pelo tecnico tambem contam como enviadas
-  const FASES_CONCLUIDAS = ['Relatorio Concluido', 'Relatório Concluído', 'Executada aguardando comercial']
+  const FASES_CONCLUIDAS = [
+    'Relatório Concluído', 'Relatorio Concluido',
+    'Executada aguardando comercial',
+    'Concluída', 'Concluida', 'Concluído', 'Concluido',
+    'Faturada', 'Faturado',
+    'Finalizada', 'Finalizado',
+    'Enviado Para Omie', 'Enviado para Omie',
+  ]
   for (const o of todas) {
     if (FASES_CONCLUIDAS.includes(o.Status)) enviadaSet.add(String(o.Id_Ordem))
   }
@@ -195,7 +202,7 @@ async function fetchMinhasOrdensAbertas(nome: string): Promise<OrdemAberta[]> {
   const { data } = await supabase
     .from('Ordem_Servico')
     .select('Id_Ordem, Os_Cliente, Os_Tecnico, Status, Tipo_Servico, Serv_Solicitado')
-    .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
+    .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada","Relatório Concluído","Relatorio Concluido","Executada aguardando comercial","Faturada","Faturado","Finalizada","Finalizado","Enviado Para Omie","Enviado para Omie")')
     .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
     .order('Id_Ordem', { ascending: false })
     .limit(50)
