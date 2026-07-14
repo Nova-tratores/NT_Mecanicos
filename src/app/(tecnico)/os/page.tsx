@@ -493,6 +493,7 @@ function OsEnviadasTab({ nome }: { nome: string }) {
         'Concluída', 'Concluida', 'Concluído', 'Concluido',
         'Faturada', 'Faturado',
         'Finalizada', 'Finalizado',
+        'Enviado Para Omie', 'Enviado para Omie',
       ])
 
       // ESTRATÉGIA (espelha a do contador verde em fetchOsData):
