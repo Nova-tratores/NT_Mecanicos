@@ -65,6 +65,7 @@ async function fetchOsData(nome: string): Promise<OsData> {
     'Concluída', 'Concluida', 'Concluído', 'Concluido',
     'Faturada', 'Faturado',
     'Finalizada', 'Finalizado',
+    'Enviado Para Omie', 'Enviado para Omie',
   ]
 
   if (todas.length > 0) {

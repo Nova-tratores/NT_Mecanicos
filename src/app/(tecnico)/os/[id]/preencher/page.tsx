@@ -13,6 +13,7 @@ import SignaturePad from '@/components/SignaturePad'
 import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown, ImagePlus, X } from 'lucide-react'
 import Link from 'next/link'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
+import { gerarEAnexarRelatorio } from '@/lib/gerarEAnexarRelatorio'
 import { notificarPortalOS } from '@/lib/notificarPortal'
 import { criarGarantia, listarPecasOS } from '@/lib/garantias/client'
 import type { PecaOS } from '@/lib/garantias/types'
@@ -950,126 +951,141 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       return
     }
 
-    // Gerar PDF, fazer upload e vincular à OS no portal
-    try {
-      let cidade = ''
-      if (os?.Cnpj_Cliente) {
-        const { data: cli } = await supabase
-          .from('Clientes')
-          .select('cidade')
-          .eq('cnpj_cpf', os.Cnpj_Cliente)
-          .maybeSingle()
-        cidade = cli?.cidade || ''
-      }
-
-      const downloadFoto = async (url: string): Promise<string | null> => {
-        if (!url) return null
-        // Tentar extrair path do Supabase Storage (vários formatos possíveis)
-        let path: string | null = null
-        const match = url.match(/\/(?:object|storage)\/(?:v1\/)?(?:public|sign)\/requisicoes\/(.+?)(\?|$)/)
-        if (match) {
-          path = decodeURIComponent(match[1])
-        } else if (url.includes('/requisicoes/')) {
-          // Fallback: pegar tudo depois de /requisicoes/
-          const idx = url.indexOf('/requisicoes/')
-          path = decodeURIComponent(url.substring(idx + '/requisicoes/'.length).split('?')[0])
-        }
-        if (path) {
-          const { data: blob, error } = await supabase.storage.from('requisicoes').download(path)
-          if (!error && blob) {
-            return new Promise((resolve) => {
-              const reader = new FileReader()
-              reader.onloadend = () => resolve(reader.result as string)
-              reader.onerror = () => resolve(null)
-              reader.readAsDataURL(blob)
-            })
+    // Gerar PDF, fazer upload e vincular à OS no portal (com retry)
+    let pdfOk = false
+    for (let tentativa = 1; tentativa <= 3 && !pdfOk; tentativa++) {
+      try {
+        if (tentativa === 1) {
+          let cidade = ''
+          if (os?.Cnpj_Cliente) {
+            const { data: cli } = await supabase
+              .from('Clientes')
+              .select('cidade')
+              .eq('cnpj_cpf', os.Cnpj_Cliente)
+              .maybeSingle()
+            cidade = cli?.cidade || ''
           }
-        }
-        // Fallback: fetch direto da URL
-        try {
-          const resp = await fetch(url)
-          if (resp.ok) {
-            const blob = await resp.blob()
-            return new Promise((resolve) => {
-              const reader = new FileReader()
-              reader.onloadend = () => resolve(reader.result as string)
-              reader.onerror = () => resolve(null)
-              reader.readAsDataURL(blob)
-            })
-          }
-        } catch { /* ignore */ }
-        return null
-      }
 
-    const pdfBlob = await gerarPdfRelatorio({
-        ordemServico: id,
-        cliente: os?.Os_Cliente || '',
-        endereco: os?.Endereco_Cliente || '',
-        cidade,
-        tipoServico,
-        projeto,
-        idPPV: os?.ID_PPV || '',
-        status: 'Enviado',
-        tecResp1,
-        temTec2,
-        tecResp2,
-        chassis,
-        marca,
-        modelo,
-        horimetro,
-        garantia: tipoServico.includes('Garantia'),
-        numPlaca,
-        tratorLocal1: '',
-        tratorLocal2: '',
-        diagnostico,
-        servicoRealizado,
-        tipoRev,
-        dias,
-        totalHora: calcTotalHoras(),
-        totalKm: calcTotalKm(),
-        pecas,
-        fotoHorimetro, fotoChassis,
-        fotoFrente, fotoDireita, fotoEsquerda, fotoTraseira, fotoVolante,
-        fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
-        fotoPecaNova1, fotoPecaNova2,
-        fotoPecaInstalada1, fotoPecaInstalada2,
-        assCliente, assTecnico,
-        nomResp, fazenda: naOficina ? 'Oficina' : fazenda, cidadeServico: naOficina ? 'Oficina' : cidadeLocal,
-        data: new Date().toISOString().split('T')[0],
-        apenasBlob: true,
-        downloadFoto,
-      })
-
-      if (pdfBlob) {
-        const pdfPath = `relatorios-os/${id}/Relatorio_${id}_${Date.now()}.pdf`
-        const pdfFile = new File([pdfBlob], `Relatorio_${id}.pdf`, { type: 'application/pdf' })
-        const { error: upErr } = await supabase.storage.from('requisicoes').upload(pdfPath, pdfFile)
-
-        if (!upErr) {
-          const { data: urlData } = supabase.storage.from('requisicoes').getPublicUrl(pdfPath)
-          const pdfUrl = urlData.publicUrl
-
-          await Promise.all([
-            supabase.from('Ordem_Servico').update({
-              ID_Relatorio_Final: pdfUrl,
-            }).eq('Id_Ordem', id),
-            supabase.from('Ordem_Servico_Tecnicos').update({ pdf_criado: true }).eq('Ordem_Servico', id),
-          ])
-
-          const { data: osData } = await supabase.from('Ordem_Servico').select('ID_PPV').eq('Id_Ordem', id).limit(1)
-          const ppvStr = osData?.[0]?.ID_PPV
-          if (ppvStr) {
-            const ppvIds = String(ppvStr).split(',').map(s => s.trim()).filter(Boolean)
-            if (ppvIds.length > 0) {
-              await supabase.from('pedidos').update({ status: 'Aguardando Para Faturar' })
-                .in('id_pedido', ppvIds).not('status', 'in', '("Fechado","Cancelado")')
+          const downloadFoto = async (url: string): Promise<string | null> => {
+            if (!url) return null
+            let path: string | null = null
+            const match = url.match(/\/(?:object|storage)\/(?:v1\/)?(?:public|sign)\/requisicoes\/(.+?)(\?|$)/)
+            if (match) {
+              path = decodeURIComponent(match[1])
+            } else if (url.includes('/requisicoes/')) {
+              const idx = url.indexOf('/requisicoes/')
+              path = decodeURIComponent(url.substring(idx + '/requisicoes/'.length).split('?')[0])
             }
+            if (path) {
+              const { data: blob, error } = await supabase.storage.from('requisicoes').download(path)
+              if (!error && blob) {
+                return new Promise((resolve) => {
+                  const reader = new FileReader()
+                  reader.onloadend = () => resolve(reader.result as string)
+                  reader.onerror = () => resolve(null)
+                  reader.readAsDataURL(blob)
+                })
+              }
+            }
+            try {
+              const resp = await fetch(url)
+              if (resp.ok) {
+                const blob = await resp.blob()
+                return new Promise((resolve) => {
+                  const reader = new FileReader()
+                  reader.onloadend = () => resolve(reader.result as string)
+                  reader.onerror = () => resolve(null)
+                  reader.readAsDataURL(blob)
+                })
+              }
+            } catch { /* ignore */ }
+            return null
           }
 
+          const pdfBlob = await gerarPdfRelatorio({
+            ordemServico: id,
+            cliente: os?.Os_Cliente || '',
+            endereco: os?.Endereco_Cliente || '',
+            cidade,
+            tipoServico,
+            projeto,
+            idPPV: os?.ID_PPV || '',
+            status: 'Enviado',
+            tecResp1,
+            temTec2,
+            tecResp2,
+            chassis,
+            marca,
+            modelo,
+            horimetro,
+            garantia: tipoServico.includes('Garantia'),
+            numPlaca,
+            tratorLocal1: '',
+            tratorLocal2: '',
+            diagnostico,
+            servicoRealizado,
+            tipoRev,
+            dias,
+            totalHora: calcTotalHoras(),
+            totalKm: calcTotalKm(),
+            pecas,
+            fotoHorimetro, fotoChassis,
+            fotoFrente, fotoDireita, fotoEsquerda, fotoTraseira, fotoVolante,
+            fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
+            fotoPecaNova1, fotoPecaNova2,
+            fotoPecaInstalada1, fotoPecaInstalada2,
+            assCliente, assTecnico,
+            nomResp, fazenda: naOficina ? 'Oficina' : fazenda, cidadeServico: naOficina ? 'Oficina' : cidadeLocal,
+            data: new Date().toISOString().split('T')[0],
+            apenasBlob: true,
+            downloadFoto,
+          })
+
+          if (pdfBlob) {
+            const pdfPath = `relatorios-os/${id}/Relatorio_${id}_${Date.now()}.pdf`
+            const pdfFile = new File([pdfBlob], `Relatorio_${id}.pdf`, { type: 'application/pdf' })
+            const { error: upErr } = await supabase.storage.from('requisicoes').upload(pdfPath, pdfFile)
+
+            if (!upErr) {
+              const { data: urlData } = supabase.storage.from('requisicoes').getPublicUrl(pdfPath)
+              const pdfUrl = urlData.publicUrl
+
+              await Promise.all([
+                supabase.from('Ordem_Servico').update({
+                  ID_Relatorio_Final: pdfUrl,
+                }).eq('Id_Ordem', id),
+                supabase.from('Ordem_Servico_Tecnicos').update({ pdf_criado: true }).eq('Ordem_Servico', id),
+              ])
+
+              const { data: osData } = await supabase.from('Ordem_Servico').select('ID_PPV').eq('Id_Ordem', id).limit(1)
+              const ppvStr = osData?.[0]?.ID_PPV
+              if (ppvStr) {
+                const ppvIds = String(ppvStr).split(',').map(s => s.trim()).filter(Boolean)
+                if (ppvIds.length > 0) {
+                  await supabase.from('pedidos').update({ status: 'Aguardando Para Faturar' })
+                    .in('id_pedido', ppvIds).not('status', 'in', '("Fechado","Cancelado")')
+                }
+              }
+
+              pdfOk = true
+            } else {
+              throw new Error(upErr.message)
+            }
+          } else {
+            throw new Error('PDF blob vazio')
+          }
+        } else {
+          // Tentativas 2 e 3: usa gerarEAnexarRelatorio (relê do banco)
+          await new Promise(r => setTimeout(r, 2000))
+          pdfOk = await gerarEAnexarRelatorio(id)
         }
+      } catch (err) {
+        console.error(`Erro PDF tentativa ${tentativa}/3:`, err)
       }
-    } catch (err) {
-      console.error('Erro ao gerar/enviar PDF:', err)
+    }
+    if (!pdfOk) {
+      await addPendingPdf(id)
+      console.warn('PDF enfileirado para retry em background')
     }
 
     // Cria a requisição de garantia se for o caso (best-effort — não bloqueia o envio da OS)
