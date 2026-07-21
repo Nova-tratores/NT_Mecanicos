@@ -73,6 +73,9 @@ export interface SyncItem {
   match?: Record<string, unknown> // para updates/deletes: { id: 123 }
   createdAt: number
   retries?: number
+  failed?: boolean
+  failedAt?: number
+  lastError?: string
 }
 
 export async function queueSync(item: Omit<SyncItem, 'id' | 'createdAt' | 'retries'>): Promise<void> {
@@ -130,6 +133,15 @@ export async function updateQueueItem(id: number, updates: Partial<SyncItem>): P
 export async function getQueueCount(): Promise<number> {
   const items = await getQueue()
   return items.length
+}
+
+export async function getFailedItems(): Promise<SyncItem[]> {
+  const items = await getQueue()
+  return items.filter(i => i.failed)
+}
+
+export async function retryFailedItem(id: number): Promise<void> {
+  await updateQueueItem(id, { failed: false, retries: 0, lastError: undefined, failedAt: undefined })
 }
 
 // ═══ OS enviadas offline aguardando geração do PDF (anexar no portal) ═══

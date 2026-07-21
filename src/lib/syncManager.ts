@@ -7,8 +7,28 @@ import { supabase } from './supabase'
 import { getQueue, removeFromQueue, updateQueueItem, type SyncItem } from './offlineCache'
 
 let syncing = false
-const MAX_RETRIES = 5
+const MAX_RETRIES = 10
 const SYNC_TIMEOUT = 15000
+
+const syncFailListeners: Array<(item: SyncItem, error: string) => void> = []
+export function onSyncFail(cb: (item: SyncItem, error: string) => void) {
+  syncFailListeners.push(cb)
+  return () => { const i = syncFailListeners.indexOf(cb); if (i >= 0) syncFailListeners.splice(i, 1) }
+}
+
+async function logFailureToServer(item: SyncItem, errorMsg: string) {
+  try {
+    await supabase.from('sync_failures').insert({
+      tabela: item.table,
+      acao: item.action,
+      payload: item.data,
+      match_filter: item.match || null,
+      erro: errorMsg,
+      criado_em: new Date().toISOString(),
+      os_id: item.data?.Ordem_Servico || item.data?.Id_Ordem || item.match?.Id_Ordem || null,
+    })
+  } catch { /* melhor não travar por causa do log */ }
+}
 
 function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
   return Promise.race([
@@ -71,6 +91,7 @@ export async function processQueue(): Promise<number> {
     console.log(`[sync] Processando ${items.length} item(s) pendente(s)...`)
 
     for (const item of items) {
+      if (item.failed) continue
       try {
         // Resolver fotos base64 antes de gravar
         const data = item.table === 'Ordem_Servico_Tecnicos'
@@ -99,11 +120,14 @@ export async function processQueue(): Promise<number> {
 
         if (result?.error) {
           const retries = (item.retries || 0) + 1
+          const errMsg = result.error.message || String(result.error)
           if (retries >= MAX_RETRIES) {
-            console.error(`[sync] Item ${item.id} falhou ${MAX_RETRIES}x, removendo da fila:`, result.error)
-            if (item.id) await removeFromQueue(item.id)
+            console.error(`[sync] Item ${item.id} falhou ${MAX_RETRIES}x, marcando como falha permanente:`, result.error)
+            if (item.id) await updateQueueItem(item.id, { retries, failed: true, failedAt: Date.now(), lastError: errMsg })
+            await logFailureToServer(item, errMsg)
+            syncFailListeners.forEach(cb => cb(item, errMsg))
           } else {
-            console.warn(`[sync] Item ${item.id} falhou (tentativa ${retries}/${MAX_RETRIES}):`, result.error.message)
+            console.warn(`[sync] Item ${item.id} falhou (tentativa ${retries}/${MAX_RETRIES}):`, errMsg)
             if (item.id) await updateQueueItem(item.id, { retries })
           }
           continue
@@ -115,9 +139,12 @@ export async function processQueue(): Promise<number> {
       } catch (err) {
         console.error(`[sync] Erro no item ${item.id}:`, err)
         const retries = (item.retries || 0) + 1
+        const errMsg = String((err as { message?: string })?.message || err)
         if (item.id) {
           if (retries >= MAX_RETRIES) {
-            await removeFromQueue(item.id)
+            await updateQueueItem(item.id, { retries, failed: true, failedAt: Date.now(), lastError: errMsg })
+            await logFailureToServer(item, errMsg)
+            syncFailListeners.forEach(cb => cb(item, errMsg))
           } else {
             await updateQueueItem(item.id, { retries })
           }
