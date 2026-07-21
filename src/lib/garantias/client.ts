@@ -408,8 +408,10 @@ export async function responderPendencia(
     }
   }
 
-  // Fecha a pendência
-  const { error: pendErr } = await supabase
+  // Fecha a pendência. O `.select()` é proposital: RLS sem policy de UPDATE
+  // devolve 0 linhas SEM erro — já engoliu resposta de B.O. em silêncio
+  // (GAR-0025, 21/07/2026). 0 linhas atualizadas = erro visível.
+  const { data: pendUpd, error: pendErr } = await supabase
     .from('garantia_pendencias')
     .update({
       status: 'respondida',
@@ -418,15 +420,22 @@ export async function responderPendencia(
       respondido_em: new Date().toISOString(),
     })
     .eq('id', pendenciaId)
-  if (pendErr) return { ok: false, erro: 'Falha ao salvar a resposta.' }
+    .select('id')
+  if (pendErr || !pendUpd?.length) {
+    return { ok: false, erro: 'Falha ao salvar a resposta (sem permissão de escrita — avise o garantista).' }
+  }
 
-  // Volta status da garantia ao fluxo
+  // Volta status da garantia ao fluxo (mesma checagem anti-silêncio)
   const tipo = (pend as any).tipo
   const novoStatus = tipo === 'bo' ? 'em_analise' : 'enviada'
-  await supabase
+  const { data: gUpd, error: gErr } = await supabase
     .from('garantias')
     .update({ status: novoStatus, updated_at: new Date().toISOString() })
     .eq('id', garantiaId)
+    .select('id')
+  if (gErr || !gUpd?.length) {
+    return { ok: false, erro: 'Resposta salva, mas a garantia não mudou de fase (sem permissão — avise o garantista).' }
+  }
 
   await registrarEvento(garantiaId, {
     tipo: tipo === 'bo' ? 'bo_respondida' : 'info_respondida',
