@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { MecanicoNotificacao } from '@/lib/types'
 
@@ -9,13 +9,30 @@ function getLimpaAt(): string | null {
   try { return localStorage.getItem(LIMPAR_KEY) } catch { return null }
 }
 
-export function useNotificacoes(tecnicoNome: string | undefined) {
+// O portal e o POS escrevem o nome do técnico com caixas diferentes
+// ("DANILO DE SOUZA" da OS vs "Danilo de Souza" do perfil) — o match exato
+// fazia notificação de garantia/B.O. NUNCA chegar. Regra: casar SEM diferenciar
+// caixa, contra o nome do portal E o nome do POS (nome_pos).
+export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: string | null) {
   const [notificacoes, setNotificacoes] = useState<MecanicoNotificacao[]>([])
   const [naoLidas, setNaoLidas] = useState(0)
   const limpaAtRef = useRef<string | null>(null)
 
+  const nomes = useMemo(
+    () => Array.from(new Set([tecnicoNome, nomePos].map(n => (n || '').trim()).filter(Boolean))),
+    [tecnicoNome, nomePos],
+  )
+  const chaveNomes = nomes.map(n => n.toLowerCase()).sort().join('|')
+  const nomesRef = useRef(nomes)
+  nomesRef.current = nomes
+
+  const ehMinha = useCallback((n: { tecnico_nome?: string | null }) => {
+    const alvo = (n.tecnico_nome || '').trim().toLowerCase()
+    return nomesRef.current.some(x => x.toLowerCase() === alvo)
+  }, [])
+
   useEffect(() => {
-    if (!tecnicoNome) return
+    if (nomes.length === 0) return
     limpaAtRef.current = getLimpaAt()
 
     const filtrar = (lista: MecanicoNotificacao[]) => {
@@ -28,10 +45,11 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
     }
 
     const carregar = async () => {
+      // ilike sem % = igualdade sem diferenciar caixa; OR entre os nomes
       const { data } = await supabase
         .from('mecanico_notificacoes')
         .select('*')
-        .eq('tecnico_nome', tecnicoNome)
+        .or(nomes.map(n => `tecnico_nome.ilike.${n}`).join(','))
         .order('created_at', { ascending: false })
         .limit(50)
       if (data) {
@@ -42,15 +60,17 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
     }
     carregar()
 
+    // Realtime sem filtro no servidor (o filtro `eq` não cobre variação de
+    // caixa) — o volume é baixo e o descarte é feito aqui no cliente.
     const channel = supabase
-      .channel('mec_notif_' + tecnicoNome)
+      .channel('mec_notif_' + chaveNomes.replace(/[^a-z0-9|]/g, '_'))
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
         table: 'mecanico_notificacoes',
-        filter: `tecnico_nome=eq.${tecnicoNome}`,
       }, (payload) => {
         const nova = payload.new as MecanicoNotificacao
+        if (!ehMinha(nova)) return
         const corte = limpaAtRef.current
         if (corte && nova.created_at <= corte) return
         setNotificacoes((prev) => [nova, ...prev].slice(0, 50))
@@ -59,7 +79,8 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
-  }, [tecnicoNome])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chaveNomes])
 
   const marcarComoLida = useCallback(async (id: number) => {
     await supabase.from('mecanico_notificacoes').update({ lida: true }).eq('id', id)
@@ -68,11 +89,12 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
   }, [])
 
   const marcarTodasComoLidas = useCallback(async () => {
-    if (!tecnicoNome) return
-    await supabase.from('mecanico_notificacoes').update({ lida: true }).eq('tecnico_nome', tecnicoNome).eq('lida', false)
+    // pelas IDs do estado (cobre qualquer variação de caixa do nome)
+    const ids = notificacoes.filter((n) => !n.lida).map((n) => n.id)
     setNotificacoes((prev) => prev.map((n) => ({ ...n, lida: true })))
     setNaoLidas(0)
-  }, [tecnicoNome])
+    if (ids.length) await supabase.from('mecanico_notificacoes').update({ lida: true }).in('id', ids)
+  }, [notificacoes])
 
   // Remove uma notificacao de vez (some do banco, nao volta ao recarregar)
   const remover = useCallback(async (id: number) => {
@@ -85,7 +107,7 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
   }, [])
 
   const limparTodas = useCallback(async () => {
-    if (!tecnicoNome) return
+    if (nomesRef.current.length === 0) return
     // Cutoff local (fallback imediato, caso o delete no banco falhe)
     const agora = new Date().toISOString()
     limpaAtRef.current = agora
@@ -94,8 +116,11 @@ export function useNotificacoes(tecnicoNome: string | undefined) {
     setNaoLidas(0)
     // Apaga de vez do banco — sao notificacoes pessoais do tecnico, entao
     // limpar = remover para nao voltarem no proximo carregamento.
-    await supabase.from('mecanico_notificacoes').delete().eq('tecnico_nome', tecnicoNome)
-  }, [tecnicoNome])
+    await supabase
+      .from('mecanico_notificacoes')
+      .delete()
+      .or(nomesRef.current.map(n => `tecnico_nome.ilike.${n}`).join(','))
+  }, [])
 
   return { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, remover, limparTodas }
 }

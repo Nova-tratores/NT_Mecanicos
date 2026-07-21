@@ -70,7 +70,9 @@ function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
 
 export default function TecnicoLayoutInner({ children }: { children: React.ReactNode }) {
   const { user, loading, logout } = useCurrentUser()
-  const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, remover, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '')
+  // dois nomes: o do perfil do portal E o do POS — as notificações chegam com
+  // qualquer um dos dois, em qualquer caixa ("DANILO DE SOUZA" vs "Danilo de Souza")
+  const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, remover, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '', user?.nome_pos)
   const [avisosPendentes, setAvisosPendentes] = useState<{ id: number; titulo: string; mensagem: string; prioridade: string }[]>([])
   const [confirmando, setConfirmando] = useState(false)
   const [checkinFeito, setCheckinFeito] = useState<boolean | null>(true) // temporario: desativado para debug
