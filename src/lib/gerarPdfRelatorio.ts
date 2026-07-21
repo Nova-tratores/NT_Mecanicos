@@ -382,37 +382,55 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
     doc.rect(marginL, y, contentW, 6, 'F')
     doc.setFontSize(7)
     doc.setTextColor(AZUL_ESCURO)
-    // Código | Descrição | Usada | Devolvida | Situação
-    const pCols = [0, 28, 98, 116, 140]
-    const pHeaders = ['Código', 'Descrição', 'Usada', 'Devolvida', 'Situação']
+    const pCols = [0, 28, 98, 118, 138]
+    const pHeaders = ['Código', 'Descrição', 'Qtd Enviada', 'Qtd Usada', 'Situação']
     pHeaders.forEach((h, i) => doc.text(h, marginL + pCols[i] + 2, y + 4))
     y += 7
 
     doc.setFontSize(8)
-    doc.setTextColor(PRETO)
-    // Mostra TODAS as peças, inclusive as devolvidas/não usadas (antes elas sumiam)
     for (const peca of dados.pecas) {
-      const usadaNum = parseFloat(peca.qtdUsada || '') || 0
+      const qtdOriginal = parseFloat(peca.qtdOriginal || peca.qtdUsada || '') || 0
+      const naoUsou = peca.naoUsada === true
       const devolveu = peca.devolvida === true
-      // Se não usou nada e devolveu, a qtd devolvida é a original (quando não informada)
-      const devNum = devolveu
-        ? (parseFloat(peca.qtdDevolvida || '') || (peca.naoUsada ? (parseFloat(peca.qtdOriginal || '') || 0) : 0))
-        : 0
+      const devNum = parseFloat(peca.qtdDevolvida || '') || 0
 
+      let qtdUsadaReal: number
       let situacao: string
-      if (usadaNum === 0) situacao = devolveu ? 'Devolvida' : 'Não usada'
-      else if (devolveu && devNum > 0) situacao = 'Parcial'
-      else situacao = 'Usada'
+      let situacaoCor: string
+
+      if (naoUsou) {
+        qtdUsadaReal = 0
+        situacao = 'NÃO USADA'
+        situacaoCor = '#DC2626'
+      } else if (devolveu && devNum > 0) {
+        qtdUsadaReal = qtdOriginal - devNum
+        situacao = `DEVOLVEU ${devNum}`
+        situacaoCor = '#D97706'
+      } else {
+        qtdUsadaReal = parseFloat(peca.qtdUsada || '') || 0
+        situacao = 'Usada'
+        situacaoCor = '#059669'
+      }
 
       const codeLines = doc.splitTextToSize(peca.codigo || '-', pCols[1] - pCols[0] - 3)
       const descLines = doc.splitTextToSize(peca.descricao || '-', pCols[2] - pCols[1] - 3)
       const rowLines = Math.max(codeLines.length, descLines.length)
       checkNewPage(4 + rowLines * 3.5)
+
+      if (naoUsou || (devolveu && devNum > 0)) {
+        doc.setFillColor(naoUsou ? '#FEF2F2' : '#FFFBEB')
+        doc.rect(marginL, y, contentW, 4 + rowLines * 3.5, 'F')
+      }
+
+      doc.setTextColor(PRETO)
       doc.text(codeLines, marginL + pCols[0] + 2, y + 4)
       doc.text(descLines, marginL + pCols[1] + 2, y + 4)
-      doc.text(String(usadaNum), marginL + pCols[2] + 2, y + 4)
-      doc.text(devolveu ? String(devNum) : '-', marginL + pCols[3] + 2, y + 4)
+      doc.text(String(qtdOriginal), marginL + pCols[2] + 2, y + 4)
+      doc.text(String(qtdUsadaReal), marginL + pCols[3] + 2, y + 4)
+      doc.setFontSize(7)
+      doc.setTextColor(situacaoCor)
       doc.text(situacao, marginL + pCols[4] + 2, y + 4)
+      doc.setFontSize(8)
       const rowH = 4 + rowLines * 3.5
       doc.setDrawColor('#E5E7EB')
       doc.setLineWidth(0.2)
