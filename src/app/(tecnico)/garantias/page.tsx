@@ -274,13 +274,25 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
                   border: `1px dashed ${colors.borderStrong}`, background: '#fff',
                 }}
               >
-                <Camera size={15} /> Anexar fotos ({imagens.length})
+                <Camera size={15} /> Anexar fotos/vídeos ({imagens.length})
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/*,video/*"
                   multiple
                   style={{ display: 'none' }}
-                  onChange={(e) => setImagens(Array.from(e.target.files || []))}
+                  onChange={(e) => {
+                    // vídeo até 50MB (limite de upload do Supabase) — acima
+                    // disso o técnico comprime/corta e tenta de novo
+                    const MAX_MB = 50
+                    const todos = Array.from(e.target.files || [])
+                    const grandes = todos.filter((f) => f.size > MAX_MB * 1024 * 1024)
+                    if (grandes.length) {
+                      setErro(`Arquivo(s) acima de ${MAX_MB}MB: ${grandes.map((f) => f.name).join(', ')} — comprima ou corte o vídeo.`)
+                    } else {
+                      setErro('')
+                    }
+                    setImagens(todos.filter((f) => f.size <= MAX_MB * 1024 * 1024))
+                  }}
                 />
               </label>
               {erro && <div style={{ fontSize: 12, color: colors.danger }}>{erro}</div>}

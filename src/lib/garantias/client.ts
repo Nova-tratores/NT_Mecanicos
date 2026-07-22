@@ -355,7 +355,7 @@ export async function responderPendencia(
 ): Promise<{ ok: boolean; erro?: string }> {
   const { garantiaId, pendenciaId, texto, imagens, tecnicoNome } = input
   if (!texto.trim() && imagens.length === 0) {
-    return { ok: false, erro: 'Responda com um texto ou anexe ao menos uma imagem.' }
+    return { ok: false, erro: 'Responda com um texto ou anexe ao menos uma foto/vídeo.' }
   }
 
   // Carrega pendência e garantia para validar e definir transição
