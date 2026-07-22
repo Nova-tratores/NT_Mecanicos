@@ -93,6 +93,10 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [diagnostico, setDiagnostico] = useState('')
   const [servicoRealizado, setServicoRealizado] = useState('')
   const [tipoServico, setTipoServico] = useState('')
+  // "É GARANTIA?" — resposta EXPLÍCITA e obrigatória antes de enviar: os
+  // técnicos esqueciam de marcar o tipo Garantia perdido no meio do dropdown
+  // (pedido do usuário, 22/07/2026). null = ainda não respondeu.
+  const [ehGarantia, setEhGarantia] = useState<'sim' | 'nao' | null>(null)
   const [tipoRev, setTipoRev] = useState('')
   const [projeto, setProjeto] = useState('')
   const [chassis, setChassis] = useState('')
@@ -104,6 +108,13 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [fazenda, setFazenda] = useState('')
   const [cidadeLocal, setCidadeLocal] = useState('')
   const [naOficina, setNaOficina] = useState(false) // serviço realizado na oficina
+
+  // mantém a resposta "É garantia?" coerente com o tipo escolhido no dropdown:
+  // tipo Garantia = SIM automático; saiu de Garantia = volta a perguntar
+  useEffect(() => {
+    if (tipoServico.includes('Garantia')) setEhGarantia('sim')
+    else setEhGarantia(prev => (prev === 'sim' ? null : prev))
+  }, [tipoServico])
 
   // Dias (dinâmico)
   const [dias, setDias] = useState<DiaForm[]>([{ data: '', horaInicio: '', horaFim: '', kmTotal: '' }])
@@ -263,7 +274,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           setTecResp2((cachedTec.TecResp2 as string) || '')
           setDiagnostico((cachedTec.Motivo as string) || '')
           setServicoRealizado((cachedTec.ServicoRealizado as string) || '')
-          if (cachedTec.TipoServico) setTipoServico(cachedTec.TipoServico as string)
+          if (cachedTec.TipoServico) {
+            setTipoServico(cachedTec.TipoServico as string)
+            // OS já preenchida antes = a pergunta "É garantia?" já foi respondida
+            setEhGarantia((cachedTec.TipoServico as string).includes('Garantia') ? 'sim' : 'nao')
+          }
           if (cachedTec.TipoRev) setTipoRev(cachedTec.TipoRev as string)
           if (cachedTec.Projeto) setProjeto(cachedTec.Projeto as string)
           setChassis((cachedTec.Chassis as string) || '')
@@ -350,6 +365,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         setDiagnostico(existing.Motivo || '')
         setServicoRealizado(existing.ServicoRealizado || '')
         setTipoServico(existing.TipoServico || osData?.Tipo_Servico || '')
+        // relatório já preenchido antes = "É garantia?" já foi respondida
+        if (existing.TipoServico) setEhGarantia(String(existing.TipoServico).includes('Garantia') ? 'sim' : 'nao')
         setTipoRev(existing.TipoRev || '')
         setProjeto(existing.Projeto || osData?.Projeto || '')
         setChassis(existing.Chassis || '')
@@ -713,6 +730,16 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (!user) return
 
     // Validar campos obrigatórios com scroll
+    if (!tipoServico.trim()) {
+      mostrarErro('Selecione o Tipo de Serviço.', 'campo-garantia')
+      return
+    }
+    // A pergunta "É GARANTIA?" é obrigatória — foi feita pra ninguém mais
+    // esquecer de marcar garantia (tipo Garantia no dropdown conta como SIM)
+    if (!tipoServico.includes('Garantia') && ehGarantia !== 'nao') {
+      mostrarErro('Responda: este serviço é GARANTIA? (Sim ou Não)', 'campo-garantia')
+      return
+    }
     if (!chassis.trim()) {
       mostrarErro('Preencha o campo Chassis.', 'campo-chassis')
       return
@@ -1376,6 +1403,67 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                 </optgroup>
               ))}
             </select>
+          </div>
+
+          {/* É GARANTIA? — pergunta explícita e OBRIGATÓRIA (os técnicos
+              esqueciam o tipo Garantia perdido no dropdown; sem responder,
+              a OS não envia) */}
+          <div
+            id="campo-garantia"
+            style={{
+              padding: 14, borderRadius: 12,
+              border: `2px solid ${ehGarantia === 'sim' ? '#16A34A' : ehGarantia === 'nao' ? '#D1D5DB' : '#F59E0B'}`,
+              background: ehGarantia === 'sim' ? '#F0FDF4' : ehGarantia === 'nao' ? '#FAFAFA' : '#FFFBEB',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 800, fontSize: 14, color: ehGarantia === 'sim' ? '#15803D' : '#92400E', marginBottom: 4 }}>
+              <ShieldCheck size={18} /> ESTE SERVIÇO É GARANTIA?
+            </div>
+            <p style={{ fontSize: 12, color: '#6B7280', margin: '0 0 10px' }}>
+              Defeito de fábrica que o cliente NÃO paga → marque SIM. A solicitação
+              de garantia é criada automaticamente quando você enviar a OS.
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!tipoServico.includes('Garantia')) {
+                    setTipoServico(tipoServico.includes('Implemento') ? 'Garantia Implemento' : 'Garantia Trator')
+                  }
+                  setEhGarantia('sim')
+                }}
+                style={{
+                  flex: 1, padding: '12px 0', borderRadius: 10, cursor: 'pointer',
+                  border: `2px solid ${ehGarantia === 'sim' ? '#16A34A' : '#E5E7EB'}`,
+                  background: ehGarantia === 'sim' ? '#16A34A' : '#fff',
+                  color: ehGarantia === 'sim' ? '#fff' : '#374151',
+                  fontWeight: 800, fontSize: 13,
+                }}
+              >
+                🛡️ SIM, é garantia
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (tipoServico.includes('Garantia')) setTipoServico('')
+                  setEhGarantia('nao')
+                }}
+                style={{
+                  flex: 1, padding: '12px 0', borderRadius: 10, cursor: 'pointer',
+                  border: `2px solid ${ehGarantia === 'nao' ? '#6B7280' : '#E5E7EB'}`,
+                  background: ehGarantia === 'nao' ? '#6B7280' : '#fff',
+                  color: ehGarantia === 'nao' ? '#fff' : '#374151',
+                  fontWeight: 800, fontSize: 13,
+                }}
+              >
+                NÃO, serviço normal
+              </button>
+            </div>
+            {ehGarantia === 'sim' && (
+              <p style={{ fontSize: 11.5, color: '#15803D', margin: '8px 0 0', fontWeight: 600 }}>
+                ✓ Marcado como {tipoServico || 'Garantia'} — confira Trator/Implemento no seletor acima.
+              </p>
+            )}
           </div>
           {tipoServico.includes('Revisão') && (
             <div>
