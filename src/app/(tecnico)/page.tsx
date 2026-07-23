@@ -6,9 +6,10 @@ import { supabase } from '@/lib/supabase'
 import type { OrdemServico } from '@/lib/types'
 import {
   FileText, ChevronRight, User, Megaphone,
-  Navigation, Clock, MapPin, ShieldCheck,
-  BarChart3, AlertCircle, Headset,
+  Navigation, Clock, MapPin, ShieldCheck, Car,
+  BarChart3, AlertCircle, Headset, BookOpen,
   Camera, Image as ImageIcon, Smile, X, ChevronRight as ArrowRight,
+  Fuel, Info, Shield,
 } from 'lucide-react'
 import Link from 'next/link'
 import { PageSpinner } from '@/components/ui'
@@ -184,7 +185,23 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
   }
 }
 
-// personagens animados que o tecnico pode escolher no lugar da foto
+interface VeiculoInfo {
+  veiculo: {
+    id: string; placa: string; placa_fmt?: string; marca: string | null; modelo: string | null
+    ano: number | null; ano_modelo: number | null; cor: string | null
+    combustivel: string | null; chassi: string | null; renavam: string | null
+    tipo_veiculo: string | null; categoria: string | null; status: string | null
+    proprietario: string | null; equipamentos: string[] | null
+    exercicio_crlv: number | null; capacidade_tanque: number | null
+    tem_rastreador: boolean; hodometro: number | null; imagem_url: string | null
+  }
+  responsavel: { nome: string; inicio: string; origem: string } | null
+  historico: { nome: string; inicio: string; fim: string | null }[]
+  custos: Record<string, number>
+  multas: { abertas: number; valor: number }
+  documentos?: { id: string; tipo: string; numero: string | null; emissor: string | null; vigencia_fim: string | null; url: string | null; nome_arquivo: string | null }[]
+}
+
 const PERSONAGENS = ['🧑‍🔧', '👷', '🧔', '👨‍🔧', '🐻', '🦊', '🐼', '🦁', '🐶', '🦉', '🤖', '🐯']
 
 /* ═══ Slider: ordens em aberto de todos os técnicos ═══ */
@@ -251,11 +268,49 @@ export default function TecnicoHome() {
   const [escolherPersonagem, setEscolherPersonagem] = useState(false)
   const [personagem, setPersonagem] = useState<string>('')
 
+  // --- Veiculo do tecnico ---
+  const [veiculo, setVeiculo] = useState<{ placa: string; descricao: string } | null>(null)
+  const [veiculoInfo, setVeiculoInfo] = useState<VeiculoInfo | null>(null)
+  const [veiculoModal, setVeiculoModal] = useState(false)
+  const [veiculoTab, setVeiculoTab] = useState<'info' | 'docs' | 'checklist'>('info')
+  const [checklistPendente, setChecklistPendente] = useState(false)
+
   useEffect(() => {
     if (!user) return
     const salvo = localStorage.getItem(`mec_personagem_${user.id}`)
     setPersonagem(salvo || '🧑‍🔧')
   }, [user])
+
+  useEffect(() => {
+    if (!nome) return
+    ;(async () => {
+      try {
+        const res = await fetch('/api/veiculo-info', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tecnico_nome: nome }),
+        })
+        if (res.ok) {
+          const info = await res.json()
+          setVeiculoInfo(info)
+          const placaDisplay = info.veiculo?.placa || ''
+          setVeiculo({ placa: placaDisplay, descricao: '' })
+        }
+      } catch {}
+      // Check checklist status
+      try {
+        const res = await fetch('/api/checklist-veiculo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'verificar', tecnico_nome: nome }),
+        })
+        if (res.ok) {
+          const { pendente } = await res.json()
+          setChecklistPendente(pendente)
+        }
+      } catch {}
+    })()
+  }, [nome])
 
   const salvarPersonagem = (p: string) => {
     if (!user) return
@@ -270,15 +325,12 @@ export default function TecnicoHome() {
     if (!file || !user) return
     setUploading(true)
     try {
-      const ext = file.name.split('.').pop() || 'jpg'
-      const path = `avatars/${user.id}.${ext}`
-      const { error: upErr } = await supabase.storage
-        .from('mecanico-files')
-        .upload(path, file, { upsert: true })
-      if (upErr) throw upErr
-      const { data: urlData } = supabase.storage.from('mecanico-files').getPublicUrl(path)
-      const avatarUrl = urlData.publicUrl + '?t=' + Date.now()
-      await supabase.from('mecanico_usuarios').update({ avatar_url: avatarUrl }).eq('id', user.id)
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('userId', user.id)
+      const res = await fetch('/api/avatar', { method: 'POST', body: fd })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'Erro ao enviar')
       if (refresh) refresh()
       setPerfilModal(false)
     } catch (err) {
@@ -339,22 +391,117 @@ export default function TecnicoHome() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {refreshing && <div className="refresh-bar" />}
 
-      {/* Saudacao */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 13, color: colors.textSubtle }}>{saudacao()},</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {user?.tecnico_nome?.split(' ')[0] || 'Tecnico'}
+      {/* ═══ BLOQUEIO: CHECKLIST PENDENTE ═══ */}
+      {checklistPendente && (
+        <div style={{
+          background: colors.dangerBg, borderRadius: 16, padding: 16,
+          border: `1px solid ${colors.dangerBorder || '#FECACA'}`,
+          display: 'flex', alignItems: 'center', gap: 12,
+        }}>
+          <div style={{
+            width: 44, height: 44, borderRadius: 12, flexShrink: 0,
+            background: colors.danger, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <AlertCircle size={22} color="#fff" />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: colors.danger }}>Checklist pendente</div>
+            <div style={{ fontSize: 11, color: colors.text, marginTop: 2 }}>
+              Complete a inspeção do veículo para continuar usando o app
+            </div>
+          </div>
+          <Link href="/checklist-veiculo" style={{
+            padding: '8px 14px', borderRadius: 10, background: colors.danger, color: '#fff',
+            textDecoration: 'none', fontSize: 12, fontWeight: 700, flexShrink: 0,
+          }}>Fazer</Link>
+        </div>
+      )}
+
+      {/* ═══ PERFIL + SAUDAÇÃO (topo) ═══ */}
+      <div
+        className="hb"
+        style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          background: 'linear-gradient(135deg, #1E3A5F, #2B5583)',
+          borderRadius: 20, padding: 16,
+          border: '1px solid #1E3A5F', boxShadow: shadow.sm,
+        }}
+      >
+        {/* Avatar (abre modal de foto) */}
+        <div
+          onClick={() => { setEscolherPersonagem(false); setPerfilModal(true) }}
+          style={{ position: 'relative', flexShrink: 0, cursor: 'pointer' }}
+        >
+          <div style={{
+            width: 56, height: 56, borderRadius: '50%', overflow: 'hidden',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: user?.avatar_url ? '#fff' : 'rgba(255,255,255,0.16)',
+            border: '2px solid rgba(255,255,255,0.5)',
+          }}>
+            {user?.avatar_url ? (
+              <img src={user.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ) : (
+              <span className="char-anim" style={{ fontSize: 32, lineHeight: 1 }}>{personagem}</span>
+            )}
+          </div>
+          <div style={{
+            position: 'absolute', bottom: -2, right: -2, width: 20, height: 20, borderRadius: '50%',
+            background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
+          }}>
+            <Camera size={10} color="#1E3A5F" />
           </div>
         </div>
-        <span style={{
-          fontSize: 12, fontWeight: 600, color: colors.textSubtle,
-          background: colors.surface, borderRadius: radius.md, padding: '6px 12px',
-          border: `1px solid ${colors.border}`, flexShrink: 0,
-          textTransform: 'capitalize' as const,
-        }}>
-          {dataLabel}
-        </span>
+
+        {/* Nome + cargo */}
+        <div
+          onClick={() => { setEscolherPersonagem(false); setPerfilModal(true) }}
+          style={{ flex: 1, minWidth: 0, cursor: 'pointer' }}
+        >
+          <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>{saudacao()},</div>
+          <div style={{ fontSize: 18, fontWeight: 800, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {user?.tecnico_nome?.split(' ')[0] || 'Tecnico'}
+          </div>
+          <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.65)', marginTop: 1 }}>
+            {user?.role === 'admin' ? 'Administrador' : 'Tecnico de campo'}
+          </div>
+        </div>
+
+        {/* Veiculo (abre modal do carro) */}
+        {veiculo && (() => {
+          const partes = veiculo.placa.split(' - ')
+          const placaNum = partes[partes.length - 1]
+          const placaFmt = placaNum.length >= 7 ? placaNum.slice(0, 3) + '-' + placaNum.slice(3) : placaNum
+          const imgUrl = veiculoInfo?.veiculo?.imagem_url
+          return (
+            <div
+              onClick={() => { setVeiculoTab('info'); setVeiculoModal(true) }}
+              style={{
+                flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4,
+                cursor: 'pointer',
+              }}
+            >
+              <div style={{
+                width: 56, height: 56, borderRadius: 14, overflow: 'hidden',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                background: imgUrl ? '#fff' : 'rgba(255,255,255,0.16)',
+                border: '2px solid rgba(255,255,255,0.3)',
+              }}>
+                {imgUrl ? (
+                  <img src={imgUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                ) : (
+                  <Car size={26} color="rgba(255,255,255,0.8)" />
+                )}
+              </div>
+              <span style={{
+                fontSize: 10, fontWeight: 700, color: '#fff', letterSpacing: 0.5,
+                background: 'rgba(255,255,255,0.16)', padding: '2px 8px', borderRadius: 6,
+              }}>
+                {placaFmt}
+              </span>
+            </div>
+          )
+        })()}
       </div>
 
       {/* ═══ CARD: ORDENS DE SERVICO (link direto) ═══ */}
@@ -554,8 +701,20 @@ export default function TecnicoHome() {
           <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
 
+        {/* Catalogo de Pecas */}
+        <Link href="/catalogos" className="hb" style={{ ...blocoStyle, animationDelay: '345ms' }}>
+          <div style={{ ...blocoIcone, background: '#7C3AED' }}>
+            <BookOpen size={25} color="#fff" strokeWidth={2.2} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={blocoTitulo}>Catálogo de Peças</div>
+            <div style={blocoSub}>Consultar peças e diagramas</div>
+          </div>
+          <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
+        </Link>
+
         {/* Relatorios */}
-        <Link href="/relatorios" className="hb" style={{ ...blocoStyle, animationDelay: '345ms' }}>
+        <Link href="/relatorios" className="hb" style={{ ...blocoStyle, animationDelay: '390ms' }}>
           <div style={{ ...blocoIcone, background: colors.success }}>
             <BarChart3 size={25} color="#fff" strokeWidth={2.2} />
           </div>
@@ -566,53 +725,6 @@ export default function TecnicoHome() {
           <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
 
-        {/* Perfil (bloco maior) */}
-        <div
-          onClick={() => { setEscolherPersonagem(false); setPerfilModal(true) }}
-          className="hb"
-          style={{
-            ...blocoStyle, animationDelay: '390ms', cursor: 'pointer', gap: 16,
-            background: 'linear-gradient(135deg, #1E3A5F, #2B5583)',
-            border: '1px solid #1E3A5F', marginTop: 4,
-          }}
-        >
-          <div style={{ position: 'relative', flexShrink: 0 }}>
-            <div style={{
-              width: 72, height: 72, borderRadius: '50%', overflow: 'hidden',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: user?.avatar_url ? '#fff' : 'rgba(255,255,255,0.16)',
-              border: '2px solid rgba(255,255,255,0.5)',
-            }}>
-              {user?.avatar_url ? (
-                <img src={user.avatar_url} alt="Perfil" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              ) : (
-                <span className="char-anim" style={{ fontSize: 42, lineHeight: 1 }}>{personagem}</span>
-              )}
-            </div>
-            <div style={{
-              position: 'absolute', bottom: -2, right: -2, width: 26, height: 26, borderRadius: '50%',
-              background: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
-            }}>
-              <Camera size={14} color="#1E3A5F" />
-            </div>
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 18, fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {user?.tecnico_nome || 'Meu perfil'}
-            </div>
-            <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.75)', marginTop: 2 }}>
-              {user?.role === 'admin' ? 'Administrador' : 'Tecnico de campo'}
-            </div>
-            <div style={{
-              display: 'inline-flex', alignItems: 'center', gap: 5, marginTop: 9,
-              fontSize: 11, color: '#fff', background: 'rgba(255,255,255,0.16)',
-              padding: '4px 10px', borderRadius: 999,
-            }}>
-              <Camera size={12} /> Toque para trocar foto ou personagem
-            </div>
-          </div>
-        </div>
       </div>
 
       {/* inputs ocultos de foto */}
@@ -810,6 +922,305 @@ export default function TecnicoHome() {
           </div>
         </div>
       )}
+
+      {/* ═══ MODAL: VEICULO ═══ */}
+      {veiculoModal && veiculo && (() => {
+        const vi = veiculoInfo
+        const v = vi?.veiculo
+        const partes = veiculo.placa.split(' - ')
+        const nomeModelo = v ? [v.marca, v.modelo].filter(Boolean).join(' ') : (partes.length > 1 ? partes.slice(0, -1).join(' - ') : veiculo.descricao || '')
+        const placaNum = partes[partes.length - 1]
+        const placaFmt = placaNum.length >= 7 ? placaNum.slice(0, 3) + '-' + placaNum.slice(3) : placaNum
+        const fmtDate = (d: string | null) => d ? new Date(d + 'T12:00:00').toLocaleDateString('pt-BR') : ''
+        const fmtMoney = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+        const row = (label: string, val: string | number | null | undefined) => (
+          val != null && val !== '' ? (
+            <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
+              <span style={{ fontSize: 12, color: colors.textMuted, flexShrink: 0 }}>{label}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: colors.text, textAlign: 'right', wordBreak: 'break-all' }}>{val}</span>
+            </div>
+          ) : null
+        )
+        return (
+          <div
+            onClick={() => setVeiculoModal(false)}
+            style={{
+              position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.5)',
+              display: 'flex', alignItems: 'flex-end', justifyContent: 'center', padding: 0,
+            }}
+          >
+            <div
+              className="perfil-modal"
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: colors.surface, borderRadius: '24px 24px 0 0', width: '100%', maxWidth: 440,
+                maxHeight: '90vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                boxShadow: '0 -4px 30px rgba(0,0,0,0.2)',
+              }}
+            >
+              {/* Header */}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px',
+                borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
+              }}>
+                <div style={{
+                  width: 48, height: 48, borderRadius: 12, overflow: 'hidden', flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: v?.imagem_url ? '#fff' : colors.primaryBg,
+                }}>
+                  {v?.imagem_url ? (
+                    <img src={v.imagem_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <Car size={24} color={colors.primary} />
+                  )}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>{nomeModelo || 'Veiculo'}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+                    <span style={{
+                      fontSize: 12, fontWeight: 700, color: '#333', background: '#fff',
+                      border: '1.5px solid #333', borderRadius: 4, padding: '1px 6px', letterSpacing: 1,
+                    }}>{placaFmt}</span>
+                    {v?.tem_rastreador && (
+                      <span style={{ fontSize: 9, fontWeight: 600, color: colors.success, background: colors.successBg, padding: '2px 6px', borderRadius: 4 }}>RASTREADO</span>
+                    )}
+                  </div>
+                </div>
+                <button
+                  onClick={() => setVeiculoModal(false)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, lineHeight: 0, flexShrink: 0 }}
+                >
+                  <X size={20} color={colors.textMuted} />
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div style={{ display: 'flex', borderBottom: `1px solid ${colors.border}`, flexShrink: 0, padding: '0 20px' }}>
+                {([['info', 'Informações'], ['docs', 'Documentos'], ['checklist', 'Checklist']] as const).map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => setVeiculoTab(key)}
+                    style={{
+                      flex: 1, padding: '10px 0', border: 'none', cursor: 'pointer',
+                      background: 'none', fontSize: 12, fontWeight: 600,
+                      color: veiculoTab === key ? colors.primary : colors.textMuted,
+                      borderBottom: veiculoTab === key ? `2px solid ${colors.primary}` : '2px solid transparent',
+                    }}
+                  >{label}</button>
+                ))}
+              </div>
+
+              {/* Conteudo scrollavel */}
+              <div style={{ overflowY: 'auto', padding: '16px 20px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {!vi || !v ? (
+                  <div style={{ textAlign: 'center', padding: 24, color: colors.textMuted, fontSize: 13 }}>
+                    <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto 8px' }} />
+                    Carregando informacoes...
+                  </div>
+                ) : veiculoTab === 'docs' ? (
+                  /* ── ABA: DOCUMENTOS ── */
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                    {(vi.documentos || []).length > 0 ? (vi.documentos || []).map((doc) => {
+                      const vencido = doc.vigencia_fim ? new Date(doc.vigencia_fim) < new Date() : false
+                      const diasRestantes = doc.vigencia_fim ? Math.ceil((new Date(doc.vigencia_fim).getTime() - Date.now()) / 86400000) : null
+                      const corValidade = vencido ? colors.danger : (diasRestantes !== null && diasRestantes <= 30) ? colors.warning : colors.success
+                      return (
+                        <a
+                          key={doc.id}
+                          href={doc.url || '#'}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            display: 'flex', alignItems: 'center', gap: 12, padding: 12,
+                            background: colors.surfaceAlt, borderRadius: 12, textDecoration: 'none',
+                            border: `1px solid ${colors.border}`,
+                          }}
+                        >
+                          <div style={{
+                            width: 40, height: 40, borderRadius: 10, flexShrink: 0,
+                            background: vencido ? colors.dangerBg : colors.primaryBg,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          }}>
+                            <FileText size={20} color={vencido ? colors.danger : colors.primary} />
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{doc.tipo}</div>
+                            {doc.numero && <div style={{ fontSize: 11, color: colors.textMuted }}>Nº {doc.numero}</div>}
+                            {doc.emissor && <div style={{ fontSize: 11, color: colors.textMuted }}>{doc.emissor}</div>}
+                          </div>
+                          {doc.vigencia_fim && (
+                            <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: corValidade }}>
+                                {vencido ? 'Vencido' : diasRestantes !== null && diasRestantes <= 30 ? `${diasRestantes}d` : 'Vigente'}
+                              </div>
+                              <div style={{ fontSize: 10, color: colors.textMuted }}>
+                                {new Date(doc.vigencia_fim).toLocaleDateString('pt-BR')}
+                              </div>
+                            </div>
+                          )}
+                        </a>
+                      )
+                    }) : (
+                      <div style={{ textAlign: 'center', padding: 24, color: colors.textMuted, fontSize: 13 }}>
+                        Nenhum documento encontrado
+                      </div>
+                    )}
+                  </div>
+                ) : veiculoTab === 'checklist' ? (
+                  /* ── ABA: CHECKLIST ── */
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    <div style={{ textAlign: 'center', padding: '12px 0' }}>
+                      <Shield size={36} color={colors.primary} style={{ margin: '0 auto 8px' }} />
+                      <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>Inspeção Mensal</div>
+                      <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
+                        Checklist obrigatório todo final de mês
+                      </div>
+                    </div>
+                    <Link
+                      href="/checklist-veiculo"
+                      onClick={() => setVeiculoModal(false)}
+                      style={{
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                        padding: '12px 16px', borderRadius: 14,
+                        background: colors.primary, color: '#fff', textDecoration: 'none',
+                        fontSize: 14, fontWeight: 600,
+                      }}
+                    >
+                      <Camera size={16} /> Iniciar Checklist
+                    </Link>
+                  </div>
+                ) : (
+                  <>
+                    {/* Pendencias */}
+                    {vi.multas.abertas > 0 && (
+                      <div style={{
+                        background: colors.warningBg, borderRadius: 12, padding: '10px 14px',
+                        border: `1px solid ${colors.warningBorder}`,
+                      }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: colors.warning, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <AlertCircle size={14} /> PENDENCIAS
+                        </div>
+                        <div style={{ fontSize: 11, color: colors.text, marginTop: 4 }}>
+                          {vi.multas.abertas} multa{vi.multas.abertas > 1 ? 's' : ''} em aberto ({fmtMoney(vi.multas.valor)})
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Identificacao */}
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Info size={13} /> IDENTIFICACAO
+                      </div>
+                      <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: '4px 12px', border: `1px solid ${colors.border}` }}>
+                        {row('Marca / Modelo', nomeModelo)}
+                        {row('Ano', v.ano_modelo ? `${v.ano || v.ano_modelo}/${v.ano_modelo}` : v.ano)}
+                        {row('Cor', v.cor)}
+                        {row('Combustivel', v.combustivel)}
+                        {row('Chassi', v.chassi)}
+                        {row('RENAVAM', v.renavam)}
+                        {row('Tipo', v.tipo_veiculo)}
+                        {row('Categoria', v.categoria)}
+                        {row('Status', v.status)}
+                        {row('Proprietario', v.proprietario)}
+                        {row('Documento (exercicio)', v.exercicio_crlv ? String(v.exercicio_crlv) : null)}
+                        {row('Hodometro (rastreador)', v.hodometro != null ? `${v.hodometro.toLocaleString('pt-BR')} km` : null)}
+                        {row('Tanque', v.capacidade_tanque ? `${v.capacidade_tanque} L` : null)}
+                        {v.equipamentos && v.equipamentos.length > 0 && (
+                          <div style={{ padding: '8px 0' }}>
+                            <span style={{ fontSize: 12, color: colors.textMuted }}>Equipamentos</span>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: 4 }}>
+                              {v.equipamentos.map((eq) => (
+                                <span key={eq} style={{
+                                  fontSize: 10, fontWeight: 600, padding: '3px 8px', borderRadius: 6,
+                                  background: colors.successBg, color: colors.success,
+                                }}>{eq}</span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Responsavel */}
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <User size={13} /> RESPONSAVEL
+                      </div>
+                      <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: 12, border: `1px solid ${colors.border}` }}>
+                        {vi.responsavel ? (
+                          <>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>{vi.responsavel.nome}</div>
+                            <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+                              desde {fmtDate(vi.responsavel.inicio)} · origem: {vi.responsavel.origem}
+                            </div>
+                          </>
+                        ) : (
+                          <div style={{ fontSize: 12, color: colors.textMuted }}>Sem responsavel atribuido</div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Historico */}
+                    {vi.historico.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Clock size={13} /> HISTORICO
+                        </div>
+                        <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: '4px 12px', border: `1px solid ${colors.border}` }}>
+                          {vi.historico.map((h, i) => (
+                            <div key={i} style={{
+                              display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0',
+                              borderBottom: i < vi.historico.length - 1 ? `1px solid ${colors.border}` : 'none',
+                            }}>
+                              <span style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>{h.nome}</span>
+                              <span style={{ fontSize: 11, color: colors.textMuted, flexShrink: 0 }}>
+                                {fmtDate(h.inicio)} → {h.fim ? fmtDate(h.fim) : 'atual'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Custos */}
+                    {Object.keys(vi.custos).length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <Fuel size={13} /> CUSTOS (ULTIMOS 12 MESES)
+                        </div>
+                        <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: '4px 12px', border: `1px solid ${colors.border}` }}>
+                          {Object.entries(vi.custos).sort((a, b) => b[1] - a[1]).map(([tipo, valor], i, arr) => (
+                            <div key={tipo} style={{
+                              display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0',
+                              borderBottom: i < arr.length - 1 ? `1px solid ${colors.border}` : 'none',
+                            }}>
+                              <span style={{ fontSize: 12, color: colors.textMuted }}>{tipo}</span>
+                              <span style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>{fmtMoney(valor)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                <Link
+                  href="/mapa"
+                  onClick={() => setVeiculoModal(false)}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    padding: '12px 16px', borderRadius: 14,
+                    background: colors.primary, color: '#fff', textDecoration: 'none',
+                    fontSize: 14, fontWeight: 600,
+                  }}
+                >
+                  <MapPin size={16} /> Ver no Mapa
+                </Link>
+              </div>
+            </div>
+          </div>
+        )
+      })()}
 
     </div>
   )
