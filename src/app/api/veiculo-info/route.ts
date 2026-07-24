@@ -33,11 +33,13 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
   // 2. By CPF → frota_motoristas → frota_responsaveis (current) → frota_veiculos
   if (cpf) {
     const cpfLimpo = cleanCpf(cpf)
-    const { data: motorista } = await supabase
+    const cpfFmt = cpfLimpo.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')
+    const { data: motoristas } = await supabase
       .from('frota_motoristas')
       .select('id')
-      .eq('cpf', cpfLimpo)
-      .maybeSingle()
+      .in('cpf', [cpfLimpo, cpfFmt])
+      .limit(1)
+    const motorista = motoristas?.[0] || null
     if (motorista) {
       const { data: resp } = await supabase
         .from('frota_responsaveis')
