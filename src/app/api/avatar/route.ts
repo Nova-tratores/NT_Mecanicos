@@ -17,16 +17,15 @@ export async function POST(req: NextRequest) {
     const userId = formData.get('userId') as string | null
     if (!file || !userId) return NextResponse.json({ error: 'Dados incompletos' }, { status: 400 })
 
-    const ext = file.name.split('.').pop() || 'jpg'
-    const path = `avatars/${userId}.${ext}`
+    const path = `${userId}.jpg`
     const bytes = new Uint8Array(await file.arrayBuffer())
 
     const { error: upErr } = await supabase.storage
-      .from('mecanico-files')
+      .from('avatars')
       .upload(path, bytes, { upsert: true, contentType: file.type || 'image/jpeg' })
     if (upErr) return NextResponse.json({ error: `Upload falhou: ${upErr.message}` }, { status: 500 })
 
-    const { data: urlData } = supabase.storage.from('mecanico-files').getPublicUrl(path)
+    const { data: urlData } = supabase.storage.from('avatars').getPublicUrl(path)
     const avatarUrl = urlData.publicUrl + '?t=' + Date.now()
 
     await Promise.all([
