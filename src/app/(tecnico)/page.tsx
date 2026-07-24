@@ -320,13 +320,42 @@ export default function TecnicoHome() {
     setPerfilModal(false)
   }
 
+  const resizeImage = (file: File, maxSize: number): Promise<Blob> => {
+    return new Promise((resolve, reject) => {
+      const img = new window.Image()
+      const url = URL.createObjectURL(file)
+      img.onload = () => {
+        URL.revokeObjectURL(url)
+        let { width, height } = img
+        if (width > maxSize || height > maxSize) {
+          const ratio = Math.min(maxSize / width, maxSize / height)
+          width = Math.round(width * ratio)
+          height = Math.round(height * ratio)
+        }
+        const canvas = document.createElement('canvas')
+        canvas.width = width
+        canvas.height = height
+        const ctx = canvas.getContext('2d')!
+        ctx.drawImage(img, 0, 0, width, height)
+        canvas.toBlob(
+          blob => blob ? resolve(blob) : reject(new Error('Falha ao comprimir')),
+          'image/jpeg',
+          0.8,
+        )
+      }
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Imagem invalida')) }
+      img.src = url
+    })
+  }
+
   const handleFoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || !user) return
     setUploading(true)
     try {
+      const compressed = await resizeImage(file, 512)
       const fd = new FormData()
-      fd.append('file', file)
+      fd.append('file', new File([compressed], 'avatar.jpg', { type: 'image/jpeg' }))
       fd.append('userId', user.id)
       const res = await fetch('/api/avatar', { method: 'POST', body: fd })
       const json = await res.json()
@@ -364,13 +393,13 @@ export default function TecnicoHome() {
   // estilos compartilhados dos blocos de acao (linha horizontal, largura total)
   const blocoStyle = {
     display: 'flex', alignItems: 'center', gap: 14, textDecoration: 'none',
-    background: colors.surface, borderRadius: 20, padding: 18,
+    background: colors.surface, borderRadius: 14, padding: '14px 16px',
     border: `1px solid ${colors.border}`, boxShadow: shadow.sm,
+    borderLeft: '4px solid transparent',
   } as const
   const blocoIcone = {
-    width: 52, height: 52, borderRadius: 16, flexShrink: 0,
+    width: 40, height: 40, borderRadius: 10, flexShrink: 0,
     display: 'flex', alignItems: 'center', justifyContent: 'center',
-    boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
   } as const
   const blocoTitulo = { fontSize: 16, fontWeight: 600, color: colors.text } as const
   const blocoSub = { fontSize: 12, color: colors.textMuted, marginTop: 2 } as const
@@ -586,17 +615,13 @@ export default function TecnicoHome() {
       <button
         onClick={() => { setShowHistorico(false); setAvisosModal(true) }}
         className="hb"
-        style={{ ...blocoStyle, animationDelay: '60ms', width: '100%', padding: 20, cursor: 'pointer' }}
+        style={{ ...blocoStyle, animationDelay: '60ms', width: '100%', cursor: 'pointer', borderLeftColor: colors.warning }}
       >
-        <div style={{
-          width: 52, height: 52, borderRadius: 16, background: colors.warning,
-          display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-          boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
-        }}>
-          <Megaphone size={26} color="#fff" strokeWidth={2.2} />
+        <div style={{ ...blocoIcone }}>
+          <Megaphone size={24} color={colors.warning} strokeWidth={2.2} />
         </div>
         <div style={{ flex: 1, minWidth: 0, textAlign: 'left' }}>
-          <div style={{ fontSize: 17, fontWeight: 600, color: colors.text }}>Avisos</div>
+          <div style={blocoTitulo}>Avisos</div>
           <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
             {avisos.length > 0 ? `${avisos.length} aviso${avisos.length > 1 ? 's' : ''} ativo${avisos.length > 1 ? 's' : ''}` : 'Nenhum aviso'}
           </div>
@@ -613,9 +638,9 @@ export default function TecnicoHome() {
       {/* ═══ BLOCOS DE ACAO ═══ */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {/* Jornada */}
-        <Link href="/jornada" className="hb" style={{ ...blocoStyle, animationDelay: '120ms' }}>
-          <div style={{ ...blocoIcone, background: colors.info }}>
-            <Navigation size={25} color="#fff" strokeWidth={2.2} />
+        <Link href="/jornada" className="hb" style={{ ...blocoStyle, animationDelay: '120ms', borderLeftColor: colors.info }}>
+          <div style={{ ...blocoIcone }}>
+            <Navigation size={22} color={colors.info} strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={blocoTitulo}>Jornada</div>
@@ -625,9 +650,9 @@ export default function TecnicoHome() {
         </Link>
 
         {/* Mapa de Veiculos */}
-        <Link href="/mapa" className="hb" style={{ ...blocoStyle, animationDelay: '165ms' }}>
-          <div style={{ ...blocoIcone, background: colors.accent }}>
-            <MapPin size={25} color="#fff" strokeWidth={2.2} />
+        <Link href="/mapa" className="hb" style={{ ...blocoStyle, animationDelay: '165ms', borderLeftColor: colors.accent }}>
+          <div style={{ ...blocoIcone }}>
+            <MapPin size={22} color={colors.accent} strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={blocoTitulo}>Mapa de Veiculos</div>
@@ -640,22 +665,22 @@ export default function TecnicoHome() {
         <Link href="/garantias" className="hb" style={{
           ...blocoStyle,
           animationDelay: '210ms',
+          borderLeftColor: garantiasPendentes > 0 ? colors.warning : colors.success,
           background: garantiasPendentes > 0 ? colors.warningBg : colors.surface,
           border: `1px solid ${garantiasPendentes > 0 ? colors.warningBorder : colors.border}`,
         }}>
           <div style={{
             ...blocoIcone,
-            background: garantiasPendentes > 0 ? colors.warning : colors.success,
             position: 'relative',
           }}>
-            <ShieldCheck size={25} color="#fff" strokeWidth={2.2} />
+            <ShieldCheck size={22} color={garantiasPendentes > 0 ? colors.warning : colors.success} strokeWidth={2.2} />
             {garantiasPendentes > 0 && (
               <span style={{
                 position: 'absolute', top: -4, right: -4,
                 background: colors.danger, color: '#fff', fontSize: 10,
                 fontWeight: 700, borderRadius: 10, minWidth: 20, height: 20,
                 display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '0 4px',
-                border: '2px solid #fff', boxShadow: shadow.sm,
+                border: `2px solid ${colors.surface}`, boxShadow: shadow.sm,
               }}>
                 {garantiasPendentes}
               </span>
@@ -678,9 +703,9 @@ export default function TecnicoHome() {
         </Link>
 
         {/* Opa */}
-        <Link href="/opa" className="hb" style={{ ...blocoStyle, animationDelay: '255ms' }}>
-          <div style={{ ...blocoIcone, background: colors.danger }}>
-            <AlertCircle size={25} color="#fff" strokeWidth={2.2} />
+        <Link href="/opa" className="hb" style={{ ...blocoStyle, animationDelay: '255ms', borderLeftColor: colors.danger }}>
+          <div style={{ ...blocoIcone }}>
+            <AlertCircle size={22} color={colors.danger} strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={blocoTitulo}>Opa</div>
@@ -690,9 +715,9 @@ export default function TecnicoHome() {
         </Link>
 
         {/* SAT Digital */}
-        <Link href="/sat" className="hb" style={{ ...blocoStyle, animationDelay: '300ms' }}>
-          <div style={{ ...blocoIcone, background: '#D97706' }}>
-            <Headset size={25} color="#fff" strokeWidth={2.2} />
+        <Link href="/sat" className="hb" style={{ ...blocoStyle, animationDelay: '300ms', borderLeftColor: '#D97706' }}>
+          <div style={{ ...blocoIcone }}>
+            <Headset size={22} color="#D97706" strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={blocoTitulo}>SAT Digital</div>
@@ -702,9 +727,9 @@ export default function TecnicoHome() {
         </Link>
 
         {/* Catalogo de Pecas */}
-        <Link href="/catalogos" className="hb" style={{ ...blocoStyle, animationDelay: '345ms' }}>
-          <div style={{ ...blocoIcone, background: '#7C3AED' }}>
-            <BookOpen size={25} color="#fff" strokeWidth={2.2} />
+        <Link href="/catalogos" className="hb" style={{ ...blocoStyle, animationDelay: '345ms', borderLeftColor: '#7C3AED' }}>
+          <div style={{ ...blocoIcone }}>
+            <BookOpen size={22} color="#7C3AED" strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={blocoTitulo}>Catálogo de Peças</div>
@@ -714,9 +739,9 @@ export default function TecnicoHome() {
         </Link>
 
         {/* Relatorios */}
-        <Link href="/relatorios" className="hb" style={{ ...blocoStyle, animationDelay: '390ms' }}>
-          <div style={{ ...blocoIcone, background: colors.success }}>
-            <BarChart3 size={25} color="#fff" strokeWidth={2.2} />
+        <Link href="/relatorios" className="hb" style={{ ...blocoStyle, animationDelay: '390ms', borderLeftColor: colors.success }}>
+          <div style={{ ...blocoIcone }}>
+            <BarChart3 size={22} color={colors.success} strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={blocoTitulo}>Relatorios</div>
