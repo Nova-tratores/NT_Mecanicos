@@ -266,6 +266,7 @@ export default function TecnicoHome() {
   const [uploading, setUploading] = useState(false)
   const [perfilModal, setPerfilModal] = useState(false)
   const [fotoPreview, setFotoPreview] = useState<{ url: string; file: File } | null>(null)
+  const [avatarLocal, setAvatarLocal] = useState<string | null>(null)
   const [escolherPersonagem, setEscolherPersonagem] = useState(false)
   const [personagem, setPersonagem] = useState<string>('')
 
@@ -368,6 +369,12 @@ export default function TecnicoHome() {
       const res = await fetch('/api/avatar', { method: 'POST', body: fd })
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Erro ao enviar')
+      setAvatarLocal(json.avatar_url)
+      try {
+        const cached = JSON.parse(localStorage.getItem('nt-mecanicos-profile') || '{}')
+        cached.avatar_url = json.avatar_url
+        localStorage.setItem('nt-mecanicos-profile', JSON.stringify(cached))
+      } catch {}
       if (refresh) refresh()
       URL.revokeObjectURL(fotoPreview.url)
       setFotoPreview(null)
@@ -478,11 +485,11 @@ export default function TecnicoHome() {
           <div style={{
             width: 56, height: 56, borderRadius: '50%', overflow: 'hidden',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: user?.avatar_url ? '#fff' : 'rgba(255,255,255,0.16)',
+            background: (avatarLocal || user?.avatar_url) ? '#fff' : 'rgba(255,255,255,0.16)',
             border: '2px solid rgba(255,255,255,0.5)',
           }}>
-            {user?.avatar_url ? (
-              <img src={user.avatar_url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            {(avatarLocal || user?.avatar_url) ? (
+              <img src={avatarLocal || user?.avatar_url || ''} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             ) : (
               <span className="char-anim" style={{ fontSize: 32, lineHeight: 1 }}>{personagem}</span>
             )}
@@ -917,6 +924,24 @@ export default function TecnicoHome() {
                 <X size={20} color={colors.textMuted} />
               </button>
             </div>
+
+            {!fotoPreview && !escolherPersonagem && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
+                <div style={{
+                  width: 120, height: 120, borderRadius: '50%', overflow: 'hidden',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: (avatarLocal || user?.avatar_url) ? '#fff' : colors.surfaceAlt,
+                  border: `3px solid ${colors.border}`,
+                  boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
+                }}>
+                  {(avatarLocal || user?.avatar_url) ? (
+                    <img src={avatarLocal || user?.avatar_url || ''} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  ) : (
+                    <span style={{ fontSize: 56, lineHeight: 1 }}>{personagem}</span>
+                  )}
+                </div>
+              </div>
+            )}
 
             {fotoPreview ? (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
