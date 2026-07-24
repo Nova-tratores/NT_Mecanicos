@@ -10,6 +10,8 @@ export const STATUS_LABEL: Record<GarantiaStatus, string> = {
   bo_tecnico: 'Aguardando você (B.O.)',
   enviada: 'Em análise da fábrica',
   info_pendente: 'Fábrica solicitou informação',
+  aguardando_servico: 'Peças aprovadas — fazer o serviço',
+  ressarcimento_fabrica: 'Ressarcimento na fábrica',
   aprovada: 'Aprovada',
   rejeitada: 'Recusada',
 }
@@ -20,6 +22,8 @@ export const STATUS_COR: Record<GarantiaStatus, string> = {
   bo_tecnico: '#F59E0B',
   enviada: '#8B5CF6',
   info_pendente: '#F97316',
+  aguardando_servico: '#0D9488',
+  ressarcimento_fabrica: '#C026D3',
   aprovada: '#10B981',
   rejeitada: '#EF4444',
 }
@@ -30,6 +34,8 @@ export const STATUS_BG: Record<GarantiaStatus, string> = {
   bo_tecnico: '#FEF3C7',
   enviada: '#F5F3FF',
   info_pendente: '#FFEDD5',
+  aguardando_servico: '#CCFBF1',
+  ressarcimento_fabrica: '#FAE8FF',
   aprovada: '#ECFDF5',
   rejeitada: '#FEF2F2',
 }

@@ -425,9 +425,12 @@ export async function responderPendencia(
     return { ok: false, erro: 'Falha ao salvar a resposta (sem permissão de escrita — avise o garantista).' }
   }
 
-  // Volta status da garantia ao fluxo (mesma checagem anti-silêncio)
+  // Volta status da garantia ao fluxo (mesma checagem anti-silêncio).
+  // status_retorno vem da pendência: info_fabrica aberta durante o
+  // ressarcimento volta pra ressarcimento_fabrica, não pra enviada.
+  // Fallback pro comportamento antigo em pendências sem a coluna preenchida.
   const tipo = (pend as any).tipo
-  const novoStatus = tipo === 'bo' ? 'em_analise' : 'enviada'
+  const novoStatus = (pend as any).status_retorno || (tipo === 'bo' ? 'em_analise' : 'enviada')
   const { data: gUpd, error: gErr } = await supabase
     .from('garantias')
     .update({ status: novoStatus, updated_at: new Date().toISOString() })

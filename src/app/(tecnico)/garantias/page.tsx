@@ -76,7 +76,7 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
 
   const pendAberta = g.pendencias?.find((p) => p.status === 'aberta')
   const precisaAcao = !!pendAberta
-  const naFabrica = g.status === 'enviada' || g.status === 'info_pendente'
+  const naFabrica = g.status === 'enviada' || g.status === 'info_pendente' || g.status === 'ressarcimento_fabrica'
 
   async function enviar() {
     if (!pendAberta) return
@@ -181,6 +181,26 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
                 </a>
               )
             })}
+        </div>
+      )}
+
+      {/* Peças aprovadas — aguardando o serviço (fluxo em duas etapas) */}
+      {g.status === 'aguardando_servico' && (
+        <div
+          style={{
+            display: 'flex', flexDirection: 'column', gap: 2, marginTop: 10,
+            padding: '8px 10px', borderRadius: 8,
+            background: '#CCFBF1', color: '#0F766E', fontSize: 12, fontWeight: 700,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <CheckCircle2 size={14} />
+            Peças aprovadas pela fábrica — pode combinar e executar o serviço.
+          </div>
+          <div style={{ fontSize: 11, fontWeight: 500 }}>
+            Depois o garantista solicita o ressarcimento das suas horas e km.
+            {g.pecas_retorno_em ? ` Aprovadas há ${diasEntre(g.pecas_retorno_em)}d.` : ''}
+          </div>
         </div>
       )}
 

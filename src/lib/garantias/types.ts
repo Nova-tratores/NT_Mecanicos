@@ -6,6 +6,8 @@ export type GarantiaStatus =
   | 'bo_tecnico'
   | 'enviada'
   | 'info_pendente'
+  | 'aguardando_servico' // duas etapas: peças aprovadas, esperando o serviço
+  | 'ressarcimento_fabrica' // duas etapas: ressarcimento de horas/km na fábrica
   | 'aprovada'
   | 'rejeitada'
 
@@ -70,6 +72,7 @@ export interface GarantiaPendencia {
   garantia_id: string
   tipo: PendenciaTipo
   status: PendenciaStatus
+  status_retorno: string | null
   descricao: string
   exige_visita: boolean
   criado_por: string
@@ -117,6 +120,8 @@ export interface Garantia {
   valor_pago_pecas: number | null
   valor_pago_total: number | null
   enviada_fabrica_em: string | null
+  pecas_retorno_em: string | null
+  ressarcimento_enviado_em: string | null
   finalizada_em: string | null
   created_at: string
   updated_at: string
