@@ -92,7 +92,7 @@ export function useCurrentUser() {
         if (perm && (perm.mecanico_role || perm.is_admin)) {
           const { data: portalProfile } = await withTimeout(supabase
             .from('financeiro_usu')
-            .select('nome, email, avatar_url, ativo')
+            .select('nome, email, avatar_url, ativo, cpf')
             .eq('id', session.user.id)
             .single())
 
@@ -117,6 +117,7 @@ export function useCurrentUser() {
             tecnico_email: portalProfile?.email || session.user.email || '',
             telefone: null,
             avatar_url: portalProfile?.avatar_url || null,
+            cpf: portalProfile?.cpf || null,
             ativo: true,
             role: perm.is_admin ? 'admin' : 'tecnico',
             nome_pos: perm.mecanico_tecnico_nome || null,

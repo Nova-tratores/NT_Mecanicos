@@ -288,7 +288,7 @@ export default function TecnicoHome() {
         const res = await fetch('/api/veiculo-info', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tecnico_nome: nome }),
+          body: JSON.stringify({ tecnico_nome: nome, cpf: user?.cpf }),
         })
         if (res.ok) {
           const info = await res.json()
@@ -310,7 +310,7 @@ export default function TecnicoHome() {
         }
       } catch {}
     })()
-  }, [nome])
+  }, [nome, user?.cpf])
 
   const salvarPersonagem = (p: string) => {
     if (!user) return

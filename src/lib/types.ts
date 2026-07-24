@@ -6,6 +6,7 @@ export interface MecanicoProfile {
   avatar_url: string | null
   ativo: boolean
   role: 'tecnico' | 'admin'
+  cpf: string | null
   nome_pos: string | null  // nome usado no POS (Tecnicos_Appsheet/req_usuarios)
   mecanico_role?: 'tecnico' | 'observador' | null  // papel no app (vem do portal_permissoes)
 }

@@ -11,7 +11,11 @@ function extractPlaca(raw: string): string | null {
   return m ? m[0].toUpperCase() : null
 }
 
-async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string) {
+function cleanCpf(cpf: string): string {
+  return cpf.replace(/\D/g, '')
+}
+
+async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: string) {
   // 1. By placa directly
   if (placaRaw) {
     const clean = extractPlaca(placaRaw)
@@ -26,27 +30,36 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string) {
     }
   }
 
-  // 2. By technician name → tecnico_veiculos → placa → frota_veiculos
-  if (tecnicoNome) {
-    const { data: tv } = await supabase
-      .from('tecnico_veiculos')
-      .select('placa')
-      .eq('tecnico_nome', tecnicoNome)
+  // 2. By CPF → frota_motoristas → frota_responsaveis (current) → frota_veiculos
+  if (cpf) {
+    const cpfLimpo = cleanCpf(cpf)
+    const { data: motorista } = await supabase
+      .from('frota_motoristas')
+      .select('id')
+      .eq('cpf', cpfLimpo)
       .maybeSingle()
-    if (tv?.placa) {
-      const clean = extractPlaca(tv.placa)
-      if (clean) {
-        const withDash = clean.slice(0, 3) + '-' + clean.slice(3)
+    if (motorista) {
+      const { data: resp } = await supabase
+        .from('frota_responsaveis')
+        .select('veiculo_id')
+        .eq('motorista_id', motorista.id)
+        .is('fim', null)
+        .order('inicio', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      if (resp?.veiculo_id) {
         const { data } = await supabase
           .from('frota_veiculos')
           .select('*')
-          .or(`placa.eq.${clean},placa.eq.${withDash}`)
+          .eq('id', resp.veiculo_id)
           .maybeSingle()
         if (data) return data
       }
     }
+  }
 
-    // 3. By technician name → frota_responsaveis (current) → frota_veiculos
+  // 3. Fallback: by technician name → frota_responsaveis (current) → frota_veiculos
+  if (tecnicoNome) {
     const { data: resp } = await supabase
       .from('frota_responsaveis')
       .select('veiculo_id')
@@ -70,9 +83,9 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string) {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { placa, tecnico_nome } = body
+    const { placa, tecnico_nome, cpf } = body
 
-    const veiculo = await findFrotaVeiculo(placa, tecnico_nome)
+    const veiculo = await findFrotaVeiculo(placa, tecnico_nome, cpf)
     if (!veiculo) return NextResponse.json({ error: 'Veículo não encontrado' }, { status: 404 })
 
     // Image from Placas

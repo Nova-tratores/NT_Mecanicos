@@ -40,6 +40,7 @@ export function useAdmin() {
             tecnico_email: portalProfile?.email || session.user.email || '',
             telefone: null,
             avatar_url: portalProfile?.avatar_url || null,
+            cpf: null,
             ativo: true,
             role: 'admin',
             nome_pos: perm.mecanico_tecnico_nome || null,
