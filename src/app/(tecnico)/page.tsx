@@ -288,7 +288,7 @@ export default function TecnicoHome() {
         const res = await fetch('/api/veiculo-info', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tecnico_nome: nome, cpf: user?.cpf }),
+          body: JSON.stringify({ tecnico_nome: nome, cpf: user?.cpf, user_id: user?.id }),
         })
         if (res.ok) {
           const info = await res.json()

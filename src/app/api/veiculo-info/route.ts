@@ -85,7 +85,17 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
-    const { placa, tecnico_nome, cpf } = body
+    const { placa, tecnico_nome, user_id } = body
+    let { cpf } = body
+
+    if (!cpf && user_id) {
+      const { data: usu } = await supabase
+        .from('financeiro_usu')
+        .select('cpf')
+        .eq('id', user_id)
+        .maybeSingle()
+      if (usu?.cpf) cpf = usu.cpf
+    }
 
     const veiculo = await findFrotaVeiculo(placa, tecnico_nome, cpf)
     if (!veiculo) return NextResponse.json({ error: 'Veículo não encontrado' }, { status: 404 })
