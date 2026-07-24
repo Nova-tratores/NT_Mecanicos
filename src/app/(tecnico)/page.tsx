@@ -749,9 +749,9 @@ export default function TecnicoHome() {
         </Link>
 
         {/* Ocorrencias disciplinares (pontos) */}
-        <Link href="/ocorrencias" className="hb" style={{ ...blocoStyle, animationDelay: '285ms' }}>
-          <div style={{ ...blocoIcone, background: '#991B1B' }}>
-            <AlertTriangle size={25} color="#fff" strokeWidth={2.2} />
+        <Link href="/ocorrencias" className="hb" style={{ ...blocoStyle, animationDelay: '325ms', borderLeftColor: '#991B1B' }}>
+          <div style={{ ...blocoIcone }}>
+            <AlertTriangle size={22} color="#991B1B" strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={blocoTitulo}>Ocorrências</div>
