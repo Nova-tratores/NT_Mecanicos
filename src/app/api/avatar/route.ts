@@ -8,6 +8,10 @@ const supabase = createClient(
 
 export async function POST(req: NextRequest) {
   try {
+    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
+      return NextResponse.json({ error: 'SUPABASE_SERVICE_ROLE_KEY nao configurada no servidor' }, { status: 500 })
+    }
+
     const formData = await req.formData()
     const file = formData.get('file') as File | null
     const userId = formData.get('userId') as string | null

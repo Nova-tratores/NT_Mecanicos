@@ -362,9 +362,9 @@ export default function TecnicoHome() {
       if (!res.ok) throw new Error(json.error || 'Erro ao enviar')
       if (refresh) refresh()
       setPerfilModal(false)
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao enviar foto:', err)
-      alert('Erro ao enviar foto. Tente novamente.')
+      alert(err?.message || 'Erro ao enviar foto. Tente novamente.')
     } finally {
       setUploading(false)
       e.target.value = ''
