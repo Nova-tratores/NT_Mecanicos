@@ -265,6 +265,7 @@ export default function TecnicoHome() {
   const galRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [perfilModal, setPerfilModal] = useState(false)
+  const [fotoPreview, setFotoPreview] = useState<{ url: string; file: File } | null>(null)
   const [escolherPersonagem, setEscolherPersonagem] = useState(false)
   const [personagem, setPersonagem] = useState<string>('')
 
@@ -348,12 +349,19 @@ export default function TecnicoHome() {
     })
   }
 
-  const handleFoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFoto = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file || !user) return
+    if (!file) return
+    const url = URL.createObjectURL(file)
+    setFotoPreview({ url, file })
+    e.target.value = ''
+  }
+
+  const confirmarFoto = async () => {
+    if (!fotoPreview || !user) return
     setUploading(true)
     try {
-      const compressed = await resizeImage(file, 512)
+      const compressed = await resizeImage(fotoPreview.file, 512)
       const fd = new FormData()
       fd.append('file', new File([compressed], 'avatar.jpg', { type: 'image/jpeg' }))
       fd.append('userId', user.id)
@@ -361,14 +369,20 @@ export default function TecnicoHome() {
       const json = await res.json()
       if (!res.ok) throw new Error(json.error || 'Erro ao enviar')
       if (refresh) refresh()
+      URL.revokeObjectURL(fotoPreview.url)
+      setFotoPreview(null)
       setPerfilModal(false)
     } catch (err: any) {
       console.error('Erro ao enviar foto:', err)
       alert(err?.message || 'Erro ao enviar foto. Tente novamente.')
     } finally {
       setUploading(false)
-      e.target.value = ''
     }
+  }
+
+  const cancelarPreview = () => {
+    if (fotoPreview) URL.revokeObjectURL(fotoPreview.url)
+    setFotoPreview(null)
   }
 
 
@@ -877,7 +891,7 @@ export default function TecnicoHome() {
       {/* ═══ MODAL: FOTO / PERSONAGEM ═══ */}
       {perfilModal && (
         <div
-          onClick={() => setPerfilModal(false)}
+          onClick={() => { cancelarPreview(); setPerfilModal(false) }}
           style={{
             position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.5)',
             display: 'flex', alignItems: 'flex-end', justifyContent: 'center', padding: 16,
@@ -897,14 +911,49 @@ export default function TecnicoHome() {
                 {escolherPersonagem ? 'Escolha um personagem' : 'Foto de perfil'}
               </div>
               <button
-                onClick={() => (escolherPersonagem ? setEscolherPersonagem(false) : setPerfilModal(false))}
+                onClick={() => fotoPreview ? cancelarPreview() : escolherPersonagem ? setEscolherPersonagem(false) : setPerfilModal(false)}
                 style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, lineHeight: 0 }}
               >
                 <X size={20} color={colors.textMuted} />
               </button>
             </div>
 
-            {escolherPersonagem ? (
+            {fotoPreview ? (
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+                <div style={{
+                  width: 180, height: 180, borderRadius: '50%', overflow: 'hidden',
+                  border: `3px solid ${colors.primary}`, boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+                }}>
+                  <img
+                    src={fotoPreview.url}
+                    alt="Preview"
+                    style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 12, width: '100%' }}>
+                  <button
+                    onClick={cancelarPreview}
+                    disabled={uploading}
+                    style={{
+                      flex: 1, padding: '12px 0', borderRadius: 12, border: `1px solid ${colors.border}`,
+                      background: colors.surfaceAlt, color: colors.text, fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                    }}
+                  >Cancelar</button>
+                  <button
+                    onClick={confirmarFoto}
+                    disabled={uploading}
+                    style={{
+                      flex: 1, padding: '12px 0', borderRadius: 12, border: 'none',
+                      background: colors.primary, color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer',
+                      opacity: uploading ? 0.6 : 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+                    }}
+                  >
+                    {uploading && <div className="spinner" style={{ width: 16, height: 16 }} />}
+                    {uploading ? 'Enviando...' : 'Confirmar'}
+                  </button>
+                </div>
+              </div>
+            ) : escolherPersonagem ? (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
                 {PERSONAGENS.map((p) => (
                   <button
@@ -926,7 +975,6 @@ export default function TecnicoHome() {
                 <button onClick={() => camRef.current?.click()} disabled={uploading} style={opcaoStyle}>
                   <div style={{ ...opcaoIcone, background: colors.primaryBg }}><Camera size={20} color={colors.primary} /></div>
                   <span style={opcaoTexto}>Tirar foto</span>
-                  {uploading && <div className="spinner" style={{ width: 16, height: 16 }} />}
                 </button>
                 <button onClick={() => galRef.current?.click()} disabled={uploading} style={opcaoStyle}>
                   <div style={{ ...opcaoIcone, background: colors.infoBg }}><ImageIcon size={20} color={colors.info} /></div>
