@@ -8,8 +8,9 @@ import HeaderMobile from '@/components/HeaderMobile'
 import OfflineSync from '@/components/OfflineSync'
 import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
 import dynamic from 'next/dynamic'
+import Link from 'next/link'
 const CheckinDiario = dynamic(() => import('@/components/CheckinDiario'), { ssr: false })
-import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon } from 'lucide-react'
+import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon, ChevronRight } from 'lucide-react'
 
 // ── Avisos confirmados: cache local para nunca mostrar de novo ──
 const AVISOS_CONFIRMADOS_KEY = 'nt-avisos-confirmados'
@@ -84,6 +85,9 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   // ── Ocorrências OPA state ──
   const [ocorrenciasPendentes, setOcorrenciasPendentes] = useState<OcorrenciaPopup[]>([])
   const [ocorrenciaConfirmando, setOcorrenciaConfirmando] = useState(false)
+
+  // ── Ocorrências disciplinares (tecnico_ocorrencias) sem justificativa ──
+  const [ocDisciplinares, setOcDisciplinares] = useState(0)
 
 
   const carregarAvisosPendentes = useCallback(async () => {
@@ -239,6 +243,38 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
 
   useEffect(() => { carregarOcorrenciasPendentes() }, [carregarOcorrenciasPendentes])
 
+  // Ocorrências do Painel dos Mecânicos ainda sem defesa → banner vermelho
+  const carregarOcDisciplinares = useCallback(async () => {
+    if (!user?.tecnico_nome) return
+    if (!navigator.onLine) return
+    try {
+      const nomes = [user.tecnico_nome, user.nome_pos]
+        .filter((n): n is string => !!n?.trim())
+        .filter((n, i, arr) => arr.findIndex(x => x.toLowerCase() === n.toLowerCase()) === i)
+      if (nomes.length === 0) return
+      const { data } = await withTimeout(supabase
+        .from('tecnico_ocorrencias')
+        .select('id, tecnico_justificativas(id)')
+        .or(nomes.map(n => `tecnico_nome.ilike.${n}`).join(','))
+        .order('created_at', { ascending: false })
+        .limit(50))
+      setOcDisciplinares((data || []).filter((o: any) => !(o.tecnico_justificativas || []).length).length)
+    } catch {}
+  }, [user?.tecnico_nome, user?.nome_pos])
+
+  useEffect(() => {
+    carregarOcDisciplinares()
+    const chs = [
+      supabase.channel('oc_disc_banner')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_ocorrencias' }, () => carregarOcDisciplinares())
+        .subscribe(),
+      supabase.channel('oc_disc_banner_just')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_justificativas' }, () => carregarOcDisciplinares())
+        .subscribe(),
+    ]
+    return () => { chs.forEach(c => supabase.removeChannel(c)) }
+  }, [carregarOcDisciplinares])
+
   useEffect(() => {
     if (!user?.tecnico_nome || !navigator.onLine) return
     fetch('/api/os/check-notify', { method: 'POST' }).catch(() => {})
@@ -327,6 +363,23 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
         avatarUrl={user.avatar_url}
         userName={user.tecnico_nome}
       />
+      {/* Banner fixo: ocorrência disciplinar sem justificativa */}
+      {ocDisciplinares > 0 && (
+        <Link href="/ocorrencias" style={{
+          // top:64 = altura do HeaderMobile (também sticky) — top:0 cobriria
+          // o header e o toque no sino cairia neste Link
+          position: 'sticky', top: 64, zIndex: 30,
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: '#DC2626', color: '#fff', textDecoration: 'none',
+          padding: '11px 16px', boxShadow: '0 2px 8px rgba(220,38,38,0.35)',
+        }}>
+          <AlertTriangle size={18} color="#fff" style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1, fontSize: 13, fontWeight: 700, lineHeight: 1.4 }}>
+            Você tem {ocDisciplinares} ocorrência{ocDisciplinares > 1 ? 's' : ''} sem justificativa — toque para justificar
+          </span>
+          <ChevronRight size={18} color="#fff" style={{ flexShrink: 0 }} />
+        </Link>
+      )}
       <main style={{ padding: 16 }}>
         {children}
       </main>

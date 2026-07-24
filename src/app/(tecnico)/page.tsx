@@ -7,7 +7,7 @@ import type { OrdemServico } from '@/lib/types'
 import {
   FileText, ChevronRight, User, Megaphone,
   Navigation, Clock, MapPin, ShieldCheck, Car,
-  BarChart3, AlertCircle, Headset, BookOpen,
+  BarChart3, AlertCircle, AlertTriangle, Headset, BookOpen,
   Camera, Image as ImageIcon, Smile, X, ChevronRight as ArrowRight,
   Fuel, Info, Shield,
 } from 'lucide-react'
@@ -743,7 +743,19 @@ export default function TecnicoHome() {
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={blocoTitulo}>Opa</div>
-            <div style={blocoSub}>Ocorrencias</div>
+            <div style={blocoSub}>Coisas fora do lugar</div>
+          </div>
+          <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
+        </Link>
+
+        {/* Ocorrencias disciplinares (pontos) */}
+        <Link href="/ocorrencias" className="hb" style={{ ...blocoStyle, animationDelay: '285ms' }}>
+          <div style={{ ...blocoIcone, background: '#991B1B' }}>
+            <AlertTriangle size={25} color="#fff" strokeWidth={2.2} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={blocoTitulo}>Ocorrências</div>
+            <div style={blocoSub}>Pontos e justificativas</div>
           </div>
           <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
