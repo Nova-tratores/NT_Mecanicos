@@ -3,7 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { colors, radius, shadow } from '@/lib/ui'
 import {
-  ChevronLeft, Search, X, ChevronRight, ZoomIn, ZoomOut,
+  ChevronLeft, Search, X, ChevronRight,
   Layers, Package, Cog, BookOpen, ShoppingCart, Plus, Minus, Trash2,
   Send, FileDown, MessageCircle, Clock, Archive, RotateCcw,
   Link2, FolderOpen, User,
@@ -339,17 +339,61 @@ export default function CatalogosPage() {
     return () => { if (buscaTimer.current) clearTimeout(buscaTimer.current) }
   }, [busca, buscaAberta, executarBusca])
 
+  const touchesRef = useRef<Map<number, { x: number; y: number }>>(new Map())
+  const pinchStartDist = useRef(0)
+  const pinchStartZoom = useRef(1)
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const map = touchesRef.current
+    for (let i = 0; i < e.touches.length; i++) {
+      const t = e.touches[i]
+      map.set(t.identifier, { x: t.clientX, y: t.clientY })
+    }
+    if (e.touches.length === 2) {
+      const [a, b] = [e.touches[0], e.touches[1]]
+      pinchStartDist.current = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY)
+      pinchStartZoom.current = zoom
+    } else if (e.touches.length === 1 && zoom > 1) {
+      setDragging(true)
+      dragStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, panX: pan.x, panY: pan.y }
+    }
+  }
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      e.preventDefault()
+      const [a, b] = [e.touches[0], e.touches[1]]
+      const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY)
+      const newZoom = Math.min(5, Math.max(1, pinchStartZoom.current * (dist / pinchStartDist.current)))
+      setZoom(newZoom)
+      if (newZoom <= 1) setPan({ x: 0, y: 0 })
+    } else if (e.touches.length === 1 && dragging) {
+      const t = e.touches[0]
+      setPan({ x: dragStart.current.panX + (t.clientX - dragStart.current.x), y: dragStart.current.panY + (t.clientY - dragStart.current.y) })
+    }
+  }
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    const map = touchesRef.current
+    for (let i = 0; i < e.changedTouches.length; i++) map.delete(e.changedTouches[i].identifier)
+    if (e.touches.length < 2) pinchStartDist.current = 0
+    if (e.touches.length === 0) setDragging(false)
+  }
+
   const handlePointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return
     if (zoom <= 1) return
     setDragging(true)
     dragStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y }
     ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
   }
   const handlePointerMove = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return
     if (!dragging) return
     setPan({ x: dragStart.current.panX + (e.clientX - dragStart.current.x), y: dragStart.current.panY + (e.clientY - dragStart.current.y) })
   }
-  const handlePointerUp = () => setDragging(false)
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (e.pointerType === 'touch') return
+    setDragging(false)
+  }
 
   function gerarLinkCarrinho() {
     if (!carrinhoAtivo) return ''
@@ -726,76 +770,71 @@ export default function CatalogosPage() {
             border: `1px solid ${colors.border}`, marginBottom: 8, touchAction: 'none',
           }}
             ref={imgContainerRef}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
           >
-            {figDetalhe.image_url && (
-              <img src={figDetalhe.image_url} alt={figDetalhe.name}
-                onLoad={e => {
-                  const img = e.target as HTMLImageElement
-                  setImgDim({ w: img.naturalWidth || 1, h: img.naturalHeight || 1 })
-                }}
-                style={{
-                  width: '100%', display: 'block',
-                  transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
-                  transition: dragging ? 'none' : 'transform 0.2s',
-                  cursor: zoom > 1 ? 'grab' : 'default',
-                }}
-                draggable={false}
-              />
-            )}
-            {(figDetalhe.hotspots || []).map((h, i) => {
-              const ativo = refHover === h.reference || pecaSel?.reference === h.reference
-              return (
-                <button key={`${h.reference}-${i}`}
-                  onClick={e => {
-                    e.stopPropagation()
-                    const p = figDetalhe.pecas.find(p => p.reference === h.reference)
-                    if (p) abrirPeca(p)
+            <div style={{
+              transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+              transformOrigin: 'center center',
+              transition: dragging ? 'none' : 'transform 0.2s',
+              position: 'relative', width: '100%',
+            }}>
+              {figDetalhe.image_url && (
+                <img src={figDetalhe.image_url} alt={figDetalhe.name}
+                  onLoad={e => {
+                    const img = e.target as HTMLImageElement
+                    setImgDim({ w: img.naturalWidth || 1, h: img.naturalHeight || 1 })
                   }}
                   style={{
-                    position: 'absolute',
-                    left: `${(h.x / imgDim.w) * 100}%`,
-                    top: `${(h.y / imgDim.h) * 100}%`,
-                    transform: `translate(-50%,-50%) scale(${1 / zoom})`,
-                    width: ativo ? 34 : 26, height: ativo ? 34 : 26,
-                    borderRadius: '50%', border: '2px solid #fff',
-                    background: ativo ? colors.primary : 'rgba(37,99,235,0.92)',
-                    color: '#fff', fontSize: ativo ? 14 : 11, fontWeight: 700,
-                    cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    boxShadow: '0 2px 7px rgba(0,0,0,0.45)',
-                    transition: 'all .12s', zIndex: ativo ? 3 : 2, padding: 0,
+                    width: '100%', display: 'block',
+                    cursor: zoom > 1 ? 'grab' : 'default',
                   }}
-                >{h.reference}</button>
-              )
-            })}
+                  draggable={false}
+                />
+              )}
+              {(figDetalhe.hotspots || []).map((h, i) => {
+                const ativo = refHover === h.reference || pecaSel?.reference === h.reference
+                return (
+                  <button key={`${h.reference}-${i}`}
+                    onClick={e => {
+                      e.stopPropagation()
+                      const p = figDetalhe.pecas.find(p => p.reference === h.reference)
+                      if (p) abrirPeca(p)
+                    }}
+                    style={{
+                      position: 'absolute',
+                      left: `${(h.x / imgDim.w) * 100}%`,
+                      top: `${(h.y / imgDim.h) * 100}%`,
+                      transform: `translate(-50%,-50%) scale(${1 / zoom})`,
+                      width: ativo ? 34 : 26, height: ativo ? 34 : 26,
+                      borderRadius: '50%', border: '2px solid #fff',
+                      background: ativo ? colors.primary : 'rgba(37,99,235,0.92)',
+                      color: '#fff', fontSize: ativo ? 14 : 11, fontWeight: 700,
+                      cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      boxShadow: '0 2px 7px rgba(0,0,0,0.45)',
+                      transition: 'all .12s', zIndex: ativo ? 3 : 2, padding: 0,
+                    }}
+                  >{h.reference}</button>
+                )
+              })}
+            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 8, marginBottom: 12, justifyContent: 'center' }}>
-            <button onClick={() => { setZoom(z => Math.max(0.5, z - 0.5)); setPan({ x: 0, y: 0 }) }} style={{
-              background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
-              width: 40, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-            }}>
-              <ZoomOut size={18} color={colors.textMuted} />
-            </button>
-            <span style={{
-              fontSize: 13, fontWeight: 600, color: colors.textMuted,
-              display: 'flex', alignItems: 'center', minWidth: 50, justifyContent: 'center',
-            }}>{Math.round(zoom * 100)}%</span>
-            <button onClick={() => setZoom(z => Math.min(4, z + 0.5))} style={{
-              background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
-              width: 40, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
-            }}>
-              <ZoomIn size={18} color={colors.textMuted} />
-            </button>
-            {zoom !== 1 && (
+          {zoom > 1 && (
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, justifyContent: 'center', alignItems: 'center' }}>
+              <span style={{
+                fontSize: 12, fontWeight: 600, color: colors.textMuted,
+              }}>{Math.round(zoom * 100)}%</span>
               <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} style={{
                 background: colors.primaryBg, border: `1px solid ${colors.primaryBorder}`, borderRadius: radius.sm,
-                padding: '0 12px', height: 36, fontSize: 12, fontWeight: 600, color: colors.primary, cursor: 'pointer',
+                padding: '0 12px', height: 32, fontSize: 12, fontWeight: 600, color: colors.primary, cursor: 'pointer',
               }}>Reset</button>
-            )}
-          </div>
+            </div>
+          )}
 
           <div style={{
             background: colors.accentBg, borderRadius: radius.md, padding: '10px 14px', marginBottom: 12,
