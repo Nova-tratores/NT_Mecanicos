@@ -14,6 +14,7 @@ interface ChecklistData {
     id: string; tecnico_nome: string; placa: string; mes_referencia: string
     status: string; inicio_em: string; fim_em: string; duracao_total_seg: number
     score_confianca: number; alertas: any; loc_inicio: any; loc_fim: any
+    km: number | null; titulo: string | null
   }
   itens: {
     item_key: string; categoria: string; titulo: string; resposta: string
@@ -86,7 +87,7 @@ function ChecklistVerContent() {
       }}>
         <Shield size={24} />
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 16, fontWeight: 800 }}>Checklist do Veículo</div>
+          <div style={{ fontSize: 16, fontWeight: 800 }}>{checklist.titulo || 'Checklist do Veículo'}</div>
           <div style={{ fontSize: 12, opacity: 0.8, textTransform: 'capitalize' }}>{mesLabel}</div>
         </div>
         <div style={{
@@ -99,7 +100,7 @@ function ChecklistVerContent() {
 
       <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Info cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: checklist.km ? '1fr 1fr 1fr' : '1fr 1fr', gap: 10 }}>
           <div style={{
             background: colors.surfaceAlt, borderRadius: 12, padding: 14,
             border: `1px solid ${colors.border}`,
@@ -110,6 +111,18 @@ function ChecklistVerContent() {
             </div>
             <div style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{checklist.placa}</div>
           </div>
+          {checklist.km && (
+            <div style={{
+              background: colors.surfaceAlt, borderRadius: 12, padding: 14,
+              border: `1px solid ${colors.border}`,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+                <Car size={14} color={colors.primary} />
+                <span style={{ fontSize: 11, color: colors.textMuted, fontWeight: 600 }}>KM</span>
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{Number(checklist.km).toLocaleString('pt-BR')}</div>
+            </div>
+          )}
           <div style={{
             background: colors.surfaceAlt, borderRadius: 12, padding: 14,
             border: `1px solid ${colors.border}`,

@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase'
 import { colors, shadow } from '@/lib/ui'
 import {
   Camera, ChevronRight, ChevronLeft, Check, AlertCircle,
-  Share2, Download, X, Car, Shield, Clock,
+  Share2, Download, X, Car, Shield, Clock, History,
 } from 'lucide-react'
 import Link from 'next/link'
 import { PageSpinner } from '@/components/ui'
@@ -28,7 +28,10 @@ export default function ChecklistVeiculoPage() {
   const [step, setStep] = useState(-1) // -1 = intro, 0..N = items, N+1 = resumo
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [resultado, setResultado] = useState<{ status: string; score: number; alertas: string[]; shareToken?: string } | null>(null)
+  const [resultado, setResultado] = useState<{ status: string; score: number; alertas: string[]; shareToken?: string; titulo?: string } | null>(null)
+
+  const [km, setKm] = useState('')
+  const [historico, setHistorico] = useState<any[]>([])
 
   // Item state
   const [foto, setFoto] = useState<File | null>(null)
@@ -37,7 +40,7 @@ export default function ChecklistVeiculoPage() {
   const [obs, setObs] = useState('')
   const fotoRef = useRef<HTMLInputElement>(null)
 
-  // Load vehicle + existing checklist
+  // Load vehicle + existing checklist + history
   useEffect(() => {
     if (!nome) return
     ;(async () => {
@@ -47,6 +50,20 @@ export default function ChecklistVeiculoPage() {
         .eq('tecnico_nome', nome)
         .maybeSingle()
       if (v) setVeiculo(v)
+
+      // Carregar histórico
+      try {
+        const res = await fetch('/api/checklist-veiculo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'listar', tecnico_nome: nome }),
+        })
+        if (res.ok) {
+          const lista = await res.json()
+          setHistorico(lista)
+        }
+      } catch {}
+
       setLoading(false)
     })()
   }, [nome])
@@ -65,7 +82,7 @@ export default function ChecklistVeiculoPage() {
     const res = await fetch('/api/checklist-veiculo', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'iniciar', tecnico_nome: nome, placa: veiculo.placa, loc }),
+      body: JSON.stringify({ action: 'iniciar', tecnico_nome: nome, placa: veiculo.placa, loc, km: km || null }),
     })
     const data = await res.json()
     setChecklistId(data.id)
@@ -77,7 +94,7 @@ export default function ChecklistVeiculoPage() {
     const firstUnanswered = (data.items || []).findIndex((i: CheckItem) => !map.has(i.key))
     setStep(firstUnanswered >= 0 ? firstUnanswered : 0)
     setLoading(false)
-  }, [nome, veiculo])
+  }, [nome, veiculo, km])
 
   const salvarItem = useCallback(async () => {
     if (!checklistId || step < 0 || step >= items.length) return
@@ -146,7 +163,7 @@ export default function ChecklistVeiculoPage() {
       .eq('id', checklistId)
       .single()
 
-    setResultado({ ...data, shareToken: cl?.share_token })
+    setResultado({ ...data, shareToken: cl?.share_token, titulo: data.titulo })
     setSaving(false)
   }, [checklistId])
 
@@ -218,6 +235,9 @@ export default function ChecklistVeiculoPage() {
             {resultado.score >= 70 ? <Check size={40} color="#fff" /> : <AlertCircle size={40} color="#fff" />}
           </div>
           <div style={{ fontSize: 24, fontWeight: 800, color: colors.text }}>Checklist {resultado.status === 'completo' ? 'Concluído' : 'Enviado'}</div>
+          {resultado.titulo && (
+            <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, marginTop: 6 }}>{resultado.titulo}</div>
+          )}
           <div style={{ fontSize: 14, color: colors.textMuted, marginTop: 4 }}>
             {Math.floor((resultado as any).duracao / 60)}min {(resultado as any).duracao % 60}s de duração
           </div>
@@ -299,6 +319,30 @@ export default function ChecklistVeiculoPage() {
           </div>
         </div>
 
+        {/* KM input */}
+        <div style={{
+          background: colors.surfaceAlt, borderRadius: 16, padding: 16,
+          border: `1px solid ${colors.border}`,
+        }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, marginBottom: 8 }}>Quilometragem atual:</div>
+          <input
+            type="number"
+            inputMode="numeric"
+            value={km}
+            onChange={e => setKm(e.target.value)}
+            placeholder="Ex: 45230"
+            style={{
+              width: '100%', padding: '12px 14px', borderRadius: 12,
+              border: `1px solid ${colors.border}`, background: colors.surface,
+              fontSize: 16, fontWeight: 600, color: colors.text,
+              fontFamily: 'inherit',
+            }}
+          />
+          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+            Informe o KM do hodômetro
+          </div>
+        </div>
+
         <div style={{
           background: colors.surfaceAlt, borderRadius: 16, padding: 16,
           border: `1px solid ${colors.border}`,
@@ -313,14 +357,60 @@ export default function ChecklistVeiculoPage() {
           </div>
         </div>
 
-        <button onClick={iniciar} disabled={loading} style={{
+        <button onClick={iniciar} disabled={loading || !km} style={{
           width: '100%', padding: '14px 20px', borderRadius: 14,
-          background: colors.primary, color: '#fff', border: 'none',
-          fontSize: 16, fontWeight: 700, cursor: 'pointer',
+          background: km ? colors.primary : colors.border, color: km ? '#fff' : colors.textMuted, border: 'none',
+          fontSize: 16, fontWeight: 700, cursor: km ? 'pointer' : 'default',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
         }}>
           <Camera size={20} /> Iniciar Checklist
         </button>
+
+        {/* Histórico de checklists anteriores */}
+        {historico.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <History size={16} color={colors.textSubtle} />
+              <span style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Anteriores</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {historico.filter(h => h.status === 'completo' || h.status === 'suspeito').map(h => {
+                const [y, m] = (h.mes_referencia || '').split('-')
+                const mesNome = new Date(Number(y), Number(m) - 1)
+                  .toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' })
+                const sColor = (h.score_confianca ?? 0) >= 70 ? colors.success
+                  : (h.score_confianca ?? 0) >= 50 ? colors.warning : colors.danger
+                return (
+                  <a
+                    key={h.id}
+                    href={`/checklist-veiculo/ver?token=${h.share_token}`}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px',
+                      borderRadius: 12, border: `1px solid ${colors.border}`,
+                      background: colors.surface, textDecoration: 'none',
+                    }}
+                  >
+                    <div style={{
+                      width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                      background: sColor, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <span style={{ fontSize: 13, fontWeight: 800, color: '#fff' }}>{h.score_confianca ?? '—'}</span>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
+                        {h.titulo || `Checklist de ${mesNome}`}
+                      </div>
+                      <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+                        {mesNome}{h.km ? ` · ${Number(h.km).toLocaleString('pt-BR')} km` : ''}
+                      </div>
+                    </div>
+                    <ChevronRight size={16} color={colors.textSubtle} />
+                  </a>
+                )
+              })}
+            </div>
+          </div>
+        )}
       </div>
     )
   }

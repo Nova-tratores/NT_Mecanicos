@@ -229,7 +229,7 @@ export async function POST(req: NextRequest) {
 
     // Iniciar checklist
     if (action === 'iniciar') {
-      const { tecnico_nome, placa } = body
+      const { tecnico_nome, placa, km } = body
       const hoje = new Date()
       const mesRef = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`
       const token = randomUUID().replace(/-/g, '')
@@ -246,7 +246,9 @@ export async function POST(req: NextRequest) {
         if (existente.status === 'completo') {
           return NextResponse.json({ error: 'Checklist deste mês já foi concluído' }, { status: 400 })
         }
-        // Retornar existente em andamento
+        if (km) {
+          await supabase.from('veiculo_checklist').update({ km: Number(km) }).eq('id', existente.id).then(() => {})
+        }
         const { data: itens } = await supabase
           .from('veiculo_checklist_itens')
           .select('*')
@@ -255,16 +257,27 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ id: existente.id, itens: itens || [], items: CHECKLIST_ITEMS })
       }
 
-      const { data, error } = await supabase
+      const insertData: Record<string, any> = {
+        tecnico_nome, placa, mes_referencia: mesRef,
+        status: 'pendente', share_token: token,
+        inicio_em: new Date().toISOString(),
+        loc_inicio: body.loc || null,
+      }
+      if (km) insertData.km = Number(km)
+
+      let { data, error } = await supabase
         .from('veiculo_checklist')
-        .insert({
-          tecnico_nome, placa, mes_referencia: mesRef,
-          status: 'pendente', share_token: token,
-          inicio_em: new Date().toISOString(),
-          loc_inicio: body.loc || null,
-        })
+        .insert(insertData)
         .select()
         .single()
+
+      // Fallback: if km column doesn't exist yet, retry without it
+      if (error && error.message.includes("'km'")) {
+        delete insertData.km
+        const retry = await supabase.from('veiculo_checklist').insert(insertData).select().single()
+        data = retry.data
+        error = retry.error
+      }
 
       if (error) return NextResponse.json({ error: error.message }, { status: 500 })
       return NextResponse.json({ id: data.id, itens: [], items: CHECKLIST_ITEMS })
@@ -298,13 +311,30 @@ export async function POST(req: NextRequest) {
 
       const status = score < 50 ? 'suspeito' : 'completo'
 
-      await supabase.from('veiculo_checklist').update({
+      // Gerar título: "Checklist PLACA de MES/ANO com KM km"
+      const placaParts = (checklist.placa || '').split(' - ')
+      const placaNum = placaParts[placaParts.length - 1] || checklist.placa
+      const [refY, refM] = (checklist.mes_referencia || '').split('-')
+      const mesNome = new Date(Number(refY), Number(refM) - 1)
+        .toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })
+      let titulo = `Checklist ${placaNum} de ${mesNome}`
+      if (checklist.km) titulo += ` com ${Number(checklist.km).toLocaleString('pt-BR')} km`
+
+      const updateData: Record<string, any> = {
         status, fim_em: new Date().toISOString(),
         duracao_total_seg: duracao, score_confianca: score,
         alertas: JSON.stringify(alertas), loc_fim: loc,
-      }).eq('id', checklist_id)
+        titulo,
+      }
 
-      return NextResponse.json({ status, score, alertas, duracao })
+      const { error: updErr } = await supabase.from('veiculo_checklist').update(updateData).eq('id', checklist_id)
+      // Fallback: if titulo column doesn't exist yet
+      if (updErr && updErr.message.includes("'titulo'")) {
+        delete updateData.titulo
+        await supabase.from('veiculo_checklist').update(updateData).eq('id', checklist_id)
+      }
+
+      return NextResponse.json({ status, score, alertas, duracao, titulo })
     }
 
     // Carregar (por id ou token)
@@ -328,13 +358,43 @@ export async function POST(req: NextRequest) {
     // Listar do técnico
     if (action === 'listar') {
       const { tecnico_nome } = body
-      const { data } = await supabase
+      let { data, error } = await supabase
         .from('veiculo_checklist')
-        .select('id, mes_referencia, status, score_confianca, duracao_total_seg, created_at')
+        .select('id, mes_referencia, status, score_confianca, duracao_total_seg, placa, titulo, km, share_token, created_at')
         .eq('tecnico_nome', tecnico_nome)
         .order('mes_referencia', { ascending: false })
         .limit(12)
+      // Fallback if new columns don't exist yet
+      if (error && (error.message.includes("'titulo'") || error.message.includes("'km'"))) {
+        const retry = await supabase
+          .from('veiculo_checklist')
+          .select('id, mes_referencia, status, score_confianca, duracao_total_seg, placa, share_token, created_at')
+          .eq('tecnico_nome', tecnico_nome)
+          .order('mes_referencia', { ascending: false })
+          .limit(12)
+        data = retry.data as any
+      }
       return NextResponse.json(data || [])
+    }
+
+    // Migração: adicionar colunas km e titulo
+    if (action === 'migrate') {
+      const results: string[] = []
+      // Testa inserindo e removendo um registro com as novas colunas
+      const testId = '__migrate_test__'
+      const { error: testErr } = await supabase
+        .from('veiculo_checklist')
+        .insert({ tecnico_nome: testId, placa: testId, mes_referencia: '0000-00', status: 'test', share_token: testId, km: 0, titulo: 'test' })
+      if (testErr) {
+        results.push(`Colunas km/titulo NÃO existem: ${testErr.message}`)
+        results.push('Execute no SQL Editor do Supabase:')
+        results.push('ALTER TABLE veiculo_checklist ADD COLUMN IF NOT EXISTS km integer;')
+        results.push('ALTER TABLE veiculo_checklist ADD COLUMN IF NOT EXISTS titulo text;')
+      } else {
+        await supabase.from('veiculo_checklist').delete().eq('tecnico_nome', testId)
+        results.push('Colunas km e titulo já existem!')
+      }
+      return NextResponse.json({ results })
     }
 
     return NextResponse.json({ error: 'Ação inválida' }, { status: 400 })
