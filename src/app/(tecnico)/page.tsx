@@ -267,6 +267,7 @@ export default function TecnicoHome() {
   const [perfilModal, setPerfilModal] = useState(false)
   const [fotoPreview, setFotoPreview] = useState<{ url: string; file: File } | null>(null)
   const [avatarLocal, setAvatarLocal] = useState<string | null>(null)
+  const [fotoFullscreen, setFotoFullscreen] = useState(false)
   const [escolherPersonagem, setEscolherPersonagem] = useState(false)
   const [personagem, setPersonagem] = useState<string>('')
 
@@ -927,13 +928,17 @@ export default function TecnicoHome() {
 
             {!fotoPreview && !escolherPersonagem && (
               <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 16 }}>
-                <div style={{
-                  width: 120, height: 120, borderRadius: '50%', overflow: 'hidden',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: (avatarLocal || user?.avatar_url) ? '#fff' : colors.surfaceAlt,
-                  border: `3px solid ${colors.border}`,
-                  boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
-                }}>
+                <div
+                  onClick={() => { if (avatarLocal || user?.avatar_url) setFotoFullscreen(true) }}
+                  style={{
+                    width: 120, height: 120, borderRadius: '50%', overflow: 'hidden',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    background: (avatarLocal || user?.avatar_url) ? '#fff' : colors.surfaceAlt,
+                    border: `3px solid ${colors.border}`,
+                    boxShadow: '0 4px 16px rgba(0,0,0,0.1)',
+                    cursor: (avatarLocal || user?.avatar_url) ? 'pointer' : 'default',
+                  }}
+                >
                   {(avatarLocal || user?.avatar_url) ? (
                     <img src={avatarLocal || user?.avatar_url || ''} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                   ) : (
@@ -1018,6 +1023,42 @@ export default function TecnicoHome() {
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ═══ FULLSCREEN: FOTO DE PERFIL ═══ */}
+      {fotoFullscreen && (avatarLocal || user?.avatar_url) && (
+        <div
+          onClick={() => setFotoFullscreen(false)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 200,
+            background: 'rgba(0,0,0,0.92)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer',
+          }}
+        >
+          <button
+            onClick={() => setFotoFullscreen(false)}
+            style={{
+              position: 'absolute', top: 16, right: 16,
+              background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
+              borderRadius: 12, padding: '8px 16px',
+              fontSize: 14, fontWeight: 700, color: '#fff', cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6, zIndex: 201,
+            }}
+          >
+            <X size={18} /> Fechar
+          </button>
+          <img
+            src={avatarLocal || user?.avatar_url || ''}
+            alt="Foto de perfil"
+            onClick={e => e.stopPropagation()}
+            style={{
+              maxWidth: '90vw', maxHeight: '85vh',
+              borderRadius: 16, objectFit: 'contain',
+              boxShadow: '0 8px 40px rgba(0,0,0,0.5)',
+            }}
+          />
         </div>
       )}
 
