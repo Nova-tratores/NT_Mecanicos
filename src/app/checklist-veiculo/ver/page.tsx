@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { colors } from '@/lib/ui'
 import {
   Check, AlertCircle, Shield, Car, Clock, MapPin,
@@ -22,7 +22,7 @@ interface ChecklistData {
   items: { key: string; cat: string; titulo: string; desc: string }[]
 }
 
-export default function ChecklistVerPage() {
+function ChecklistVerContent() {
   const searchParams = useSearchParams()
   const token = searchParams.get('token')
   const [data, setData] = useState<ChecklistData | null>(null)
@@ -304,5 +304,13 @@ export default function ChecklistVerPage() {
         </div>
       )}
     </div>
+  )
+}
+
+export default function ChecklistVerPage() {
+  return (
+    <Suspense fallback={<PageSpinner />}>
+      <ChecklistVerContent />
+    </Suspense>
   )
 }
