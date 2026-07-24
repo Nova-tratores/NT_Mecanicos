@@ -764,12 +764,95 @@ export default function CatalogosPage() {
       {/* ═══ FIGURA (detalhe) ═══ */}
       {!loading && vista === 'figura' && figDetalhe && (
         <div>
+          {/* Fullscreen overlay when zoomed */}
+          {zoom > 1 && (
+            <div style={{
+              position: 'fixed', inset: 0, zIndex: 80,
+              background: '#000', touchAction: 'none',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+              ref={imgContainerRef}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+            >
+              <div style={{
+                transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
+                transformOrigin: 'center center',
+                transition: dragging ? 'none' : 'transform 0.2s',
+                position: 'relative', width: '100%', height: '100%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                {figDetalhe.image_url && (
+                  <img src={figDetalhe.image_url} alt={figDetalhe.name}
+                    onLoad={e => {
+                      const img = e.target as HTMLImageElement
+                      setImgDim({ w: img.naturalWidth || 1, h: img.naturalHeight || 1 })
+                    }}
+                    style={{
+                      maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
+                      cursor: 'grab', display: 'block',
+                    }}
+                    draggable={false}
+                  />
+                )}
+                {(figDetalhe.hotspots || []).map((h, i) => {
+                  const ativo = refHover === h.reference || pecaSel?.reference === h.reference
+                  return (
+                    <button key={`${h.reference}-${i}`}
+                      onClick={e => {
+                        e.stopPropagation()
+                        const p = figDetalhe.pecas.find(p => p.reference === h.reference)
+                        if (p) abrirPeca(p)
+                      }}
+                      style={{
+                        position: 'absolute',
+                        left: `${(h.x / imgDim.w) * 100}%`,
+                        top: `${(h.y / imgDim.h) * 100}%`,
+                        transform: `translate(-50%,-50%) scale(${1 / zoom})`,
+                        width: ativo ? 34 : 26, height: ativo ? 34 : 26,
+                        borderRadius: '50%', border: '2px solid #fff',
+                        background: ativo ? colors.primary : 'rgba(37,99,235,0.92)',
+                        color: '#fff', fontSize: ativo ? 14 : 11, fontWeight: 700,
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        boxShadow: '0 2px 7px rgba(0,0,0,0.45)',
+                        transition: 'all .12s', zIndex: ativo ? 3 : 2, padding: 0,
+                      }}
+                    >{h.reference}</button>
+                  )
+                })}
+              </div>
+
+              {/* Fullscreen controls */}
+              <div style={{
+                position: 'absolute', top: 16, right: 16, display: 'flex', gap: 8, zIndex: 82,
+              }}>
+                <span style={{
+                  fontSize: 13, fontWeight: 700, color: '#fff', background: 'rgba(0,0,0,0.6)',
+                  padding: '6px 12px', borderRadius: radius.md,
+                }}>{Math.round(zoom * 100)}%</span>
+                <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} style={{
+                  background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
+                  borderRadius: radius.md, padding: '6px 14px',
+                  fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <X size={16} /> Fechar
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Normal inline image (when not zoomed) */}
           <div style={{
             position: 'relative', width: '100%',
             background: '#fff', borderRadius: radius.lg, overflow: 'hidden',
             border: `1px solid ${colors.border}`, marginBottom: 8, touchAction: 'none',
           }}
-            ref={imgContainerRef}
+            {...(zoom <= 1 ? { ref: imgContainerRef } : {})}
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
@@ -778,9 +861,6 @@ export default function CatalogosPage() {
             onPointerUp={handlePointerUp}
           >
             <div style={{
-              transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
-              transformOrigin: 'center center',
-              transition: dragging ? 'none' : 'transform 0.2s',
               position: 'relative', width: '100%',
             }}>
               {figDetalhe.image_url && (
@@ -791,7 +871,7 @@ export default function CatalogosPage() {
                   }}
                   style={{
                     width: '100%', display: 'block',
-                    cursor: zoom > 1 ? 'grab' : 'default',
+                    cursor: 'default',
                   }}
                   draggable={false}
                 />
@@ -809,7 +889,7 @@ export default function CatalogosPage() {
                       position: 'absolute',
                       left: `${(h.x / imgDim.w) * 100}%`,
                       top: `${(h.y / imgDim.h) * 100}%`,
-                      transform: `translate(-50%,-50%) scale(${1 / zoom})`,
+                      transform: 'translate(-50%,-50%)',
                       width: ativo ? 34 : 26, height: ativo ? 34 : 26,
                       borderRadius: '50%', border: '2px solid #fff',
                       background: ativo ? colors.primary : 'rgba(37,99,235,0.92)',
@@ -823,18 +903,6 @@ export default function CatalogosPage() {
               })}
             </div>
           </div>
-
-          {zoom > 1 && (
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12, justifyContent: 'center', alignItems: 'center' }}>
-              <span style={{
-                fontSize: 12, fontWeight: 600, color: colors.textMuted,
-              }}>{Math.round(zoom * 100)}%</span>
-              <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} style={{
-                background: colors.primaryBg, border: `1px solid ${colors.primaryBorder}`, borderRadius: radius.sm,
-                padding: '0 12px', height: 32, fontSize: 12, fontWeight: 600, color: colors.primary, cursor: 'pointer',
-              }}>Reset</button>
-            </div>
-          )}
 
           <div style={{
             background: colors.accentBg, borderRadius: radius.md, padding: '10px 14px', marginBottom: 12,
