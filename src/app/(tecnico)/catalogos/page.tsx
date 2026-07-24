@@ -119,6 +119,7 @@ export default function CatalogosPage() {
   const [toast, setToast] = useState('')
   const searchParams = useSearchParams()
   const totalCarrinho = itensAtivos.reduce((s, i) => s + i.qtd, 0)
+  const skipPushRef = useRef(false)
 
   function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(''), 2500) }
 
@@ -133,6 +134,23 @@ export default function CatalogosPage() {
       } catch { /* ignore */ }
     }
     loadMarcas()
+
+    window.history.replaceState({ vista: 'marcas' }, '')
+    const onPop = (e: PopStateEvent) => {
+      const st = e.state
+      if (!st) return
+      if (wasZoomedRef.current) {
+        setZoom(1); setPan({ x: 0, y: 0 }); wasZoomedRef.current = false
+        return
+      }
+      if (st.vista) {
+        skipPushRef.current = true
+        setVista(st.vista)
+        setFigDetalhe(null)
+      }
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
   }, [])
 
   useEffect(() => {
@@ -295,26 +313,33 @@ export default function CatalogosPage() {
     if (result.length === 1) selecionarMarca(result[0].nome)
   }
 
+  function pushVista(v: Vista) {
+    if (!skipPushRef.current) {
+      window.history.pushState({ vista: v }, '')
+    }
+    skipPushRef.current = false
+  }
+
   async function selecionarMarca(marca: string) {
-    setMarcaSel(marca); setVista('modelos'); setLoading(true)
+    setMarcaSel(marca); setVista('modelos'); pushVista('modelos'); setLoading(true)
     setModelos(await api({ action: 'modelos', marca }))
     setLoading(false)
   }
 
   async function selecionarModelo(modelo: string) {
-    setModeloSel(modelo); setVista('secoes'); setLoading(true)
+    setModeloSel(modelo); setVista('secoes'); pushVista('secoes'); setLoading(true)
     setSecoes(await api({ action: 'secoes', modelo }))
     setLoading(false)
   }
 
   async function selecionarSecao(secao: string) {
-    setSecaoSel(secao); setVista('figuras'); setLoading(true)
+    setSecaoSel(secao); setVista('figuras'); pushVista('figuras'); setLoading(true)
     setFiguras(await api({ action: 'figuras', modelo: modeloSel, secao }))
     setLoading(false)
   }
 
   async function selecionarFigura(id: string) {
-    setVista('figura'); setLoading(true)
+    setVista('figura'); pushVista('figura'); setLoading(true)
     setZoom(1); setPan({ x: 0, y: 0 })
     setPecaSel(null); setSheetAberta(false)
     setFigDetalhe(await api({ action: 'figura', figuraId: id }))
@@ -338,6 +363,16 @@ export default function CatalogosPage() {
     buscaTimer.current = setTimeout(() => executarBusca(busca), 400)
     return () => { if (buscaTimer.current) clearTimeout(buscaTimer.current) }
   }, [busca, buscaAberta, executarBusca])
+
+  const wasZoomedRef = useRef(false)
+  useEffect(() => {
+    if (zoom > 1 && !wasZoomedRef.current) {
+      window.history.pushState({ vista: 'figura', zoom: true }, '')
+      wasZoomedRef.current = true
+    } else if (zoom <= 1 && wasZoomedRef.current) {
+      wasZoomedRef.current = false
+    }
+  }, [zoom])
 
   const touchesRef = useRef<Map<number, { x: number; y: number }>>(new Map())
   const pinchStartDist = useRef(0)
@@ -488,13 +523,14 @@ export default function CatalogosPage() {
   }
 
   function voltar() {
+    if (zoom > 1) { setZoom(1); setPan({ x: 0, y: 0 }); wasZoomedRef.current = false; window.history.back(); return }
     if (vista === 'carrinho_detalhe') { setVista('carrinhos'); loadCarrinhos(tabCarrinhos); return }
     if (vista === 'carrinhos') { setVista(vistaAntes.current); return }
     if (vista === 'busca') { setBuscaAberta(false); setBusca(''); setVista(secaoSel ? 'figuras' : modeloSel ? 'secoes' : marcaSel ? 'modelos' : 'marcas'); return }
-    if (vista === 'figura') { setVista('figuras'); setFigDetalhe(null); return }
-    if (vista === 'figuras') { setVista('secoes'); setSecaoSel(''); return }
-    if (vista === 'secoes') { setVista('modelos'); setModeloSel(''); return }
-    if (vista === 'modelos') { setVista('marcas'); setMarcaSel(''); return }
+    if (vista === 'figura') { setVista('figuras'); setFigDetalhe(null); window.history.back(); return }
+    if (vista === 'figuras') { setVista('secoes'); setSecaoSel(''); window.history.back(); return }
+    if (vista === 'secoes') { setVista('modelos'); setModeloSel(''); window.history.back(); return }
+    if (vista === 'modelos') { setVista('marcas'); setMarcaSel(''); window.history.back(); return }
   }
 
   function irParaCarrinhos() {
@@ -770,6 +806,7 @@ export default function CatalogosPage() {
               position: 'fixed', inset: 0, zIndex: 80,
               background: '#000', touchAction: 'none',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
+              overflow: 'hidden',
             }}
               ref={imgContainerRef}
               onTouchStart={handleTouchStart}
@@ -783,8 +820,8 @@ export default function CatalogosPage() {
                 transform: `scale(${zoom}) translate(${pan.x / zoom}px, ${pan.y / zoom}px)`,
                 transformOrigin: 'center center',
                 transition: dragging ? 'none' : 'transform 0.2s',
-                position: 'relative', width: '100%', height: '100%',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                position: 'relative',
+                display: 'inline-block',
               }}>
                 {figDetalhe.image_url && (
                   <img src={figDetalhe.image_url} alt={figDetalhe.name}
@@ -793,7 +830,7 @@ export default function CatalogosPage() {
                       setImgDim({ w: img.naturalWidth || 1, h: img.naturalHeight || 1 })
                     }}
                     style={{
-                      maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
+                      maxWidth: '100vw', maxHeight: '100vh',
                       cursor: 'grab', display: 'block',
                     }}
                     draggable={false}
