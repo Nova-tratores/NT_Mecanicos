@@ -1,5 +1,5 @@
-const ASSETS_CACHE = 'nt-assets-v24';
-const PAGES_CACHE = 'nt-pages-v5';
+const ASSETS_CACHE = 'nt-assets-v25';
+const PAGES_CACHE = 'nt-pages-v6';
 const APP_SHELL_KEY = 'nt-app-shell';
 
 const PRECACHE_URLS = [
