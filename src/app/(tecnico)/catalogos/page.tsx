@@ -6,7 +6,7 @@ import {
   ChevronLeft, Search, X, ChevronRight,
   Layers, Package, Cog, BookOpen, ShoppingCart, Plus, Minus, Trash2,
   Send, FileDown, MessageCircle, Clock, Archive, RotateCcw,
-  Link2, FolderOpen, User,
+  Link2, FolderOpen, User, Maximize2, Download, Pencil,
 } from 'lucide-react'
 import jsPDF from 'jspdf'
 
@@ -116,6 +116,10 @@ export default function CatalogosPage() {
   const [inputNome, setInputNome] = useState('')
   const pendingAdd = useRef<{ peca: Peca; figura: { code: string; name: string }; qtd: number } | null>(null)
 
+  const [fullscreen, setFullscreen] = useState(false)
+  const [desenhando, setDesenhando] = useState(false)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const desenhoRef = useRef<{ drawing: boolean; lastX: number; lastY: number }>({ drawing: false, lastX: 0, lastY: 0 })
   const [toast, setToast] = useState('')
   const searchParams = useSearchParams()
   const totalCarrinho = itensAtivos.reduce((s, i) => s + i.qtd, 0)
@@ -374,43 +378,44 @@ export default function CatalogosPage() {
     }
   }, [zoom])
 
-  const touchesRef = useRef<Map<number, { x: number; y: number }>>(new Map())
-  const pinchStartDist = useRef(0)
-  const pinchStartZoom = useRef(1)
+  const pinchRef = useRef({ dist: 0, zoom: 1, midX: 0, midY: 0 })
+  const touchMovedRef = useRef(false)
 
   const handleTouchStart = (e: React.TouchEvent) => {
-    const map = touchesRef.current
-    for (let i = 0; i < e.touches.length; i++) {
-      const t = e.touches[i]
-      map.set(t.identifier, { x: t.clientX, y: t.clientY })
-    }
+    touchMovedRef.current = false
     if (e.touches.length === 2) {
+      e.preventDefault()
       const [a, b] = [e.touches[0], e.touches[1]]
-      pinchStartDist.current = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY)
-      pinchStartZoom.current = zoom
+      pinchRef.current = {
+        dist: Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY),
+        zoom,
+        midX: (a.clientX + b.clientX) / 2,
+        midY: (a.clientY + b.clientY) / 2,
+      }
     } else if (e.touches.length === 1 && zoom > 1) {
       setDragging(true)
       dragStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY, panX: pan.x, panY: pan.y }
     }
   }
   const handleTouchMove = (e: React.TouchEvent) => {
+    touchMovedRef.current = true
     if (e.touches.length === 2) {
       e.preventDefault()
       const [a, b] = [e.touches[0], e.touches[1]]
       const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY)
-      const newZoom = Math.min(5, Math.max(1, pinchStartZoom.current * (dist / pinchStartDist.current)))
+      const newZoom = Math.min(5, Math.max(1, pinchRef.current.zoom * (dist / pinchRef.current.dist)))
       setZoom(newZoom)
       if (newZoom <= 1) setPan({ x: 0, y: 0 })
     } else if (e.touches.length === 1 && dragging) {
       const t = e.touches[0]
-      setPan({ x: dragStart.current.panX + (t.clientX - dragStart.current.x), y: dragStart.current.panY + (t.clientY - dragStart.current.y) })
+      const dx = t.clientX - dragStart.current.x
+      const dy = t.clientY - dragStart.current.y
+      setPan({ x: dragStart.current.panX + dx, y: dragStart.current.panY + dy })
     }
   }
   const handleTouchEnd = (e: React.TouchEvent) => {
-    const map = touchesRef.current
-    for (let i = 0; i < e.changedTouches.length; i++) map.delete(e.changedTouches[i].identifier)
-    if (e.touches.length < 2) pinchStartDist.current = 0
     if (e.touches.length === 0) setDragging(false)
+    if (e.touches.length < 2) pinchRef.current.dist = 0
   }
 
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -453,6 +458,120 @@ export default function CatalogosPage() {
     const numCompleto = num.length <= 11 ? `55${num}` : num
     const texto = encodeURIComponent(gerarTextoCarrinho())
     window.open(`https://wa.me/${numCompleto}?text=${texto}`, '_blank')
+  }
+
+  function abrirFullscreen() {
+    setFullscreen(true)
+    setZoom(1)
+    setPan({ x: 0, y: 0 })
+  }
+
+  function iniciarDesenho() {
+    setDesenhando(true)
+    setTimeout(() => {
+      const canvas = canvasRef.current
+      if (!canvas || !figDetalhe?.image_url) return
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        canvas.width = img.naturalWidth
+        canvas.height = img.naturalHeight
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0)
+      }
+      img.src = figDetalhe.image_url
+    }, 100)
+  }
+
+  function handleCanvasTouch(e: React.TouchEvent | React.MouseEvent) {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const rect = canvas.getBoundingClientRect()
+    const scaleX = canvas.width / rect.width
+    const scaleY = canvas.height / rect.height
+
+    const getPos = (ev: React.TouchEvent | React.MouseEvent) => {
+      if ('touches' in ev && ev.touches.length > 0) {
+        return { x: (ev.touches[0].clientX - rect.left) * scaleX, y: (ev.touches[0].clientY - rect.top) * scaleY }
+      }
+      const me = ev as React.MouseEvent
+      return { x: (me.clientX - rect.left) * scaleX, y: (me.clientY - rect.top) * scaleY }
+    }
+
+    const ref = desenhoRef.current
+    const type = e.type
+
+    if (type === 'mousedown' || type === 'touchstart') {
+      ref.drawing = true
+      const pos = getPos(e)
+      ref.lastX = pos.x
+      ref.lastY = pos.y
+      e.preventDefault()
+    } else if ((type === 'mousemove' || type === 'touchmove') && ref.drawing) {
+      const pos = getPos(e)
+      ctx.strokeStyle = '#FF0000'
+      ctx.lineWidth = Math.max(3, canvas.width / 200)
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.beginPath()
+      ctx.moveTo(ref.lastX, ref.lastY)
+      ctx.lineTo(pos.x, pos.y)
+      ctx.stroke()
+      ref.lastX = pos.x
+      ref.lastY = pos.y
+      e.preventDefault()
+    } else if (type === 'mouseup' || type === 'touchend' || type === 'mouseleave') {
+      ref.drawing = false
+    }
+  }
+
+  function salvarDesenho() {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    canvas.toBlob(blob => {
+      if (!blob) return
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${figDetalhe?.code || 'figura'}-anotado.jpg`
+      a.click()
+      URL.revokeObjectURL(url)
+      setDesenhando(false)
+      showToast('Imagem salva!')
+    }, 'image/jpeg', 0.9)
+  }
+
+  function baixarFiguraPdf() {
+    if (!figDetalhe?.image_url) return
+    const img = new Image()
+    img.crossOrigin = 'anonymous'
+    img.onload = () => {
+      const isLandscape = img.naturalWidth > img.naturalHeight
+      const doc = new jsPDF({ orientation: isLandscape ? 'landscape' : 'portrait', unit: 'mm', format: 'a4' })
+      const W = doc.internal.pageSize.getWidth()
+      const H = doc.internal.pageSize.getHeight()
+      const margin = 10
+      const maxW = W - margin * 2
+      const maxH = H - margin * 2 - 15
+      const ratio = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight)
+      const imgW = img.naturalWidth * ratio
+      const imgH = img.naturalHeight * ratio
+      const x = (W - imgW) / 2
+      doc.setFontSize(12)
+      doc.setFont('helvetica', 'bold')
+      doc.setTextColor(30, 58, 95)
+      doc.text(`${figDetalhe.code} — ${figDetalhe.name}`, W / 2, 8, { align: 'center' })
+      doc.addImage(img, 'JPEG', x, 12, imgW, imgH)
+      const fileName = `${figDetalhe.code}-${figDetalhe.name}`
+        .normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/[^a-zA-Z0-9\s-]/g, '').replace(/\s+/g, '-').toLowerCase()
+      doc.save(`${fileName}.pdf`)
+      showToast('PDF baixado!')
+    }
+    img.src = figDetalhe.image_url
   }
 
   function copiarLink() {
@@ -800,8 +919,8 @@ export default function CatalogosPage() {
       {/* ═══ FIGURA (detalhe) ═══ */}
       {!loading && vista === 'figura' && figDetalhe && (
         <div>
-          {/* Fullscreen overlay when zoomed */}
-          {zoom > 1 && (
+          {/* Fullscreen viewer */}
+          {(fullscreen || zoom > 1) && (
             <div style={{
               position: 'fixed', inset: 0, zIndex: 80,
               background: '#000', touchAction: 'none',
@@ -831,7 +950,7 @@ export default function CatalogosPage() {
                     }}
                     style={{
                       maxWidth: '100vw', maxHeight: '100vh',
-                      cursor: 'grab', display: 'block',
+                      cursor: zoom > 1 ? 'grab' : 'default', display: 'block',
                     }}
                     draggable={false}
                   />
@@ -839,8 +958,9 @@ export default function CatalogosPage() {
                 {(figDetalhe.hotspots || []).map((h, i) => {
                   const ativo = refHover === h.reference || pecaSel?.reference === h.reference
                   return (
-                    <button key={`${h.reference}-${i}`}
-                      onClick={e => {
+                    <button key={`z-${h.reference}-${i}`}
+                      onPointerUp={e => {
+                        if (touchMovedRef.current) return
                         e.stopPropagation()
                         const p = figDetalhe.pecas.find(p => p.reference === h.reference)
                         if (p) abrirPeca(p)
@@ -865,31 +985,94 @@ export default function CatalogosPage() {
 
               {/* Fullscreen controls */}
               <div style={{
-                position: 'absolute', top: 16, right: 16, display: 'flex', gap: 8, zIndex: 82,
+                position: 'absolute', top: 16, left: 16, right: 16,
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 82,
               }}>
                 <span style={{
                   fontSize: 13, fontWeight: 700, color: '#fff', background: 'rgba(0,0,0,0.6)',
                   padding: '6px 12px', borderRadius: radius.md,
                 }}>{Math.round(zoom * 100)}%</span>
-                <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }) }} style={{
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button onClick={() => setZoom(z => Math.min(5, z + 0.5))} style={{
+                    background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
+                    borderRadius: radius.md, width: 36, height: 36,
+                    color: '#fff', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Plus size={18} />
+                  </button>
+                  <button onClick={() => { setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz <= 1) setPan({ x: 0, y: 0 }); return nz }) }} style={{
+                    background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
+                    borderRadius: radius.md, width: 36, height: 36,
+                    color: '#fff', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  }}>
+                    <Minus size={18} />
+                  </button>
+                  <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); setFullscreen(false) }} style={{
+                    background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
+                    borderRadius: radius.md, padding: '6px 14px',
+                    fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', gap: 6,
+                  }}>
+                    <X size={16} /> Fechar
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Drawing overlay */}
+          {desenhando && (
+            <div style={{
+              position: 'fixed', inset: 0, zIndex: 85, background: '#000',
+              display: 'flex', flexDirection: 'column',
+            }}>
+              <div style={{
+                padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                background: 'rgba(0,0,0,0.8)', zIndex: 86,
+              }}>
+                <button onClick={() => setDesenhando(false)} style={{
                   background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
                   borderRadius: radius.md, padding: '6px 14px',
                   fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer',
                   display: 'flex', alignItems: 'center', gap: 6,
                 }}>
-                  <X size={16} /> Fechar
+                  <X size={16} /> Cancelar
                 </button>
+                <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>Rabiscar imagem</span>
+                <button onClick={salvarDesenho} style={{
+                  background: colors.success, border: 'none',
+                  borderRadius: radius.md, padding: '6px 14px',
+                  fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <Download size={16} /> Salvar
+                </button>
+              </div>
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', padding: 8 }}>
+                <canvas
+                  ref={canvasRef}
+                  style={{ maxWidth: '100%', maxHeight: '100%', touchAction: 'none', cursor: 'crosshair' }}
+                  onMouseDown={handleCanvasTouch}
+                  onMouseMove={handleCanvasTouch}
+                  onMouseUp={handleCanvasTouch}
+                  onMouseLeave={handleCanvasTouch}
+                  onTouchStart={handleCanvasTouch}
+                  onTouchMove={handleCanvasTouch}
+                  onTouchEnd={handleCanvasTouch}
+                />
               </div>
             </div>
           )}
 
-          {/* Normal inline image (when not zoomed) */}
+          {/* Normal inline image */}
           <div style={{
             position: 'relative', width: '100%',
             background: '#fff', borderRadius: radius.lg, overflow: 'hidden',
             border: `1px solid ${colors.border}`, marginBottom: 8, touchAction: 'none',
           }}
-            {...(zoom <= 1 ? { ref: imgContainerRef } : {})}
+            {...(zoom <= 1 && !fullscreen ? { ref: imgContainerRef } : {})}
             onTouchStart={handleTouchStart}
             onTouchMove={handleTouchMove}
             onTouchEnd={handleTouchEnd}
@@ -897,26 +1080,21 @@ export default function CatalogosPage() {
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
           >
-            <div style={{
-              position: 'relative', width: '100%',
-            }}>
+            <div style={{ position: 'relative', width: '100%' }}>
               {figDetalhe.image_url && (
                 <img src={figDetalhe.image_url} alt={figDetalhe.name}
                   onLoad={e => {
                     const img = e.target as HTMLImageElement
                     setImgDim({ w: img.naturalWidth || 1, h: img.naturalHeight || 1 })
                   }}
-                  style={{
-                    width: '100%', display: 'block',
-                    cursor: 'default',
-                  }}
+                  style={{ width: '100%', display: 'block', cursor: 'default' }}
                   draggable={false}
                 />
               )}
               {(figDetalhe.hotspots || []).map((h, i) => {
                 const ativo = refHover === h.reference || pecaSel?.reference === h.reference
                 return (
-                  <button key={`${h.reference}-${i}`}
+                  <button key={`n-${h.reference}-${i}`}
                     onClick={e => {
                       e.stopPropagation()
                       const p = figDetalhe.pecas.find(p => p.reference === h.reference)
@@ -939,6 +1117,34 @@ export default function CatalogosPage() {
                 )
               })}
             </div>
+          </div>
+
+          {/* Action buttons row */}
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <button onClick={abrirFullscreen} style={{
+              flex: 1, padding: '10px 0', borderRadius: radius.md,
+              background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
+              fontSize: 12, fontWeight: 700, color: colors.text, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}>
+              <Maximize2 size={14} /> Tela cheia
+            </button>
+            <button onClick={iniciarDesenho} style={{
+              flex: 1, padding: '10px 0', borderRadius: radius.md,
+              background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
+              fontSize: 12, fontWeight: 700, color: colors.text, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}>
+              <Pencil size={14} /> Rabiscar
+            </button>
+            <button onClick={baixarFiguraPdf} style={{
+              flex: 1, padding: '10px 0', borderRadius: radius.md,
+              background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
+              fontSize: 12, fontWeight: 700, color: colors.text, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}>
+              <FileDown size={14} /> PDF
+            </button>
           </div>
 
           <div style={{

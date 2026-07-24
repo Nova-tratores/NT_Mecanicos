@@ -633,11 +633,23 @@ export default function TecnicoHome() {
         </div>
       )}
 
+      {/* ═══ CATÁLOGO DE PEÇAS ═══ */}
+      <Link href="/catalogos" className="hb" style={{ ...blocoStyle, animationDelay: '60ms', borderLeftColor: '#7C3AED', width: '100%' }}>
+        <div style={{ ...blocoIcone }}>
+          <BookOpen size={22} color="#7C3AED" strokeWidth={2.2} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={blocoTitulo}>Catálogo de Peças</div>
+          <div style={blocoSub}>Consultar peças e diagramas</div>
+        </div>
+        <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
+      </Link>
+
       {/* ═══ CARD: AVISOS (abre modal) ═══ */}
       <button
         onClick={() => { setShowHistorico(false); setAvisosModal(true) }}
         className="hb"
-        style={{ ...blocoStyle, animationDelay: '60ms', width: '100%', cursor: 'pointer', borderLeftColor: colors.warning }}
+        style={{ ...blocoStyle, animationDelay: '120ms', width: '100%', cursor: 'pointer', borderLeftColor: colors.warning }}
       >
         <div style={{ ...blocoIcone }}>
           <Megaphone size={24} color={colors.warning} strokeWidth={2.2} />
@@ -660,7 +672,7 @@ export default function TecnicoHome() {
       {/* ═══ BLOCOS DE ACAO ═══ */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {/* Jornada */}
-        <Link href="/jornada" className="hb" style={{ ...blocoStyle, animationDelay: '120ms', borderLeftColor: colors.info }}>
+        <Link href="/jornada" className="hb" style={{ ...blocoStyle, animationDelay: '165ms', borderLeftColor: colors.info }}>
           <div style={{ ...blocoIcone }}>
             <Navigation size={22} color={colors.info} strokeWidth={2.2} />
           </div>
@@ -672,7 +684,7 @@ export default function TecnicoHome() {
         </Link>
 
         {/* Mapa de Veiculos */}
-        <Link href="/mapa" className="hb" style={{ ...blocoStyle, animationDelay: '165ms', borderLeftColor: colors.accent }}>
+        <Link href="/mapa" className="hb" style={{ ...blocoStyle, animationDelay: '210ms', borderLeftColor: colors.accent }}>
           <div style={{ ...blocoIcone }}>
             <MapPin size={22} color={colors.accent} strokeWidth={2.2} />
           </div>
@@ -686,7 +698,7 @@ export default function TecnicoHome() {
         {/* Garantias */}
         <Link href="/garantias" className="hb" style={{
           ...blocoStyle,
-          animationDelay: '210ms',
+          animationDelay: '255ms',
           borderLeftColor: garantiasPendentes > 0 ? colors.warning : colors.success,
           background: garantiasPendentes > 0 ? colors.warningBg : colors.surface,
           border: `1px solid ${garantiasPendentes > 0 ? colors.warningBorder : colors.border}`,
@@ -725,7 +737,7 @@ export default function TecnicoHome() {
         </Link>
 
         {/* Opa */}
-        <Link href="/opa" className="hb" style={{ ...blocoStyle, animationDelay: '255ms', borderLeftColor: colors.danger }}>
+        <Link href="/opa" className="hb" style={{ ...blocoStyle, animationDelay: '300ms', borderLeftColor: colors.danger }}>
           <div style={{ ...blocoIcone }}>
             <AlertCircle size={22} color={colors.danger} strokeWidth={2.2} />
           </div>
@@ -737,25 +749,13 @@ export default function TecnicoHome() {
         </Link>
 
         {/* SAT Digital */}
-        <Link href="/sat" className="hb" style={{ ...blocoStyle, animationDelay: '300ms', borderLeftColor: '#D97706' }}>
+        <Link href="/sat" className="hb" style={{ ...blocoStyle, animationDelay: '345ms', borderLeftColor: '#D97706' }}>
           <div style={{ ...blocoIcone }}>
             <Headset size={22} color="#D97706" strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={blocoTitulo}>SAT Digital</div>
             <div style={blocoSub}>Solicitar atendimento</div>
-          </div>
-          <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
-        </Link>
-
-        {/* Catalogo de Pecas */}
-        <Link href="/catalogos" className="hb" style={{ ...blocoStyle, animationDelay: '345ms', borderLeftColor: '#7C3AED' }}>
-          <div style={{ ...blocoIcone }}>
-            <BookOpen size={22} color="#7C3AED" strokeWidth={2.2} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={blocoTitulo}>Catálogo de Peças</div>
-            <div style={blocoSub}>Consultar peças e diagramas</div>
           </div>
           <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
