@@ -17,6 +17,89 @@ interface SavedItem {
   item_key: string; resposta: string; observacao: string; foto_url: string | null
 }
 
+const MOLDES: Record<string, { svg: string; dica: string }> = {
+  crlv: {
+    dica: 'Enquadre o documento na área',
+    svg: `<rect x="15" y="20" width="70" height="60" rx="3" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="4 2" opacity="0.7"/><text x="50" y="16" text-anchor="middle" fill="white" font-size="4.5" opacity="0.8">CRLV</text>`,
+  },
+  lataria_frente: {
+    dica: 'Enquadre a frente do veículo',
+    svg: `<rect x="10" y="25" width="80" height="55" rx="4" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="4 2" opacity="0.6"/><line x1="50" y1="25" x2="50" y2="80" stroke="white" stroke-width="0.4" opacity="0.3"/><text x="50" y="20" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Frente — capô, faróis, para-choque</text>`,
+  },
+  lataria_traseira: {
+    dica: 'Enquadre a traseira do veículo',
+    svg: `<rect x="10" y="25" width="80" height="55" rx="4" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="4 2" opacity="0.6"/><text x="50" y="20" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Traseira — lanternas, para-choque</text>`,
+  },
+  lataria_esquerda: {
+    dica: 'Enquadre toda a lateral esquerda',
+    svg: `<rect x="5" y="30" width="90" height="45" rx="4" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="4 2" opacity="0.6"/><text x="50" y="25" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Lateral esquerda completa</text>`,
+  },
+  lataria_direita: {
+    dica: 'Enquadre toda a lateral direita',
+    svg: `<rect x="5" y="30" width="90" height="45" rx="4" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="4 2" opacity="0.6"/><text x="50" y="25" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Lateral direita completa</text>`,
+  },
+  pneu_de: {
+    dica: 'Aproxime do pneu mostrando a banda',
+    svg: `<ellipse cx="50" cy="50" rx="28" ry="35" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="10" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Pneu dianteiro esquerdo</text>`,
+  },
+  pneu_dd: {
+    dica: 'Aproxime do pneu mostrando a banda',
+    svg: `<ellipse cx="50" cy="50" rx="28" ry="35" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="10" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Pneu dianteiro direito</text>`,
+  },
+  pneu_te: {
+    dica: 'Aproxime do pneu mostrando a banda',
+    svg: `<ellipse cx="50" cy="50" rx="28" ry="35" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="10" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Pneu traseiro esquerdo</text>`,
+  },
+  pneu_td: {
+    dica: 'Aproxime do pneu mostrando a banda',
+    svg: `<ellipse cx="50" cy="50" rx="28" ry="35" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="10" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Pneu traseiro direito</text>`,
+  },
+  estepe: {
+    dica: 'Mostre o estepe e sua condição',
+    svg: `<ellipse cx="50" cy="50" rx="28" ry="35" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="10" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Estepe</text>`,
+  },
+  parabrisa: {
+    dica: 'De dentro para fora, mostre trincas',
+    svg: `<rect x="10" y="15" width="80" height="70" rx="5" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="4 2" opacity="0.6"/><text x="50" y="10" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Para-brisa (de dentro para fora)</text>`,
+  },
+  oleo_motor: {
+    dica: 'Fotografe a vareta de óleo',
+    svg: `<rect x="30" y="20" width="40" height="65" rx="3" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="14" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Vareta de óleo</text>`,
+  },
+  arrefecimento: {
+    dica: 'Mostre o nível no reservatório',
+    svg: `<rect x="25" y="20" width="50" height="60" rx="3" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><line x1="25" y1="55" x2="75" y2="55" stroke="white" stroke-width="0.5" opacity="0.5"/><text x="50" y="14" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Reservatório — nível visível</text>`,
+  },
+  bateria: {
+    dica: 'Mostre terminais e fixação',
+    svg: `<rect x="20" y="22" width="60" height="56" rx="3" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="16" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Bateria — terminais visíveis</text>`,
+  },
+  painel: {
+    dica: 'Ligue o veículo e fotografe o painel',
+    svg: `<rect x="10" y="25" width="80" height="50" rx="4" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="4 2" opacity="0.6"/><text x="50" y="20" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Painel ligado — luzes visíveis</text>`,
+  },
+  hodometro: {
+    dica: 'Enquadre o hodômetro com a KM legível',
+    svg: `<rect x="20" y="30" width="60" height="40" rx="3" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="25" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Hodômetro — km legível</text>`,
+  },
+  limpeza_interna: {
+    dica: 'Mostre bancos, tapetes e interior',
+    svg: `<rect x="8" y="15" width="84" height="70" rx="4" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="4 2" opacity="0.6"/><text x="50" y="10" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Interior — bancos e tapetes</text>`,
+  },
+  extintor: {
+    dica: 'Mostre a etiqueta de validade',
+    svg: `<rect x="25" y="15" width="50" height="70" rx="3" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="10" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Extintor — validade visível</text>`,
+  },
+  triangulo: {
+    dica: 'Fotografe o triângulo',
+    svg: `<polygon points="50,20 20,75 80,75" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="3 2" opacity="0.6"/><text x="50" y="85" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Triângulo</text>`,
+  },
+  macaco_chave: {
+    dica: 'Mostre o macaco e a chave juntos',
+    svg: `<rect x="10" y="25" width="80" height="50" rx="4" fill="none" stroke="white" stroke-width="0.8" stroke-dasharray="4 2" opacity="0.6"/><text x="50" y="20" text-anchor="middle" fill="white" font-size="4" opacity="0.8">Macaco + chave de roda</text>`,
+  },
+}
+
 export default function ChecklistVeiculoPage() {
   const { user } = useCurrentUser()
   const nome = user?.nome_pos || user?.tecnico_nome || ''
@@ -39,6 +122,11 @@ export default function ChecklistVeiculoPage() {
   const [resposta, setResposta] = useState<string>('')
   const [obs, setObs] = useState('')
   const fotoRef = useRef<HTMLInputElement>(null)
+
+  // Camera viewfinder state
+  const [cameraAberta, setCameraAberta] = useState(false)
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const streamRef = useRef<MediaStream | null>(null)
 
   // Load vehicle + existing checklist + history
   useEffect(() => {
@@ -190,6 +278,48 @@ export default function ChecklistVeiculoPage() {
     setFoto(file)
     setFotoPreview(URL.createObjectURL(file))
     e.target.value = ''
+  }
+
+  const abrirCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
+      })
+      streamRef.current = stream
+      setCameraAberta(true)
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          videoRef.current.play()
+        }
+      }, 50)
+    } catch {
+      fotoRef.current?.click()
+    }
+  }
+
+  const fecharCamera = () => {
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+    setCameraAberta(false)
+  }
+
+  const capturarFoto = () => {
+    const video = videoRef.current
+    if (!video) return
+    const canvas = document.createElement('canvas')
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.drawImage(video, 0, 0)
+    canvas.toBlob(blob => {
+      if (!blob) return
+      const file = new File([blob], `checklist-${Date.now()}.jpg`, { type: 'image/jpeg' })
+      setFoto(file)
+      setFotoPreview(URL.createObjectURL(file))
+      fecharCamera()
+    }, 'image/jpeg', 0.85)
   }
 
   const compartilhar = () => {
@@ -560,7 +690,7 @@ export default function ChecklistVeiculoPage() {
               border: `2px solid ${colors.border}`,
             }} />
             <button
-              onClick={() => fotoRef.current?.click()}
+              onClick={abrirCamera}
               style={{
                 position: 'absolute', bottom: 10, right: 10, background: 'rgba(0,0,0,0.6)',
                 color: '#fff', border: 'none', borderRadius: 10, padding: '6px 12px',
@@ -572,17 +702,75 @@ export default function ChecklistVeiculoPage() {
           </div>
         ) : (
           <button
-            onClick={() => fotoRef.current?.click()}
+            onClick={abrirCamera}
             style={{
-              width: '100%', padding: '40px 20px', borderRadius: 16,
+              width: '100%', padding: '28px 20px', borderRadius: 16,
               border: `2px dashed ${colors.border}`, background: colors.surfaceAlt,
               cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
             }}
           >
             <Camera size={32} color={colors.textMuted} />
             <span style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>Tirar foto</span>
+            {MOLDES[item.key] && (
+              <span style={{ fontSize: 11, color: colors.primary, fontWeight: 600 }}>{MOLDES[item.key].dica}</span>
+            )}
             <span style={{ fontSize: 11, color: colors.textMuted }}>Obrigatório</span>
           </button>
+        )}
+
+        {/* Camera viewfinder with guide overlay */}
+        {cameraAberta && (
+          <div style={{
+            position: 'fixed', inset: 0, zIndex: 9999, background: '#000',
+            display: 'flex', flexDirection: 'column',
+          }}>
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+              <video
+                ref={videoRef}
+                playsInline muted autoPlay
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+              {MOLDES[item.key] && (
+                <svg
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  style={{
+                    position: 'absolute', inset: 0, width: '100%', height: '100%',
+                    pointerEvents: 'none',
+                  }}
+                  dangerouslySetInnerHTML={{ __html: MOLDES[item.key].svg }}
+                />
+              )}
+              {MOLDES[item.key] && (
+                <div style={{
+                  position: 'absolute', bottom: 90, left: 0, right: 0,
+                  textAlign: 'center', color: '#fff', fontSize: 14, fontWeight: 700,
+                  textShadow: '0 1px 6px rgba(0,0,0,0.8)',
+                }}>
+                  {MOLDES[item.key].dica}
+                </div>
+              )}
+            </div>
+            <div style={{
+              padding: '16px 20px', background: 'rgba(0,0,0,0.85)',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              flexShrink: 0,
+            }}>
+              <button onClick={fecharCamera} style={{
+                background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
+                borderRadius: 12, padding: '10px 18px', color: '#fff', fontSize: 14, fontWeight: 700,
+                cursor: 'pointer',
+              }}>
+                Cancelar
+              </button>
+              <button onClick={capturarFoto} style={{
+                width: 68, height: 68, borderRadius: '50%',
+                background: '#fff', border: '4px solid rgba(255,255,255,0.4)',
+                cursor: 'pointer', boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
+              }} />
+              <div style={{ width: 80 }} />
+            </div>
+          </div>
         )}
 
         {/* Resposta */}
