@@ -7,9 +7,7 @@ import HeaderMobile from '@/components/HeaderMobile'
 // BottomNav removido — navegação agora via dashboard
 import OfflineSync from '@/components/OfflineSync'
 import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
-import dynamic from 'next/dynamic'
 import Link from 'next/link'
-const CheckinDiario = dynamic(() => import('@/components/CheckinDiario'), { ssr: false })
 import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon, ChevronRight } from 'lucide-react'
 
 // ── Avisos confirmados: cache local para nunca mostrar de novo ──
@@ -76,7 +74,6 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, remover, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '', user?.nome_pos)
   const [avisosPendentes, setAvisosPendentes] = useState<{ id: number; titulo: string; mensagem: string; prioridade: string }[]>([])
   const [confirmando, setConfirmando] = useState(false)
-  const [checkinFeito, setCheckinFeito] = useState<boolean | null>(true) // temporario: desativado para debug
 
   // ── OPA popup state ──
   const [opasPendentes, setOpasPendentes] = useState<OpaPopup[]>([])
@@ -154,28 +151,6 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     } catch {}
   }, [user?.id])
 
-  // Verificar check-in diario (fail-open: se erro, libera o app)
-  const verificarCheckin = useCallback(async () => {
-    if (!user?.tecnico_nome) return
-    if (!navigator.onLine) { setCheckinFeito(true); return }
-    try {
-      const hoje = new Date().toISOString().split('T')[0]
-      const { data, error } = await withTimeout(supabase
-        .from('checkin_diario')
-        .select('id')
-        .eq('tecnico_nome', user.tecnico_nome)
-        .eq('data', hoje)
-        .limit(1))
-      if (error) { setCheckinFeito(true); return }
-      setCheckinFeito((data && data.length > 0) ? true : false)
-    } catch {
-      setCheckinFeito(true)
-    }
-  }, [user?.tecnico_nome])
-
-  useEffect(() => {
-    verificarCheckin()
-  }, [verificarCheckin])
 
   // Prefetch de dados para offline (nunca bloqueia navegação)
   useEffect(() => {
@@ -336,17 +311,6 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
 
   if (!user) return null
 
-  // Check-in diario bloqueante (antes de tudo)
-  if (checkinFeito === false) {
-    return (
-      <CheckinDiario
-        tecnicoNome={user.tecnico_nome}
-        nomeBusca={user.nome_pos || user.tecnico_nome}
-        onComplete={() => setCheckinFeito(true)}
-        onLogout={logout}
-      />
-    )
-  }
 
   return (
     <div style={{ minHeight: '100vh', paddingBottom: 24, background: '#F5F6F8' }}>

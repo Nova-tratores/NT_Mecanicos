@@ -13,7 +13,7 @@ import jsPDF from 'jspdf'
 type Vista = 'marcas' | 'modelos' | 'secoes' | 'figuras' | 'figura' | 'busca' | 'carrinhos' | 'carrinho_detalhe'
 
 interface Marca { nome: string; slug: string; logo_url: string | null; modelos: number; tipos: string[] }
-interface Modelo { slug: string; nome: string; image_url: string | null; marca: string; tipo: string; familia: string | null; figuras?: number }
+interface Modelo { slug: string; nome: string; image_url: string | null; marca: string; tipo: string; familia: string | null; figuras?: number; manual_url?: string | null; manual_nome?: string | null }
 interface Secao { secao: string; ordem: number; figuras: number; thumb: string | null }
 interface Figura { id: string; code: string; name: string; secao: string; thumb_url: string | null; image_url: string | null; ordem: number }
 interface Peca { id: number; code: string; name: string; reference: string; qtd: string | null; unit: string | null; compravel: boolean }
@@ -83,6 +83,7 @@ export default function CatalogosPage() {
 
   const [marcaSel, setMarcaSel] = useState('')
   const [modeloSel, setModeloSel] = useState('')
+  const [modeloObj, setModeloObj] = useState<Modelo | null>(null)
   const [secaoSel, setSecaoSel] = useState('')
 
   const [loading, setLoading] = useState(false)
@@ -331,7 +332,8 @@ export default function CatalogosPage() {
   }
 
   async function selecionarModelo(modelo: string) {
-    setModeloSel(modelo); setVista('secoes'); pushVista('secoes'); setLoading(true)
+    setModeloSel(modelo); setModeloObj(modelos.find(m => m.nome === modelo) || null)
+    setVista('secoes'); pushVista('secoes'); setLoading(true)
     setSecoes(await api({ action: 'secoes', modelo }))
     setLoading(false)
   }
@@ -648,7 +650,7 @@ export default function CatalogosPage() {
     if (vista === 'busca') { setBuscaAberta(false); setBusca(''); setVista(secaoSel ? 'figuras' : modeloSel ? 'secoes' : marcaSel ? 'modelos' : 'marcas'); return }
     if (vista === 'figura') { setVista('figuras'); setFigDetalhe(null); window.history.back(); return }
     if (vista === 'figuras') { setVista('secoes'); setSecaoSel(''); window.history.back(); return }
-    if (vista === 'secoes') { setVista('modelos'); setModeloSel(''); window.history.back(); return }
+    if (vista === 'secoes') { setVista('modelos'); setModeloSel(''); setModeloObj(null); window.history.back(); return }
     if (vista === 'modelos') { setVista('marcas'); setMarcaSel(''); window.history.back(); return }
   }
 
@@ -758,11 +760,11 @@ export default function CatalogosPage() {
           display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center',
           marginBottom: 12, fontSize: 11, color: colors.textSubtle,
         }}>
-          <span onClick={() => { setVista('marcas'); setMarcaSel(''); setModeloSel(''); setSecaoSel('') }}
+          <span onClick={() => { setVista('marcas'); setMarcaSel(''); setModeloSel(''); setModeloObj(null); setSecaoSel('') }}
             style={{ cursor: 'pointer', textDecoration: 'underline' }}>Catálogo</span>
           {marcaSel && <>
             <ChevronRight size={12} />
-            <span onClick={() => { setVista('modelos'); setModeloSel(''); setSecaoSel('') }}
+            <span onClick={() => { setVista('modelos'); setModeloSel(''); setModeloObj(null); setSecaoSel('') }}
               style={{ cursor: 'pointer', textDecoration: 'underline' }}>{marcaSel}</span>
           </>}
           {modeloSel && <>
@@ -860,6 +862,25 @@ export default function CatalogosPage() {
       {/* ═══ SEÇÕES ═══ */}
       {!loading && vista === 'secoes' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {modeloObj?.manual_url && (
+            <a href={modeloObj.manual_url} target="_blank" rel="noopener noreferrer" className="hb" style={{
+              display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px',
+              background: '#EFF6FF', borderRadius: radius.lg, border: '1px solid #BFDBFE',
+              boxShadow: shadow.sm, cursor: 'pointer', textDecoration: 'none', width: '100%',
+            }}>
+              <div style={{
+                width: 44, height: 44, borderRadius: radius.sm, background: '#DBEAFE',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <BookOpen size={22} color="#2563EB" />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 700, color: '#1E40AF' }}>Manual do Operador</div>
+                <div style={{ fontSize: 12, color: '#3B82F6' }}>{modeloObj.manual_nome || modeloSel}</div>
+              </div>
+              <FileDown size={20} color="#3B82F6" />
+            </a>
+          )}
           {secoes.map(s => (
             <button key={s.secao} onClick={() => selecionarSecao(s.secao)} className="hb" style={{
               display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px',
