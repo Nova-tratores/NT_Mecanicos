@@ -1,29 +1,38 @@
 import { createClient } from '@supabase/supabase-js'
 
+export const dynamic = 'force-dynamic'
+
 export async function GET() {
+  const allKeys = Object.keys(process.env).filter(k =>
+    k.includes('SUPA') || k.includes('VAPID') || k.includes('SERVICE') || k.includes('ANON')
+  )
+
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '(vazio)'
-  const hasServiceKey = !!process.env.SUPABASE_SERVICE_ROLE_KEY
-  const hasAnonKey = !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  const hasVapidPublic = !!process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
-  const hasVapidPrivate = !!process.env.VAPID_PRIVATE_KEY
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
 
   let dbTest = 'nao testado'
-  try {
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-    const supabase = createClient(url, key)
-    const { data, error } = await supabase.from('push_subscriptions').select('id, tecnico_nome')
-    if (error) dbTest = `erro: ${error.message}`
-    else dbTest = `ok: ${(data || []).length} subscriptions`
-  } catch (e: unknown) {
-    dbTest = `exception: ${(e as Error).message}`
+  const keyUsed = serviceKey ? 'service_role' : anonKey ? 'anon' : 'nenhuma'
+  const key = serviceKey || anonKey
+  if (key) {
+    try {
+      const supabase = createClient(url, key)
+      const { data, error } = await supabase.from('push_subscriptions').select('id, tecnico_nome')
+      if (error) dbTest = `erro: ${error.message}`
+      else dbTest = `ok: ${(data || []).length} subscriptions`
+    } catch (e: unknown) {
+      dbTest = `exception: ${(e as Error).message}`
+    }
   }
 
   return Response.json({
-    supabase_url: url.substring(0, 30) + '...',
-    has_service_key: hasServiceKey,
-    has_anon_key: hasAnonKey,
-    has_vapid_public: hasVapidPublic,
-    has_vapid_private: hasVapidPrivate,
+    env_keys_found: allKeys,
+    supabase_url_prefix: url.substring(0, 30),
+    service_key_length: serviceKey.length,
+    anon_key_length: anonKey.length,
+    vapid_public_length: (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '').length,
+    vapid_private_length: (process.env.VAPID_PRIVATE_KEY || '').length,
+    key_used: keyUsed,
     db_test: dbTest,
   })
 }
