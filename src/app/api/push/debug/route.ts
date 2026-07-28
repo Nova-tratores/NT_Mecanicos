@@ -1,19 +1,33 @@
+import { execSync } from 'child_process'
 import { createClient } from '@supabase/supabase-js'
 
 export const dynamic = 'force-dynamic'
 
-const env = globalThis.process?.env ?? {}
+function shellEnv(name: string): string {
+  try {
+    return execSync(`printenv ${name}`, { encoding: 'utf-8' }).trim()
+  } catch {
+    return ''
+  }
+}
 
 export async function GET() {
-  const url = env['NEXT_PUBLIC_SUPABASE_URL'] || '(vazio)'
-  const serviceKey = env['SUPABASE_SERVICE_ROLE_KEY'] || ''
-  const anonKey = env['NEXT_PUBLIC_SUPABASE_ANON_KEY'] || ''
-  const vapidPub = env['NEXT_PUBLIC_VAPID_PUBLIC_KEY'] || ''
-  const vapidPriv = env['VAPID_PRIVATE_KEY'] || ''
+  const urlFromProcess = (globalThis.process?.env ?? {})['NEXT_PUBLIC_SUPABASE_URL'] || ''
+  const urlFromShell = shellEnv('NEXT_PUBLIC_SUPABASE_URL')
+
+  const serviceKeyProcess = (globalThis.process?.env ?? {})['SUPABASE_SERVICE_ROLE_KEY'] || ''
+  const serviceKeyShell = shellEnv('SUPABASE_SERVICE_ROLE_KEY')
+
+  const vapidPubProcess = (globalThis.process?.env ?? {})['NEXT_PUBLIC_VAPID_PUBLIC_KEY'] || ''
+  const vapidPubShell = shellEnv('NEXT_PUBLIC_VAPID_PUBLIC_KEY')
+
+  const vapidPrivProcess = (globalThis.process?.env ?? {})['VAPID_PRIVATE_KEY'] || ''
+  const vapidPrivShell = shellEnv('VAPID_PRIVATE_KEY')
+
+  const url = urlFromShell || urlFromProcess || '(vazio)'
+  const key = serviceKeyShell || serviceKeyProcess || shellEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY') || ''
 
   let dbTest = 'nao testado'
-  const keyUsed = serviceKey ? 'service_role' : anonKey ? 'anon' : 'nenhuma'
-  const key = serviceKey || anonKey
   if (key) {
     try {
       const supabase = createClient(url, key)
@@ -26,12 +40,18 @@ export async function GET() {
   }
 
   return Response.json({
-    supabase_url_prefix: url.substring(0, 30),
-    service_key_length: serviceKey.length,
-    anon_key_length: anonKey.length,
-    vapid_public_length: vapidPub.length,
-    vapid_private_length: vapidPriv.length,
-    key_used: keyUsed,
+    process_env: {
+      url_len: urlFromProcess.length,
+      service_key_len: serviceKeyProcess.length,
+      vapid_pub_len: vapidPubProcess.length,
+      vapid_priv_len: vapidPrivProcess.length,
+    },
+    shell_env: {
+      url_len: urlFromShell.length,
+      service_key_len: serviceKeyShell.length,
+      vapid_pub_len: vapidPubShell.length,
+      vapid_priv_len: vapidPrivShell.length,
+    },
     db_test: dbTest,
   })
 }
