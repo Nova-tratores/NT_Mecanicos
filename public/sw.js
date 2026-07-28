@@ -1,5 +1,5 @@
-const ASSETS_CACHE = 'nt-assets-v28';
-const PAGES_CACHE = 'nt-pages-v9';
+const ASSETS_CACHE = 'nt-assets-v29';
+const PAGES_CACHE = 'nt-pages-v10';
 const APP_SHELL_KEY = 'nt-app-shell';
 
 const PRECACHE_URLS = [
@@ -341,8 +341,8 @@ self.addEventListener('push', (event) => {
   const title = data.title || 'Nova Tratores';
   const options = {
     body: data.body || '',
-    icon: data.icon || '/Logo_Nova.png',
-    badge: data.badge || '/Logo_Nova.png',
+    icon: data.icon || '/capa_app.png',
+    badge: data.badge || '/capa_app.png',
     vibrate: [200, 100, 200],
     data: data.data || {},
     actions: [{ action: 'open', title: 'Abrir' }],

@@ -41,25 +41,30 @@ export async function POST(request: Request) {
   const adminNames = await getAdminNames()
   adminNames.forEach(n => nomesAlvo.add(n))
 
-  const { data: subs } = await supabase
+  const { data: subs, error: subsError } = await supabase
     .from('push_subscriptions')
     .select('*')
     .in('tecnico_nome', [...nomesAlvo])
 
+  if (subsError) {
+    return Response.json({ error: subsError.message, hint: subsError.hint }, { status: 500 })
+  }
+
   if (!subs || subs.length === 0) {
-    return Response.json({ sent: 0 })
+    return Response.json({ sent: 0, debug: `nenhuma sub para: ${[...nomesAlvo].join(', ')}` })
   }
 
   const payload = JSON.stringify({
     title: titulo,
     body: descricao || '',
-    icon: '/Logo_Nova.png',
-    badge: '/Logo_Nova.png',
+    icon: '/capa_app.png',
+    badge: '/capa_app.png',
     data: { url: link || '/' },
   })
 
   let sent = 0
   const expired: number[] = []
+  const errors: string[] = []
 
   for (const sub of subs) {
     try {
@@ -72,10 +77,11 @@ export async function POST(request: Request) {
       )
       sent++
     } catch (err: unknown) {
-      const statusCode = (err as { statusCode?: number }).statusCode
-      if (statusCode === 410 || statusCode === 404) {
+      const e = err as { statusCode?: number; message?: string }
+      if (e.statusCode === 410 || e.statusCode === 404) {
         expired.push(sub.id)
       }
+      errors.push(`${sub.tecnico_nome}: ${e.statusCode || ''} ${e.message || ''}`)
     }
   }
 
@@ -83,5 +89,5 @@ export async function POST(request: Request) {
     await supabase.from('push_subscriptions').delete().in('id', expired)
   }
 
-  return Response.json({ sent, expired: expired.length })
+  return Response.json({ sent, expired: expired.length, total_subs: subs.length, errors })
 }
