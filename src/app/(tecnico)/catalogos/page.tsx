@@ -121,6 +121,8 @@ export default function CatalogosPage() {
   const [desenhando, setDesenhando] = useState(false)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const desenhoRef = useRef<{ drawing: boolean; lastX: number; lastY: number }>({ drawing: false, lastX: 0, lastY: 0 })
+  const undoStackRef = useRef<ImageData[]>([])
+  const baseImageRef = useRef<HTMLImageElement | null>(null)
   const [toast, setToast] = useState('')
   const searchParams = useSearchParams()
   const totalCarrinho = itensAtivos.reduce((s, i) => s + i.qtd, 0)
@@ -138,9 +140,44 @@ export default function CatalogosPage() {
         if (c?.id) { setCarrinhoAtivo(c); recarregarCarrinho(c.id) }
       } catch { /* ignore */ }
     }
-    loadMarcas()
 
-    window.history.replaceState({ vista: 'marcas' }, '')
+    const params = new URLSearchParams(window.location.search)
+    const urlMarca = params.get('marca')
+    const urlModelo = params.get('modelo')
+    const urlSecao = params.get('secao')
+    const urlFigura = params.get('figura')
+
+    if (urlMarca) {
+      ;(async () => {
+        setLoading(true)
+        skipPushRef.current = true
+        setMarcaSel(urlMarca)
+        const mods: Modelo[] = await api({ action: 'modelos', marca: urlMarca })
+        setModelos(mods)
+        if (!urlModelo) { setVista('modelos'); setLoading(false); window.history.replaceState({ vista: 'modelos' }, '', window.location.href); return }
+        skipPushRef.current = true
+        setModeloSel(urlModelo)
+        setModeloObj(mods.find(m => m.nome === urlModelo) || null)
+        const secs: Secao[] = await api({ action: 'secoes', modelo: urlModelo })
+        setSecoes(secs)
+        if (!urlSecao) { setVista('secoes'); setLoading(false); window.history.replaceState({ vista: 'secoes' }, '', window.location.href); return }
+        skipPushRef.current = true
+        setSecaoSel(urlSecao)
+        const figs: Figura[] = await api({ action: 'figuras', modelo: urlModelo, secao: urlSecao })
+        setFiguras(figs)
+        if (!urlFigura) { setVista('figuras'); setLoading(false); window.history.replaceState({ vista: 'figuras' }, '', window.location.href); return }
+        skipPushRef.current = true
+        setVista('figura')
+        setZoom(1); setPan({ x: 0, y: 0 })
+        setFigDetalhe(await api({ action: 'figura', figuraId: urlFigura }))
+        setLoading(false)
+        window.history.replaceState({ vista: 'figura' }, '', window.location.href)
+      })()
+    } else {
+      loadMarcas()
+      window.history.replaceState({ vista: 'marcas' }, '', '/catalogos')
+    }
+
     const onPop = (e: PopStateEvent) => {
       const st = e.state
       if (!st) return
@@ -151,7 +188,7 @@ export default function CatalogosPage() {
       if (st.vista) {
         skipPushRef.current = true
         setVista(st.vista)
-        setFigDetalhe(null)
+        if (st.vista !== 'figura') setFigDetalhe(null)
       }
     }
     window.addEventListener('popstate', onPop)
@@ -318,34 +355,52 @@ export default function CatalogosPage() {
     if (result.length === 1) selecionarMarca(result[0].nome)
   }
 
-  function pushVista(v: Vista) {
+  function catUrl(p: { marca?: string; modelo?: string; secao?: string; figura?: string }) {
+    const sp = new URLSearchParams()
+    if (p.marca) sp.set('marca', p.marca)
+    if (p.modelo) sp.set('modelo', p.modelo)
+    if (p.secao) sp.set('secao', p.secao)
+    if (p.figura) sp.set('figura', p.figura)
+    const qs = sp.toString()
+    return '/catalogos' + (qs ? '?' + qs : '')
+  }
+
+  function pushVista(v: Vista, url: string) {
     if (!skipPushRef.current) {
-      window.history.pushState({ vista: v }, '')
+      window.history.pushState({ vista: v }, '', url)
     }
     skipPushRef.current = false
   }
 
   async function selecionarMarca(marca: string) {
-    setMarcaSel(marca); setVista('modelos'); pushVista('modelos'); setLoading(true)
+    setMarcaSel(marca); setVista('modelos')
+    pushVista('modelos', catUrl({ marca }))
+    setLoading(true)
     setModelos(await api({ action: 'modelos', marca }))
     setLoading(false)
   }
 
   async function selecionarModelo(modelo: string) {
     setModeloSel(modelo); setModeloObj(modelos.find(m => m.nome === modelo) || null)
-    setVista('secoes'); pushVista('secoes'); setLoading(true)
+    setVista('secoes')
+    pushVista('secoes', catUrl({ marca: marcaSel, modelo }))
+    setLoading(true)
     setSecoes(await api({ action: 'secoes', modelo }))
     setLoading(false)
   }
 
   async function selecionarSecao(secao: string) {
-    setSecaoSel(secao); setVista('figuras'); pushVista('figuras'); setLoading(true)
+    setSecaoSel(secao); setVista('figuras')
+    pushVista('figuras', catUrl({ marca: marcaSel, modelo: modeloSel, secao }))
+    setLoading(true)
     setFiguras(await api({ action: 'figuras', modelo: modeloSel, secao }))
     setLoading(false)
   }
 
   async function selecionarFigura(id: string) {
-    setVista('figura'); pushVista('figura'); setLoading(true)
+    setVista('figura')
+    pushVista('figura', catUrl({ marca: marcaSel, modelo: modeloSel, secao: secaoSel, figura: id }))
+    setLoading(true)
     setZoom(1); setPan({ x: 0, y: 0 })
     setPecaSel(null); setSheetAberta(false)
     setFigDetalhe(await api({ action: 'figura', figuraId: id }))
@@ -470,6 +525,7 @@ export default function CatalogosPage() {
 
   function iniciarDesenho() {
     setDesenhando(true)
+    undoStackRef.current = []
     setTimeout(() => {
       const canvas = canvasRef.current
       if (!canvas || !figDetalhe?.image_url) return
@@ -481,6 +537,7 @@ export default function CatalogosPage() {
         const ctx = canvas.getContext('2d')
         if (!ctx) return
         ctx.drawImage(img, 0, 0)
+        baseImageRef.current = img
       }
       img.src = figDetalhe.image_url
     }, 100)
@@ -507,6 +564,7 @@ export default function CatalogosPage() {
     const type = e.type
 
     if (type === 'mousedown' || type === 'touchstart') {
+      undoStackRef.current.push(ctx.getImageData(0, 0, canvas.width, canvas.height))
       ref.drawing = true
       const pos = getPos(e)
       ref.lastX = pos.x
@@ -528,6 +586,27 @@ export default function CatalogosPage() {
     } else if (type === 'mouseup' || type === 'touchend' || type === 'mouseleave') {
       ref.drawing = false
     }
+  }
+
+  function desfazerRabisco() {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    const prev = undoStackRef.current.pop()
+    if (prev) {
+      ctx.putImageData(prev, 0, 0)
+    }
+  }
+
+  function limparRabiscos() {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx || !baseImageRef.current) return
+    undoStackRef.current = []
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.drawImage(baseImageRef.current, 0, 0)
   }
 
   function salvarDesenho() {
@@ -647,7 +726,12 @@ export default function CatalogosPage() {
     if (zoom > 1) { setZoom(1); setPan({ x: 0, y: 0 }); wasZoomedRef.current = false; window.history.back(); return }
     if (vista === 'carrinho_detalhe') { setVista('carrinhos'); loadCarrinhos(tabCarrinhos); return }
     if (vista === 'carrinhos') { setVista(vistaAntes.current); return }
-    if (vista === 'busca') { setBuscaAberta(false); setBusca(''); setVista(secaoSel ? 'figuras' : modeloSel ? 'secoes' : marcaSel ? 'modelos' : 'marcas'); return }
+    if (vista === 'busca') {
+      setBuscaAberta(false); setBusca('')
+      const v = secaoSel ? 'figuras' : modeloSel ? 'secoes' : marcaSel ? 'modelos' : 'marcas'
+      setVista(v)
+      return
+    }
     if (vista === 'figura') { setVista('figuras'); setFigDetalhe(null); window.history.back(); return }
     if (vista === 'figuras') { setVista('secoes'); setSecaoSel(''); window.history.back(); return }
     if (vista === 'secoes') { setVista('modelos'); setModeloSel(''); setModeloObj(null); window.history.back(); return }
@@ -760,21 +844,21 @@ export default function CatalogosPage() {
           display: 'flex', flexWrap: 'wrap', gap: 4, alignItems: 'center',
           marginBottom: 12, fontSize: 11, color: colors.textSubtle,
         }}>
-          <span onClick={() => { setVista('marcas'); setMarcaSel(''); setModeloSel(''); setModeloObj(null); setSecaoSel('') }}
+          <span onClick={() => { setVista('marcas'); setMarcaSel(''); setModeloSel(''); setModeloObj(null); setSecaoSel(''); window.history.pushState({ vista: 'marcas' }, '', '/catalogos') }}
             style={{ cursor: 'pointer', textDecoration: 'underline' }}>Catálogo</span>
           {marcaSel && <>
             <ChevronRight size={12} />
-            <span onClick={() => { setVista('modelos'); setModeloSel(''); setModeloObj(null); setSecaoSel('') }}
+            <span onClick={() => { setVista('modelos'); setModeloSel(''); setModeloObj(null); setSecaoSel(''); window.history.pushState({ vista: 'modelos' }, '', catUrl({ marca: marcaSel })) }}
               style={{ cursor: 'pointer', textDecoration: 'underline' }}>{marcaSel}</span>
           </>}
           {modeloSel && <>
             <ChevronRight size={12} />
-            <span onClick={() => { setVista('secoes'); setSecaoSel('') }}
+            <span onClick={() => { setVista('secoes'); setSecaoSel(''); window.history.pushState({ vista: 'secoes' }, '', catUrl({ marca: marcaSel, modelo: modeloSel })) }}
               style={{ cursor: 'pointer', textDecoration: 'underline' }}>{modeloSel}</span>
           </>}
           {secaoSel && <>
             <ChevronRight size={12} />
-            <span onClick={() => setVista('figuras')}
+            <span onClick={() => { setVista('figuras'); window.history.pushState({ vista: 'figuras' }, '', catUrl({ marca: marcaSel, modelo: modeloSel, secao: secaoSel })) }}
               style={{ cursor: 'pointer', textDecoration: 'underline' }}>{secaoSel}</span>
           </>}
         </div>
@@ -1049,28 +1133,30 @@ export default function CatalogosPage() {
               position: 'fixed', inset: 0, zIndex: 85, background: '#000',
               display: 'flex', flexDirection: 'column',
             }}>
+              {/* Barra superior */}
               <div style={{
-                padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                background: 'rgba(0,0,0,0.8)', zIndex: 86,
+                padding: '10px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                background: 'rgba(0,0,0,0.85)', zIndex: 86, gap: 8,
               }}>
                 <button onClick={() => setDesenhando(false)} style={{
                   background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
-                  borderRadius: radius.md, padding: '6px 14px',
-                  fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', gap: 6,
+                  borderRadius: radius.md, padding: '6px 12px',
+                  fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 4,
                 }}>
-                  <X size={16} /> Cancelar
+                  <X size={14} /> Sair
                 </button>
-                <span style={{ fontSize: 14, fontWeight: 700, color: '#fff' }}>Rabiscar imagem</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#fff', flex: 1, textAlign: 'center' }}>Rabiscar</span>
                 <button onClick={salvarDesenho} style={{
                   background: colors.success, border: 'none',
-                  borderRadius: radius.md, padding: '6px 14px',
-                  fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer',
-                  display: 'flex', alignItems: 'center', gap: 6,
+                  borderRadius: radius.md, padding: '6px 12px',
+                  fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 4,
                 }}>
-                  <Download size={16} /> Salvar
+                  <Download size={14} /> Salvar
                 </button>
               </div>
+              {/* Canvas */}
               <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'auto', padding: 8 }}>
                 <canvas
                   ref={canvasRef}
@@ -1083,6 +1169,28 @@ export default function CatalogosPage() {
                   onTouchMove={handleCanvasTouch}
                   onTouchEnd={handleCanvasTouch}
                 />
+              </div>
+              {/* Barra inferior: Desfazer + Limpar tudo */}
+              <div style={{
+                padding: '10px 16px', display: 'flex', justifyContent: 'center', gap: 12,
+                background: 'rgba(0,0,0,0.85)', zIndex: 86,
+              }}>
+                <button onClick={desfazerRabisco} style={{
+                  background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.25)',
+                  borderRadius: radius.md, padding: '8px 18px',
+                  fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <RotateCcw size={16} /> Desfazer
+                </button>
+                <button onClick={limparRabiscos} style={{
+                  background: 'rgba(220,38,38,0.25)', border: '1px solid rgba(220,38,38,0.5)',
+                  borderRadius: radius.md, padding: '8px 18px',
+                  fontSize: 13, fontWeight: 700, color: '#ff6b6b', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: 6,
+                }}>
+                  <Trash2 size={16} /> Limpar tudo
+                </button>
               </div>
             </div>
           )}

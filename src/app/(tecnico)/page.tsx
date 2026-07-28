@@ -204,7 +204,7 @@ interface VeiculoInfo {
 
 const PERSONAGENS = ['🧑‍🔧', '👷', '🧔', '👨‍🔧', '🐻', '🦊', '🐼', '🦁', '🐶', '🦉', '🤖', '🐯']
 
-/* ═══ Slider: ordens em aberto de todos os técnicos ═══ */
+/* ═══ Slider: ordens em aberto do técnico ═══ */
 interface OrdemAberta {
   Id_Ordem: string
   Os_Cliente: string | null
@@ -212,18 +212,61 @@ interface OrdemAberta {
   Status: string
   Tipo_Servico: string | null
   Serv_Solicitado: string | null
+  Previsao_Execucao: string | null
+  _classe: 'pendente' | 'aberta'
 }
+
+const FASES_FINAIS = [
+  'Concluida','Cancelada','Concluída','cancelada',
+  'Relatório Concluído','Relatorio Concluido',
+  'Executada aguardando comercial',
+  'Faturada','Faturado','Finalizada','Finalizado',
+  'Enviado Para Omie','Enviado para Omie',
+]
 
 async function fetchMinhasOrdensAbertas(nome: string): Promise<OrdemAberta[]> {
   if (!nome) return []
   const { data } = await supabase
     .from('Ordem_Servico')
-    .select('Id_Ordem, Os_Cliente, Os_Tecnico, Status, Tipo_Servico, Serv_Solicitado')
-    .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada","Relatório Concluído","Relatorio Concluido","Executada aguardando comercial","Faturada","Faturado","Finalizada","Finalizado","Enviado Para Omie","Enviado para Omie")')
+    .select('Id_Ordem, Os_Cliente, Os_Tecnico, Status, Tipo_Servico, Serv_Solicitado, Previsao_Execucao')
+    .not('Status', 'in', `("${FASES_FINAIS.join('","')}")`)
     .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
     .order('Id_Ordem', { ascending: false })
-    .limit(50)
-  return (data || []) as OrdemAberta[]
+    .limit(80)
+  const todas = (data || []) as (Omit<OrdemAberta, '_classe'>)[]
+  if (todas.length === 0) return []
+
+  const ids = todas.map(o => o.Id_Ordem)
+  const { data: tecData } = await supabase
+    .from('Ordem_Servico_Tecnicos')
+    .select('Ordem_Servico, Status')
+    .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
+    .in('Ordem_Servico', ids)
+
+  const preenchSet = new Set<string>()
+  const enviadaSet = new Set<string>()
+  if (tecData) {
+    for (const t of tecData) {
+      preenchSet.add(String(t.Ordem_Servico))
+      if (t.Status === 'enviado') enviadaSet.add(String(t.Ordem_Servico))
+    }
+  }
+
+  const resultado: OrdemAberta[] = []
+  for (const o of todas) {
+    const id = String(o.Id_Ordem)
+    if (enviadaSet.has(id)) continue
+    const pendente = o.Status === 'Aguardando ordem Técnico' && !preenchSet.has(id)
+    resultado.push({ ...o, _classe: pendente ? 'pendente' : 'aberta' })
+  }
+
+  resultado.sort((a, b) => {
+    if (a._classe === 'pendente' && b._classe !== 'pendente') return -1
+    if (a._classe !== 'pendente' && b._classe === 'pendente') return 1
+    return 0
+  })
+
+  return resultado
 }
 
 // Extrai o pedido do cliente ("Solicitação do Cliente: ...")
@@ -589,46 +632,59 @@ export default function TecnicoHome() {
             display: 'flex', gap: 12, overflowX: 'auto', paddingBottom: 4,
             scrollSnapType: 'x mandatory', WebkitOverflowScrolling: 'touch',
           }}>
-            {ordensAbertasList.map((o, i) => (
-              <Link
-                key={o.Id_Ordem}
-                href={`/os/${o.Id_Ordem}`}
-                className="slide-card"
-                style={{
-                  flex: '0 0 auto', width: 232, scrollSnapAlign: 'start', textDecoration: 'none',
-                  borderRadius: 18, overflow: 'hidden', background: colors.surface,
-                  border: `1px solid ${colors.border}`, boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
-                  display: 'flex', flexDirection: 'column',
-                  animationDelay: `${Math.min(i * 70, 500)}ms`,
-                }}
-              >
-                {/* "foto" da OS */}
-                <div style={{
-                  height: 100, position: 'relative',
-                  background: 'linear-gradient(135deg, #C41E2A, #9B1520)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                  <FileText size={42} color="rgba(255,255,255,0.9)" strokeWidth={1.5} />
-                  <span style={{
-                    position: 'absolute', top: 10, left: 12, fontSize: 13, fontWeight: 700, color: '#fff',
+            {ordensAbertasList.map((o, i) => {
+              const pendente = o._classe === 'pendente'
+              const bg = pendente
+                ? 'linear-gradient(135deg, #C41E2A, #9B1520)'
+                : 'linear-gradient(135deg, #1E3A5F, #2563EB)'
+              return (
+                <Link
+                  key={o.Id_Ordem}
+                  href={`/os/${o.Id_Ordem}`}
+                  className="slide-card"
+                  style={{
+                    flex: '0 0 auto', width: 232, scrollSnapAlign: 'start', textDecoration: 'none',
+                    borderRadius: 18, overflow: 'hidden', background: colors.surface,
+                    border: `1px solid ${colors.border}`, boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+                    display: 'flex', flexDirection: 'column',
+                    animationDelay: `${Math.min(i * 70, 500)}ms`,
+                  }}
+                >
+                  <div style={{
+                    height: 100, position: 'relative', background: bg,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}>
-                    {o.Id_Ordem}
-                  </span>
-                </div>
-                {/* info */}
-                <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 3 }}>
-                  <span style={{ fontSize: 14, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {o.Os_Cliente || 'Sem cliente'}
-                  </span>
-                  <span style={{ fontSize: 12, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {solicitacaoCurta(o.Serv_Solicitado, o.Tipo_Servico) || '—'}
-                  </span>
-                  <span style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: colors.primary, display: 'flex', alignItems: 'center', gap: 4 }}>
-                    Preencher <ChevronRight size={14} />
-                  </span>
-                </div>
-              </Link>
-            ))}
+                    <FileText size={42} color="rgba(255,255,255,0.9)" strokeWidth={1.5} />
+                    <span style={{
+                      position: 'absolute', top: 10, left: 12, fontSize: 13, fontWeight: 700, color: '#fff',
+                    }}>
+                      {o.Id_Ordem}
+                    </span>
+                    {pendente && (
+                      <span style={{
+                        position: 'absolute', top: 10, right: 12,
+                        fontSize: 9, fontWeight: 700, color: '#fff',
+                        background: 'rgba(0,0,0,0.3)', padding: '2px 8px', borderRadius: 6,
+                        textTransform: 'uppercase', letterSpacing: 0.5,
+                      }}>
+                        Pendente
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {o.Os_Cliente || 'Sem cliente'}
+                    </span>
+                    <span style={{ fontSize: 12, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {solicitacaoCurta(o.Serv_Solicitado, o.Tipo_Servico) || '—'}
+                    </span>
+                    <span style={{ marginTop: 8, fontSize: 12, fontWeight: 600, color: pendente ? '#C41E2A' : colors.primary, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      {pendente ? 'Preencher' : 'Ver OS'} <ChevronRight size={14} />
+                    </span>
+                  </div>
+                </Link>
+              )
+            })}
           </div>
         </div>
       )}
