@@ -1,13 +1,13 @@
 import { createClient } from '@supabase/supabase-js'
+import { serverEnv } from '@/lib/server-env'
 
 export const dynamic = 'force-dynamic'
 
-const env = globalThis.process?.env ?? {}
-
 function getSupabase() {
-  const url = env['NEXT_PUBLIC_SUPABASE_URL'] || ''
-  const key = env['SUPABASE_SERVICE_ROLE_KEY'] || env['NEXT_PUBLIC_SUPABASE_ANON_KEY'] || ''
-  return createClient(url, key)
+  return createClient(
+    serverEnv('NEXT_PUBLIC_SUPABASE_URL'),
+    serverEnv('SUPABASE_SERVICE_ROLE_KEY') || serverEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY'),
+  )
 }
 
 export async function POST(request: Request) {
