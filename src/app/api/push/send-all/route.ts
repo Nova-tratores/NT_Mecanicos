@@ -1,14 +1,19 @@
 import webpush from 'web-push'
 import { createClient } from '@supabase/supabase-js'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-)
+export const dynamic = 'force-dynamic'
+
+const env = globalThis.process?.env ?? {}
+
+function getSupabase() {
+  const url = env['NEXT_PUBLIC_SUPABASE_URL'] || ''
+  const key = env['SUPABASE_SERVICE_ROLE_KEY'] || env['NEXT_PUBLIC_SUPABASE_ANON_KEY'] || ''
+  return createClient(url, key)
+}
 
 function initVapid() {
-  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
-  const privateKey = process.env.VAPID_PRIVATE_KEY
+  const publicKey = env['NEXT_PUBLIC_VAPID_PUBLIC_KEY']
+  const privateKey = env['VAPID_PRIVATE_KEY']
   if (publicKey && privateKey) {
     webpush.setVapidDetails('mailto:suporte@novatratores.com.br', publicKey, privateKey)
   }
@@ -16,6 +21,7 @@ function initVapid() {
 
 export async function POST(request: Request) {
   initVapid()
+  const supabase = getSupabase()
   const { titulo, descricao, link } = await request.json()
 
   if (!titulo) {
@@ -37,9 +43,9 @@ export async function POST(request: Request) {
   const payload = JSON.stringify({
     title: titulo,
     body: descricao || '',
-    icon: '/Logo_Nova.png',
-    badge: '/Logo_Nova.png',
-    data: { url: link || '/opa' },
+    icon: '/capa_app.png',
+    badge: '/capa_app.png',
+    data: { url: link || '/' },
   })
 
   let sent = 0

@@ -2,14 +2,14 @@ import { createClient } from '@supabase/supabase-js'
 
 export const dynamic = 'force-dynamic'
 
-export async function GET() {
-  const allKeys = Object.keys(process.env).filter(k =>
-    k.includes('SUPA') || k.includes('VAPID') || k.includes('SERVICE') || k.includes('ANON')
-  )
+const env = globalThis.process?.env ?? {}
 
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || '(vazio)'
-  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+export async function GET() {
+  const url = env['NEXT_PUBLIC_SUPABASE_URL'] || '(vazio)'
+  const serviceKey = env['SUPABASE_SERVICE_ROLE_KEY'] || ''
+  const anonKey = env['NEXT_PUBLIC_SUPABASE_ANON_KEY'] || ''
+  const vapidPub = env['NEXT_PUBLIC_VAPID_PUBLIC_KEY'] || ''
+  const vapidPriv = env['VAPID_PRIVATE_KEY'] || ''
 
   let dbTest = 'nao testado'
   const keyUsed = serviceKey ? 'service_role' : anonKey ? 'anon' : 'nenhuma'
@@ -26,12 +26,11 @@ export async function GET() {
   }
 
   return Response.json({
-    env_keys_found: allKeys,
     supabase_url_prefix: url.substring(0, 30),
     service_key_length: serviceKey.length,
     anon_key_length: anonKey.length,
-    vapid_public_length: (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '').length,
-    vapid_private_length: (process.env.VAPID_PRIVATE_KEY || '').length,
+    vapid_public_length: vapidPub.length,
+    vapid_private_length: vapidPriv.length,
     key_used: keyUsed,
     db_test: dbTest,
   })

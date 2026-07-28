@@ -1,20 +1,26 @@
 import webpush from 'web-push'
 import { createClient } from '@supabase/supabase-js'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-)
+export const dynamic = 'force-dynamic'
+
+const env = globalThis.process?.env ?? {}
+
+function getSupabase() {
+  const url = env['NEXT_PUBLIC_SUPABASE_URL'] || ''
+  const key = env['SUPABASE_SERVICE_ROLE_KEY'] || env['NEXT_PUBLIC_SUPABASE_ANON_KEY'] || ''
+  return createClient(url, key)
+}
 
 function initVapid() {
-  const publicKey = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY
-  const privateKey = process.env.VAPID_PRIVATE_KEY
+  const publicKey = env['NEXT_PUBLIC_VAPID_PUBLIC_KEY']
+  const privateKey = env['VAPID_PRIVATE_KEY']
   if (publicKey && privateKey) {
     webpush.setVapidDetails('mailto:suporte@novatratores.com.br', publicKey, privateKey)
   }
 }
 
 async function getAdminNames(): Promise<string[]> {
+  const supabase = getSupabase()
   const { data: admins } = await supabase
     .from('portal_permissoes')
     .select('user_id')
@@ -29,6 +35,7 @@ async function getAdminNames(): Promise<string[]> {
 
 export async function POST(request: Request) {
   initVapid()
+  const supabase = getSupabase()
   const { tecnico_nome, titulo, descricao, link } = await request.json()
 
   if (!tecnico_nome || !titulo) {
@@ -37,7 +44,6 @@ export async function POST(request: Request) {
 
   const nomesAlvo = new Set<string>([tecnico_nome])
 
-  // Admins sempre recebem todas as notificações
   const adminNames = await getAdminNames()
   adminNames.forEach(n => nomesAlvo.add(n))
 

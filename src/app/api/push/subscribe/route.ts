@@ -1,11 +1,17 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-)
+export const dynamic = 'force-dynamic'
+
+const env = globalThis.process?.env ?? {}
+
+function getSupabase() {
+  const url = env['NEXT_PUBLIC_SUPABASE_URL'] || ''
+  const key = env['SUPABASE_SERVICE_ROLE_KEY'] || env['NEXT_PUBLIC_SUPABASE_ANON_KEY'] || ''
+  return createClient(url, key)
+}
 
 export async function POST(request: Request) {
+  const supabase = getSupabase()
   const { tecnico_nome, subscription } = await request.json()
 
   if (!tecnico_nome || !subscription?.endpoint) {
@@ -14,7 +20,6 @@ export async function POST(request: Request) {
 
   const { endpoint, keys } = subscription
 
-  // Upsert — se o endpoint já existe, atualiza
   const { error } = await supabase
     .from('push_subscriptions')
     .upsert(
