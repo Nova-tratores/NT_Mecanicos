@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Bell, X } from 'lucide-react'
 
-const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || ''
+const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || 'BMKJOMgDI2my4D-ZyeEYa4eUaAhXVh9wR0CvMqAnkivEojf4ychFmeH0nu_pWP4seKFTJUqSz35OEaguFU5Tcd0'
 const DISMISSED_KEY = 'nt-push-banner-dismissed'
 
 function urlBase64ToUint8Array(base64String: string) {
@@ -15,54 +15,88 @@ function urlBase64ToUint8Array(base64String: string) {
   return arr
 }
 
+async function registrarSubscription(tecnicoNome: string) {
+  const reg = await navigator.serviceWorker.ready
+  let sub = await reg.pushManager.getSubscription()
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    })
+  }
+  await fetch('/api/push/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tecnico_nome: tecnicoNome, subscription: sub.toJSON() }),
+  })
+}
+
 export default function PushPermissionBanner({ tecnicoNome }: { tecnicoNome: string }) {
   const [show, setShow] = useState(false)
   const [denied, setDenied] = useState(false)
   const [activating, setActivating] = useState(false)
+  const [msg, setMsg] = useState('')
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator)) return
     if (!VAPID_PUBLIC_KEY) return
 
-    const perm = Notification.permission
-    if (perm === 'granted') {
-      setShow(false)
-      return
-    }
-    if (perm === 'denied') {
-      setDenied(true)
-    }
+    const check = async () => {
+      const perm = Notification.permission
 
-    try {
-      const dismissed = localStorage.getItem(DISMISSED_KEY)
-      if (dismissed) {
-        const ts = Number(dismissed)
-        if (Date.now() - ts < 24 * 60 * 60 * 1000) return
+      if (perm === 'denied') {
+        setDenied(true)
+        setShow(true)
+        return
       }
-    } catch {}
 
-    setShow(true)
-  }, [])
+      if (perm === 'granted') {
+        // Permissão dada mas pode não ter subscription registrada
+        try {
+          const reg = await navigator.serviceWorker.ready
+          const sub = await reg.pushManager.getSubscription()
+          if (!sub) {
+            // Tem permissão mas sem subscription — registra automaticamente
+            await registrarSubscription(tecnicoNome)
+            setMsg('Notificações ativadas!')
+            setShow(true)
+            setTimeout(() => setShow(false), 3000)
+            return
+          }
+          // Tem permissão E subscription — garante que está no banco
+          await fetch('/api/push/subscribe', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tecnico_nome: tecnicoNome, subscription: sub.toJSON() }),
+          })
+        } catch (err) {
+          console.warn('Push check failed:', err)
+        }
+        return
+      }
+
+      // permission === 'default' — nunca perguntou
+      try {
+        const dismissed = localStorage.getItem(DISMISSED_KEY)
+        if (dismissed) {
+          const ts = Number(dismissed)
+          if (Date.now() - ts < 24 * 60 * 60 * 1000) return
+        }
+      } catch {}
+      setShow(true)
+    }
+
+    check()
+  }, [tecnicoNome])
 
   const ativar = useCallback(async () => {
     setActivating(true)
     try {
       const permission = await Notification.requestPermission()
       if (permission === 'granted') {
-        const reg = await navigator.serviceWorker.ready
-        let sub = await reg.pushManager.getSubscription()
-        if (!sub) {
-          sub = await reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-          })
-        }
-        await fetch('/api/push/subscribe', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tecnico_nome: tecnicoNome, subscription: sub.toJSON() }),
-        })
-        setShow(false)
+        await registrarSubscription(tecnicoNome)
+        setMsg('Notificações ativadas!')
+        setTimeout(() => setShow(false), 3000)
       } else if (permission === 'denied') {
         setDenied(true)
       }
@@ -80,6 +114,19 @@ export default function PushPermissionBanner({ tecnicoNome }: { tecnicoNome: str
 
   if (!show) return null
 
+  if (msg) {
+    return (
+      <div style={{
+        position: 'sticky', top: 64, zIndex: 30,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+        background: '#16A34A', color: '#fff',
+        padding: '11px 16px', fontSize: 13, fontWeight: 600,
+      }}>
+        <Bell size={16} /> {msg}
+      </div>
+    )
+  }
+
   return (
     <div style={{
       position: 'sticky', top: 64, zIndex: 30,
@@ -90,7 +137,7 @@ export default function PushPermissionBanner({ tecnicoNome }: { tecnicoNome: str
       <Bell size={18} color="#fff" style={{ flexShrink: 0 }} />
       <span style={{ flex: 1, fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>
         {denied
-          ? 'Notificações bloqueadas. Abra Configurações do navegador > Site > Notificações > Permitir.'
+          ? 'Notificações bloqueadas. Vá em Configurações do navegador > Site > Notificações > Permitir.'
           : 'Ative as notificações para receber alertas mesmo com o app fechado.'
         }
       </span>
