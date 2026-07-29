@@ -4,6 +4,7 @@ import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useNotificacoes } from '@/hooks/useNotificacoes'
 import { supabase } from '@/lib/supabase'
 import HeaderMobile from '@/components/HeaderMobile'
+import PushPermissionBanner from '@/components/PushPermissionBanner'
 // BottomNav removido — navegação agora via dashboard
 import OfflineSync from '@/components/OfflineSync'
 import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
@@ -329,6 +330,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
         avatarUrl={user.avatar_url}
         userName={user.tecnico_nome}
       />
+      <PushPermissionBanner tecnicoNome={user.tecnico_nome} />
       {/* Banner fixo: ocorrência disciplinar sem justificativa */}
       {ocDisciplinares > 0 && (
         <Link href="/ocorrencias" style={{
