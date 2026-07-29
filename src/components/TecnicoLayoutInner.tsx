@@ -71,7 +71,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   const { user, loading, logout } = useCurrentUser()
   // dois nomes: o do perfil do portal E o do POS — as notificações chegam com
   // qualquer um dos dois, em qualquer caixa ("DANILO DE SOUZA" vs "Danilo de Souza")
-  const { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, remover, limparTodas } = useNotificacoes(user?.tecnico_nome ?? '', user?.nome_pos)
+  const { notificacoes, naoLidas, historico, historicoAberto, marcarTodasComoLidas, limparTodas, carregarHistorico, fecharHistorico } = useNotificacoes(user?.tecnico_nome ?? '', user?.nome_pos)
   const [avisosPendentes, setAvisosPendentes] = useState<{ id: number; titulo: string; mensagem: string; prioridade: string }[]>([])
   const [confirmando, setConfirmando] = useState(false)
 
@@ -320,10 +320,12 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
       <HeaderMobile
         notificacoes={notificacoes}
         naoLidas={naoLidas}
-        onMarcarLida={marcarComoLida}
         onMarcarTodasLidas={marcarTodasComoLidas}
-        onRemover={remover}
         onLimparTodas={limparTodas}
+        historico={historico}
+        historicoAberto={historicoAberto}
+        onAbrirHistorico={carregarHistorico}
+        onFecharHistorico={fecharHistorico}
         avatarUrl={user.avatar_url}
         userName={user.tecnico_nome}
       />

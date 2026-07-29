@@ -1,8 +1,8 @@
 'use client'
 import { useState } from 'react'
 import {
-  Bell, X, Trash2, CheckCheck, FileText, ClipboardList,
-  ShieldCheck, Megaphone, Package, AlertCircle,
+  Bell, X, Trash2, FileText, ClipboardList,
+  ShieldCheck, Megaphone, Package, AlertCircle, History,
 } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
@@ -12,15 +12,16 @@ import { colors } from '@/lib/ui'
 interface HeaderMobileProps {
   notificacoes: MecanicoNotificacao[]
   naoLidas: number
-  onMarcarLida: (id: number) => void
   onMarcarTodasLidas: () => void
-  onRemover: (id: number) => void
   onLimparTodas: () => void
+  historico: MecanicoNotificacao[]
+  historicoAberto: boolean
+  onAbrirHistorico: () => void
+  onFecharHistorico: () => void
   avatarUrl?: string | null
   userName?: string | null
 }
 
-/* Icone + cor por tipo de notificacao */
 function estiloTipo(tipo: string): { icon: typeof Bell; color: string } {
   const t = (tipo || '').toLowerCase()
   if (t.includes('os') || t.includes('ordem') || t.includes('relat')) return { icon: FileText, color: colors.primary }
@@ -44,8 +45,54 @@ function tempoRelativo(iso: string): string {
   return new Date(iso).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
 }
 
-export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onMarcarTodasLidas, onRemover, onLimparTodas, avatarUrl, userName }: HeaderMobileProps) {
+function NotifCard({ n, onClick }: { n: MecanicoNotificacao; onClick?: () => void }) {
+  const { icon: Icon, color } = estiloTipo(n.tipo)
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        display: 'flex', alignItems: 'flex-start', gap: 12,
+        padding: 14, borderRadius: 16, cursor: onClick ? 'pointer' : 'default',
+        background: colors.surface,
+        border: `1px solid ${n.lida ? colors.border : color + '55'}`,
+        boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+      }}
+    >
+      <div style={{
+        width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: color,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        boxShadow: '0 3px 8px rgba(0,0,0,0.12)',
+      }}>
+        <Icon size={19} color="#fff" strokeWidth={2.2} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: n.lida ? 500 : 600, color: colors.text }}>{n.titulo}</div>
+        {n.descricao && (
+          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.descricao}</div>
+        )}
+        <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 5 }}>{tempoRelativo(n.created_at)}</div>
+      </div>
+      {!n.lida && (
+        <span style={{
+          width: 8, height: 8, borderRadius: '50%', background: color,
+          flexShrink: 0, marginTop: 6,
+        }} />
+      )}
+    </div>
+  )
+}
+
+export default function HeaderMobile({
+  notificacoes, naoLidas, onMarcarTodasLidas, onLimparTodas,
+  historico, historicoAberto, onAbrirHistorico, onFecharHistorico,
+  avatarUrl, userName,
+}: HeaderMobileProps) {
   const [showNotifs, setShowNotifs] = useState(false)
+
+  const abrirPainel = () => {
+    setShowNotifs(true)
+    if (naoLidas > 0) onMarcarTodasLidas()
+  }
 
   return (
     <>
@@ -76,7 +123,7 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
           </Link>
         </div>
 
-        <button onClick={() => setShowNotifs(!showNotifs)} style={{
+        <button onClick={abrirPainel} style={{
           position: 'relative', background: 'none', border: 'none',
           color: '#fff', cursor: 'pointer', padding: 8,
         }}>
@@ -96,11 +143,10 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
         </button>
       </header>
 
-      {/* Painel de notificacoes */}
       {showNotifs && (
         <div style={{
           position: 'fixed', inset: 0, zIndex: 100, background: 'rgba(0,0,0,0.5)',
-        }} onClick={() => setShowNotifs(false)}>
+        }} onClick={() => { setShowNotifs(false); onFecharHistorico() }}>
           <div
             className="notif-panel"
             style={{
@@ -120,20 +166,29 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                   <div style={{
-                    width: 38, height: 38, borderRadius: 12, background: colors.primary,
+                    width: 38, height: 38, borderRadius: 12,
+                    background: historicoAberto ? colors.info : colors.primary,
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    boxShadow: '0 3px 8px rgba(196,30,42,0.3)',
+                    boxShadow: '0 3px 8px rgba(0,0,0,0.15)',
                   }}>
-                    <Bell size={19} color="#fff" strokeWidth={2.2} />
+                    {historicoAberto
+                      ? <History size={19} color="#fff" strokeWidth={2.2} />
+                      : <Bell size={19} color="#fff" strokeWidth={2.2} />
+                    }
                   </div>
                   <div>
-                    <div style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>Notificações</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>
+                      {historicoAberto ? 'Histórico' : 'Notificações'}
+                    </div>
                     <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 1 }}>
-                      {naoLidas > 0 ? `${naoLidas} não lida${naoLidas > 1 ? 's' : ''}` : 'Tudo em dia'}
+                      {historicoAberto
+                        ? `${historico.length} notificação${historico.length !== 1 ? 'ões' : ''}`
+                        : notificacoes.length > 0 ? `${notificacoes.length} recente${notificacoes.length > 1 ? 's' : ''}` : 'Tudo em dia'
+                      }
                     </div>
                   </div>
                 </div>
-                <button onClick={() => setShowNotifs(false)} style={{
+                <button onClick={() => { setShowNotifs(false); onFecharHistorico() }} style={{
                   width: 32, height: 32, borderRadius: 10, border: 'none', cursor: 'pointer',
                   background: colors.surfaceAlt, display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
@@ -141,31 +196,62 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
                 </button>
               </div>
 
-              {notificacoes.length > 0 && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
-                  {naoLidas > 0 && (
-                    <button onClick={onMarcarTodasLidas} style={{
-                      flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                      background: colors.surfaceAlt, border: `1px solid ${colors.border}`, color: colors.textMuted,
-                      fontSize: 12, fontWeight: 600, padding: '9px 10px', borderRadius: 10, cursor: 'pointer',
-                    }}>
-                      <CheckCheck size={14} /> Marcar lidas
-                    </button>
-                  )}
-                  <button onClick={() => { onLimparTodas(); setShowNotifs(false) }} style={{
+              <div style={{ display: 'flex', gap: 8, marginTop: 14 }}>
+                {historicoAberto ? (
+                  <button onClick={onFecharHistorico} style={{
                     flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                    background: colors.dangerBg, border: `1px solid ${colors.dangerBorder}`, color: colors.danger,
+                    background: colors.surfaceAlt, border: `1px solid ${colors.border}`, color: colors.text,
                     fontSize: 12, fontWeight: 600, padding: '9px 10px', borderRadius: 10, cursor: 'pointer',
                   }}>
-                    <Trash2 size={14} /> Limpar tudo
+                    <Bell size={14} /> Voltar
                   </button>
-                </div>
-              )}
+                ) : (
+                  <>
+                    <button onClick={onAbrirHistorico} style={{
+                      flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                      background: colors.surfaceAlt, border: `1px solid ${colors.border}`, color: colors.text,
+                      fontSize: 12, fontWeight: 600, padding: '9px 10px', borderRadius: 10, cursor: 'pointer',
+                    }}>
+                      <History size={14} /> Histórico
+                    </button>
+                    {notificacoes.length > 0 && (
+                      <button onClick={onLimparTodas} style={{
+                        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                        background: colors.dangerBg, border: `1px solid ${colors.dangerBorder}`, color: colors.danger,
+                        fontSize: 12, fontWeight: 600, padding: '9px 10px', borderRadius: 10, cursor: 'pointer',
+                      }}>
+                        <Trash2 size={14} /> Limpar
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
 
             {/* Lista */}
             <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {notificacoes.length === 0 ? (
+              {historicoAberto ? (
+                historico.length === 0 ? (
+                  <div style={{
+                    flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    color: colors.textSubtle, gap: 10, padding: 40,
+                  }}>
+                    <div style={{
+                      width: 60, height: 60, borderRadius: 18, background: colors.surfaceAlt,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <History size={26} color={colors.textGhost} />
+                    </div>
+                    <div style={{ fontSize: 14, fontWeight: 500 }}>Nenhum histórico</div>
+                  </div>
+                ) : historico.map((n) => (
+                  <NotifCard
+                    key={n.id}
+                    n={{ ...n, lida: true }}
+                    onClick={n.link && n.link !== '/' ? () => { window.location.href = n.link! } : undefined}
+                  />
+                ))
+              ) : notificacoes.length === 0 ? (
                 <div style={{
                   flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                   color: colors.textSubtle, gap: 10, padding: 40,
@@ -177,54 +263,20 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
                     <Bell size={26} color={colors.textGhost} />
                   </div>
                   <div style={{ fontSize: 14, fontWeight: 500 }}>Nenhuma notificação</div>
+                  <button onClick={onAbrirHistorico} style={{
+                    marginTop: 8, fontSize: 13, color: colors.info, background: 'none',
+                    border: 'none', cursor: 'pointer', textDecoration: 'underline',
+                  }}>
+                    Ver histórico
+                  </button>
                 </div>
-              ) : notificacoes.map((n) => {
-                const { icon: Icon, color } = estiloTipo(n.tipo)
-                return (
-                  <div
-                    key={n.id}
-                    onClick={() => { onMarcarLida(n.id); if (n.link && n.link !== '/') window.location.href = n.link }}
-                    style={{
-                      position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 12,
-                      padding: 14, borderRadius: 16, cursor: 'pointer',
-                      background: colors.surface,
-                      border: `1px solid ${n.lida ? colors.border : color + '55'}`,
-                      boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
-                    }}
-                  >
-                    <div style={{
-                      width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: color,
-                      display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      boxShadow: '0 3px 8px rgba(0,0,0,0.12)',
-                    }}>
-                      <Icon size={19} color="#fff" strokeWidth={2.2} />
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0, paddingRight: 18 }}>
-                      <div style={{ fontSize: 13, fontWeight: n.lida ? 500 : 600, color: colors.text }}>{n.titulo}</div>
-                      {n.descricao && (
-                        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.descricao}</div>
-                      )}
-                      <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 5 }}>{tempoRelativo(n.created_at)}</div>
-                    </div>
-                    {!n.lida && (
-                      <span style={{
-                        position: 'absolute', top: 14, right: 34,
-                        width: 8, height: 8, borderRadius: '50%', background: color,
-                      }} />
-                    )}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onRemover(n.id) }}
-                      style={{
-                        position: 'absolute', top: 8, right: 8, width: 24, height: 24, borderRadius: 8,
-                        border: 'none', background: 'transparent', cursor: 'pointer',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      }}
-                    >
-                      <X size={15} color={colors.textSubtle} />
-                    </button>
-                  </div>
-                )
-              })}
+              ) : notificacoes.map((n) => (
+                <NotifCard
+                  key={n.id}
+                  n={n}
+                  onClick={n.link && n.link !== '/' ? () => { window.location.href = n.link! } : undefined}
+                />
+              ))}
             </div>
           </div>
         </div>

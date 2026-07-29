@@ -9,12 +9,12 @@ function getLimpaAt(): string | null {
   try { return localStorage.getItem(LIMPAR_KEY) } catch { return null }
 }
 
-// O portal e o POS escrevem o nome do técnico com caixas diferentes
-// ("DANILO DE SOUZA" da OS vs "Danilo de Souza" do perfil) — o match exato
-// fazia notificação de garantia/B.O. NUNCA chegar. Regra: casar SEM diferenciar
-// caixa, contra o nome do portal E o nome do POS (nome_pos).
+const VINTE_QUATRO_HORAS = 24 * 60 * 60 * 1000
+
 export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: string | null) {
   const [notificacoes, setNotificacoes] = useState<MecanicoNotificacao[]>([])
+  const [historico, setHistorico] = useState<MecanicoNotificacao[]>([])
+  const [historicoAberto, setHistoricoAberto] = useState(false)
   const [naoLidas, setNaoLidas] = useState(0)
   const limpaAtRef = useRef<string | null>(null)
 
@@ -37,15 +37,16 @@ export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: strin
 
     const filtrar = (lista: MecanicoNotificacao[]) => {
       const corte = limpaAtRef.current
-      if (!corte) return lista
-      // Comparar por timestamp real (parse), nunca por string — os formatos do
-      // Postgres (com espaço/offset) vs ISO local quebram a comparacao textual.
-      const corteMs = new Date(corte).getTime()
-      return lista.filter(n => new Date(n.created_at).getTime() > corteMs)
+      const agora = Date.now()
+      return lista.filter(n => {
+        const ts = new Date(n.created_at).getTime()
+        if (agora - ts > VINTE_QUATRO_HORAS) return false
+        if (corte && ts <= new Date(corte).getTime()) return false
+        return true
+      })
     }
 
     const carregar = async () => {
-      // ilike sem % = igualdade sem diferenciar caixa; OR entre os nomes
       const { data } = await supabase
         .from('mecanico_notificacoes')
         .select('*')
@@ -60,8 +61,6 @@ export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: strin
     }
     carregar()
 
-    // Realtime sem filtro no servidor (o filtro `eq` não cobre variação de
-    // caixa) — o volume é baixo e o descarte é feito aqui no cliente.
     const channel = supabase
       .channel('mec_notif_' + chaveNomes.replace(/[^a-z0-9|]/g, '_'))
       .on('postgres_changes', {
@@ -82,45 +81,40 @@ export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: strin
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chaveNomes])
 
-  const marcarComoLida = useCallback(async (id: number) => {
-    await supabase.from('mecanico_notificacoes').update({ lida: true }).eq('id', id)
-    setNotificacoes((prev) => prev.map((n) => n.id === id ? { ...n, lida: true } : n))
-    setNaoLidas((n) => Math.max(0, n - 1))
-  }, [])
-
   const marcarTodasComoLidas = useCallback(async () => {
-    // pelas IDs do estado (cobre qualquer variação de caixa do nome)
     const ids = notificacoes.filter((n) => !n.lida).map((n) => n.id)
     setNotificacoes((prev) => prev.map((n) => ({ ...n, lida: true })))
     setNaoLidas(0)
     if (ids.length) await supabase.from('mecanico_notificacoes').update({ lida: true }).in('id', ids)
   }, [notificacoes])
 
-  // Remove uma notificacao de vez (some do banco, nao volta ao recarregar)
-  const remover = useCallback(async (id: number) => {
-    setNotificacoes((prev) => {
-      const alvo = prev.find(n => n.id === id)
-      if (alvo && !alvo.lida) setNaoLidas((c) => Math.max(0, c - 1))
-      return prev.filter((n) => n.id !== id)
-    })
-    await supabase.from('mecanico_notificacoes').delete().eq('id', id)
-  }, [])
-
-  const limparTodas = useCallback(async () => {
-    if (nomesRef.current.length === 0) return
-    // Cutoff local (fallback imediato, caso o delete no banco falhe)
+  const limparTodas = useCallback(() => {
     const agora = new Date().toISOString()
     limpaAtRef.current = agora
     try { localStorage.setItem(LIMPAR_KEY, agora) } catch {}
     setNotificacoes([])
     setNaoLidas(0)
-    // Apaga de vez do banco — sao notificacoes pessoais do tecnico, entao
-    // limpar = remover para nao voltarem no proximo carregamento.
-    await supabase
-      .from('mecanico_notificacoes')
-      .delete()
-      .or(nomesRef.current.map(n => `tecnico_nome.ilike.${n}`).join(','))
   }, [])
 
-  return { notificacoes, naoLidas, marcarComoLida, marcarTodasComoLidas, remover, limparTodas }
+  const carregarHistorico = useCallback(async () => {
+    if (nomesRef.current.length === 0) return
+    const { data } = await supabase
+      .from('mecanico_notificacoes')
+      .select('*')
+      .or(nomesRef.current.map(n => `tecnico_nome.ilike.${n}`).join(','))
+      .order('created_at', { ascending: false })
+      .limit(100)
+    setHistorico(data || [])
+    setHistoricoAberto(true)
+  }, [])
+
+  const fecharHistorico = useCallback(() => {
+    setHistoricoAberto(false)
+  }, [])
+
+  return {
+    notificacoes, naoLidas, historico, historicoAberto,
+    marcarTodasComoLidas, limparTodas,
+    carregarHistorico, fecharHistorico,
+  }
 }
