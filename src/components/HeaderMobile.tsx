@@ -183,7 +183,7 @@ export default function HeaderMobile({ notificacoes, naoLidas, onMarcarLida, onM
                 return (
                   <div
                     key={n.id}
-                    onClick={() => { onMarcarLida(n.id); if (n.link) window.location.href = n.link }}
+                    onClick={() => { onMarcarLida(n.id); if (n.link && n.link !== '/') window.location.href = n.link }}
                     style={{
                       position: 'relative', display: 'flex', alignItems: 'flex-start', gap: 12,
                       padding: 14, borderRadius: 16, cursor: 'pointer',
