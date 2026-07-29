@@ -8,7 +8,7 @@ import { getQueue, removeFromQueue, updateQueueItem, type SyncItem } from './off
 
 let syncing = false
 const MAX_RETRIES = 10
-const SYNC_TIMEOUT = 15000
+const SYNC_TIMEOUT = 45000
 
 const syncFailListeners: Array<(item: SyncItem, error: string) => void> = []
 export function onSyncFail(cb: (item: SyncItem, error: string) => void) {
@@ -45,13 +45,13 @@ const FOTO_FIELDS = [
   'FotoExtra1', 'FotoExtra2', 'FotoExtra3', 'FotoExtra4', 'FotoExtra5',
 ]
 
-/** Upload de uma foto base64 para Supabase Storage */
-async function uploadBase64Foto(base64: string, table: string, campo: string, osId: string): Promise<string> {
+/** Upload de uma foto base64 para Supabase Storage. Retorna URL ou null se falhou. */
+async function uploadBase64Foto(base64: string, campo: string, osId: string): Promise<string | null> {
   try {
     const res = await fetch(base64)
     const blob = await res.blob()
     const path = `os-tecnicos/${osId}/${campo}_sync_${Date.now()}.jpg`
-    const { error } = await withTimeout(supabase.storage.from('requisicoes').upload(path, blob, { upsert: true }))
+    const { error } = await supabase.storage.from('requisicoes').upload(path, blob, { upsert: true })
     if (!error) {
       const { data } = supabase.storage.from('requisicoes').getPublicUrl(path)
       return data.publicUrl
@@ -60,21 +60,71 @@ async function uploadBase64Foto(base64: string, table: string, campo: string, os
   } catch (err) {
     console.error(`[sync] Erro upload base64 ${campo}:`, err)
   }
-  return ''
+  return null
 }
 
-/** Resolve fotos base64 pendentes no payload antes de sincronizar */
-async function resolverFotosPendentes(data: Record<string, unknown>): Promise<Record<string, unknown>> {
+/** Resolve fotos base64 pendentes no payload antes de sincronizar.
+ *  Retorna { data, pendente } — pendente=true se alguma foto não subiu. */
+async function resolverFotosPendentes(data: Record<string, unknown>): Promise<{ data: Record<string, unknown>; pendente: boolean }> {
   const osId = String(data.Ordem_Servico || 'unknown')
   const resolved = { ...data }
+  let pendente = false
+
   for (const campo of FOTO_FIELDS) {
     const valor = resolved[campo]
     if (typeof valor === 'string' && valor.startsWith('data:')) {
-      const url = await uploadBase64Foto(valor, 'Ordem_Servico_Tecnicos', campo, osId)
-      resolved[campo] = url // URL do Supabase ou '' se falhou
+      const url = await uploadBase64Foto(valor, campo, osId)
+      if (url) {
+        resolved[campo] = url
+      } else {
+        pendente = true
+      }
     }
   }
-  return resolved
+
+  // AlmocosFotos: array de {data, valor?, foto} — cada foto pode ser base64
+  const almocos = resolved.AlmocosFotos
+  if (Array.isArray(almocos)) {
+    const resolvedAlmocos = []
+    for (const item of almocos) {
+      const obj = (item || {}) as Record<string, unknown>
+      const foto = obj.foto
+      if (typeof foto === 'string' && foto.startsWith('data:')) {
+        const url = await uploadBase64Foto(foto, `FotoAlmoco_${obj.data || 'x'}`, osId)
+        if (url) {
+          resolvedAlmocos.push({ ...obj, foto: url })
+        } else {
+          resolvedAlmocos.push(obj)
+          pendente = true
+        }
+      } else {
+        resolvedAlmocos.push(obj)
+      }
+    }
+    resolved.AlmocosFotos = resolvedAlmocos
+    // Manter FotoAlmoco (legacy) em sincronia com o primeiro item
+    if (resolvedAlmocos.length > 0) {
+      const primeiraFoto = (resolvedAlmocos[0] as Record<string, unknown>).foto
+      if (typeof primeiraFoto === 'string' && !primeiraFoto.startsWith('data:')) {
+        resolved.FotoAlmoco = primeiraFoto
+      }
+    }
+  }
+
+  // Assinaturas também podem ser base64
+  for (const campo of ['AssCliente', 'AssTecnico']) {
+    const valor = resolved[campo]
+    if (typeof valor === 'string' && valor.startsWith('data:')) {
+      const url = await uploadBase64Foto(valor, campo, osId)
+      if (url) {
+        resolved[campo] = url
+      } else {
+        pendente = true
+      }
+    }
+  }
+
+  return { data: resolved, pendente }
 }
 
 export async function processQueue(): Promise<number> {
@@ -94,9 +144,13 @@ export async function processQueue(): Promise<number> {
       if (item.failed) continue
       try {
         // Resolver fotos base64 antes de gravar
-        const data = item.table === 'Ordem_Servico_Tecnicos'
-          ? await resolverFotosPendentes(item.data)
-          : item.data
+        let data = item.data
+        let fotoPendente = false
+        if (item.table === 'Ordem_Servico_Tecnicos') {
+          const r = await resolverFotosPendentes(item.data)
+          data = r.data
+          fotoPendente = r.pendente
+        }
 
         let result
 
@@ -133,9 +187,17 @@ export async function processQueue(): Promise<number> {
           continue
         }
 
-        if (item.id) await removeFromQueue(item.id)
+        if (fotoPendente && item.id) {
+          // Dados gravados no banco mas algumas fotos ficaram como base64.
+          // Atualiza o item na fila com os dados parcialmente resolvidos
+          // para tentar subir as fotos restantes no próximo sync.
+          await updateQueueItem(item.id, { data, action: 'update', match: item.match || { IdOs: data.Ordem_Servico } })
+          console.warn(`[sync] Item ${item.id} gravado, mas ${item.table} tem fotos pendentes — tentará de novo`)
+        } else {
+          if (item.id) await removeFromQueue(item.id)
+          console.log(`[sync] Item ${item.id} sincronizado (${item.table}/${item.action})`)
+        }
         processed++
-        console.log(`[sync] Item ${item.id} sincronizado (${item.table}/${item.action})`)
       } catch (err) {
         console.error(`[sync] Erro no item ${item.id}:`, err)
         const retries = (item.retries || 0) + 1
