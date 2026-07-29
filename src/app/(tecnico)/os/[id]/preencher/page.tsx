@@ -118,6 +118,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
   // Dias (dinâmico)
   const [dias, setDias] = useState<DiaForm[]>([{ data: '', horaInicio: '', horaFim: '', kmTotal: '' }])
+  const diasFromDBRef = useRef(false)
 
   // Peças informadas pelo técnico
   const [pecas, setPecas] = useState<PecaInfo[]>([])
@@ -437,7 +438,10 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             horaFim: existing.FinaHora3 || '', kmTotal: existing.InicioKm3 || '',
           })
         }
-        if (diasLoaded.length > 0) setDias(diasLoaded)
+        if (diasLoaded.length > 0) {
+          setDias(diasLoaded)
+          diasFromDBRef.current = true
+        }
 
         if (existing.PecasInfo) {
           try {
@@ -538,7 +542,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (data.fazenda !== undefined) setFazenda(data.fazenda as string)
     if (data.cidadeLocal !== undefined) setCidadeLocal(data.cidadeLocal as string)
     if (data.naOficina !== undefined) setNaOficina(data.naOficina as boolean)
-    if (data.dias !== undefined) setDias(data.dias as DiaForm[])
+    if (data.dias !== undefined && !diasFromDBRef.current) setDias(data.dias as DiaForm[])
     if (data.pecas !== undefined) setPecas(data.pecas as PecaInfo[])
     if (data.ppvRevisado !== undefined) setPpvRevisado(data.ppvRevisado as boolean)
     if (data.justificativaPecaExtra !== undefined) setJustificativaPecaExtra(data.justificativaPecaExtra as string)
@@ -1481,12 +1485,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       <div style={sectionStyle}>
         {sectionTitle('Identificação do Equipamento', '#1E3A5F')}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {os?.Projeto && (
-            <div>
-              <label style={labelStyle}>Projeto</label>
-              <input type="text" value={projeto} onChange={(e) => setProjeto(e.target.value)} style={inputStyle} />
-            </div>
-          )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
             <div id="campo-marca">
               <label style={labelStyle}>Marca <span style={{ color: '#C41E2A' }}>*</span></label>
