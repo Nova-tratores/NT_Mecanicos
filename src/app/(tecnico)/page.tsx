@@ -194,6 +194,7 @@ interface VeiculoInfo {
     proprietario: string | null; equipamentos: string[] | null
     exercicio_crlv: number | null; capacidade_tanque: number | null
     tem_rastreador: boolean; hodometro: number | null; imagem_url: string | null
+    senha_cartao_veloe?: string | null
   }
   responsavel: { nome: string; inicio: string; origem: string } | null
   historico: { nome: string; inicio: string; fim: string | null }[]
@@ -320,6 +321,8 @@ export default function TecnicoHome() {
   const [veiculoModal, setVeiculoModal] = useState(false)
   const [veiculoTab, setVeiculoTab] = useState<'info' | 'docs' | 'checklist'>('info')
   const [checklistPendente, setChecklistPendente] = useState(false)
+  // Senha do cartão Veloe do MEU carro — mascarada, toque pra revelar
+  const [verSenhaVeloe, setVerSenhaVeloe] = useState(false)
 
   useEffect(() => {
     if (!user) return
@@ -1332,6 +1335,20 @@ export default function TecnicoHome() {
                         {row('Documento (exercicio)', v.exercicio_crlv ? String(v.exercicio_crlv) : null)}
                         {row('Hodometro (rastreador)', v.hodometro != null ? `${v.hodometro.toLocaleString('pt-BR')} km` : null)}
                         {row('Tanque', v.capacidade_tanque ? `${v.capacidade_tanque} L` : null)}
+                        {v.senha_cartao_veloe && (
+                          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
+                            <span style={{ fontSize: 12, color: colors.textMuted, flexShrink: 0 }}>Senha cartao Veloe</span>
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 700, color: colors.text }}>
+                              {verSenhaVeloe ? v.senha_cartao_veloe : '••••••'}
+                              <button
+                                onClick={() => setVerSenhaVeloe((s) => !s)}
+                                style={{ background: 'none', border: 'none', color: colors.primary, fontSize: 11, fontWeight: 700, padding: 0, cursor: 'pointer' }}
+                              >
+                                {verSenhaVeloe ? 'ocultar' : 'mostrar'}
+                              </button>
+                            </span>
+                          </div>
+                        )}
                         {v.equipamentos && v.equipamentos.length > 0 && (
                           <div style={{ padding: '8px 0' }}>
                             <span style={{ fontSize: 12, color: colors.textMuted }}>Equipamentos</span>

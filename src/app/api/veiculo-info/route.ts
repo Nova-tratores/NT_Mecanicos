@@ -15,6 +15,8 @@ function cleanCpf(cpf: string): string {
   return cpf.replace(/\D/g, '')
 }
 
+// `via` diz COMO o carro foi achado: 'cpf'/'nome' = pelo vínculo de
+// responsável do próprio técnico; 'placa' = busca direta (pode ser de outro).
 async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: string) {
   // 1. By placa directly
   if (placaRaw) {
@@ -26,7 +28,7 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
         .select('*')
         .or(`placa.eq.${clean},placa.eq.${withDash}`)
         .maybeSingle()
-      if (data) return data
+      if (data) return { data, via: 'placa' as const }
     }
   }
 
@@ -55,7 +57,7 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
           .select('*')
           .eq('id', resp.veiculo_id)
           .maybeSingle()
-        if (data) return data
+        if (data) return { data, via: 'cpf' as const }
       }
     }
   }
@@ -75,7 +77,7 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
         .select('*')
         .eq('id', resp.veiculo_id)
         .maybeSingle()
-      if (data) return data
+      if (data) return { data, via: 'nome' as const }
     }
   }
 
@@ -97,8 +99,9 @@ export async function POST(req: NextRequest) {
       if (usu?.cpf) cpf = usu.cpf
     }
 
-    const veiculo = await findFrotaVeiculo(placa, tecnico_nome, cpf)
-    if (!veiculo) return NextResponse.json({ error: 'Veículo não encontrado' }, { status: 404 })
+    const achado = await findFrotaVeiculo(placa, tecnico_nome, cpf)
+    if (!achado) return NextResponse.json({ error: 'Veículo não encontrado' }, { status: 404 })
+    const { data: veiculo, via } = achado
 
     // Image from Placas
     let imagemUrl: string | null = null
@@ -131,6 +134,18 @@ export async function POST(req: NextRequest) {
 
     const responsaveis = respRes.data || []
     const responsavelAtual = responsaveis.find((r: any) => !r.fim)
+
+    // Senha do cartão Veloe: SÓ pro responsável do carro (o app pede pelo
+    // próprio técnico via cpf/nome; na busca por placa exige o nome casar
+    // com o responsável atual — não vaza senha de carro alheio)
+    const pal = (s: string): string[] =>
+      String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').match(/[A-Z0-9]+/g) || []
+    const reqPal = pal(String(tecnico_nome || ''))
+    const respPal = pal(String(responsavelAtual?.motorista_nome || ''))
+    const nomesCasam =
+      reqPal.length > 0 && respPal.length > 0 &&
+      (reqPal.every((w) => respPal.includes(w)) || respPal.every((w) => reqPal.includes(w)))
+    const ehResponsavel = via !== 'placa' || nomesCasam
 
     const custosPorTipo: Record<string, number> = {}
     for (const c of custosRes.data || []) {
@@ -203,6 +218,7 @@ export async function POST(req: NextRequest) {
         tem_rastreador: veiculo.tem_rastreador,
         hodometro,
         imagem_url: imagemUrl,
+        senha_cartao_veloe: ehResponsavel ? veiculo.senha_cartao_veloe || null : null,
       },
       responsavel: responsavelAtual
         ? { nome: responsavelAtual.motorista_nome, inicio: responsavelAtual.inicio, origem: responsavelAtual.origem }
