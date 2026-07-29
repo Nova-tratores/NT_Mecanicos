@@ -47,10 +47,11 @@ export async function POST(request: Request) {
   const adminNames = await getAdminNames()
   adminNames.forEach(n => nomesAlvo.add(n))
 
+  const filters = [...nomesAlvo].map(n => `tecnico_nome.ilike.${n}`).join(',')
   const { data: subs, error: subsError } = await supabase
     .from('push_subscriptions')
     .select('*')
-    .in('tecnico_nome', [...nomesAlvo])
+    .or(filters)
 
   if (subsError) {
     return Response.json({ error: subsError.message, hint: subsError.hint }, { status: 500 })
