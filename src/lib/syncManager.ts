@@ -111,6 +111,34 @@ async function resolverFotosPendentes(data: Record<string, unknown>): Promise<{ 
     }
   }
 
+  // FotosExtras: array de URLs/base64
+  const extras = resolved.FotosExtras
+  if (Array.isArray(extras)) {
+    const resolvedExtras = []
+    for (let i = 0; i < extras.length; i++) {
+      const foto = extras[i] as string
+      if (typeof foto === 'string' && foto.startsWith('data:')) {
+        const url = await uploadBase64Foto(foto, `FotoExtra${i + 1}`, osId)
+        if (url) {
+          resolvedExtras.push(url)
+        } else {
+          resolvedExtras.push(foto)
+          pendente = true
+        }
+      } else {
+        resolvedExtras.push(foto)
+      }
+    }
+    resolved.FotosExtras = resolvedExtras
+    // Manter colunas legacy Extra1-5
+    for (let i = 0; i < 5; i++) {
+      const v = resolvedExtras[i]
+      if (typeof v === 'string' && !v.startsWith('data:')) {
+        resolved[`FotoExtra${i + 1}`] = v
+      }
+    }
+  }
+
   // Assinaturas também podem ser base64
   for (const campo of ['AssCliente', 'AssTecnico']) {
     const valor = resolved[campo]

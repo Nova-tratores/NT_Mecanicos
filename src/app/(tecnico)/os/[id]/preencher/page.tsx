@@ -148,11 +148,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [fotoPecaNova2, setFotoPecaNova2] = useState('')
   const [fotoPecaInstalada1, setFotoPecaInstalada1] = useState('')
   const [fotoPecaInstalada2, setFotoPecaInstalada2] = useState('')
-  const [fotoExtra1, setFotoExtra1] = useState('')
-  const [fotoExtra2, setFotoExtra2] = useState('')
-  const [fotoExtra3, setFotoExtra3] = useState('')
-  const [fotoExtra4, setFotoExtra4] = useState('')
-  const [fotoExtra5, setFotoExtra5] = useState('')
+  const [fotosExtras, setFotosExtras] = useState<string[]>([])
 
   // Almoço: os dias/valores vêm da OS (Alimentacoes, lançados pelo pós-vendas).
   // O técnico anexa a foto da nota de cada dia com valor > R$1. { data → foto }
@@ -394,11 +390,13 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         setFotoPecaNova2(existing.FotoPecaNova2 || '')
         setFotoPecaInstalada1(existing.FotoPecaInstalada1 || '')
         setFotoPecaInstalada2(existing.FotoPecaInstalada2 || '')
-        setFotoExtra1(existing.FotoExtra1 || '')
-        setFotoExtra2(existing.FotoExtra2 || '')
-        setFotoExtra3(existing.FotoExtra3 || '')
-        setFotoExtra4(existing.FotoExtra4 || '')
-        setFotoExtra5(existing.FotoExtra5 || '')
+        const extrasJson = (existing as Record<string, unknown>).FotosExtras
+        if (Array.isArray(extrasJson) && extrasJson.length > 0) {
+          setFotosExtras(extrasJson.filter(Boolean) as string[])
+        } else {
+          const legacyExtras = [existing.FotoExtra1, existing.FotoExtra2, existing.FotoExtra3, existing.FotoExtra4, existing.FotoExtra5].filter(Boolean) as string[]
+          setFotosExtras(legacyExtras)
+        }
         setAssCliente(existing.AssCliente || '')
         setAssTecnico(existing.AssTecnico || '')
         setJustificativaPecaExtra(existing.JustificativaPecaExtra || '')
@@ -516,7 +514,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
     fotoPecaNova1, fotoPecaNova2, fotoPecaInstalada1, fotoPecaInstalada2,
-    fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5,
+    fotosExtras,
     fotosAlmoco,
     assCliente, assTecnico,
   }), [
@@ -527,7 +525,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotoHorimetro, fotoChassis, fotoFrente, fotoDireita, fotoEsquerda,
     fotoTraseira, fotoVolante, fotoFalha1, fotoFalha2, fotoFalha3, fotoFalha4,
     fotoPecaNova1, fotoPecaNova2, fotoPecaInstalada1, fotoPecaInstalada2,
-    fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5,
+    fotosExtras,
     fotosAlmoco,
     assCliente, assTecnico,
   ])
@@ -569,11 +567,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (data.fotoPecaNova2 !== undefined) setFotoPecaNova2(data.fotoPecaNova2 as string)
     if (data.fotoPecaInstalada1 !== undefined) setFotoPecaInstalada1(data.fotoPecaInstalada1 as string)
     if (data.fotoPecaInstalada2 !== undefined) setFotoPecaInstalada2(data.fotoPecaInstalada2 as string)
-    if (data.fotoExtra1 !== undefined) setFotoExtra1(data.fotoExtra1 as string)
-    if (data.fotoExtra2 !== undefined) setFotoExtra2(data.fotoExtra2 as string)
-    if (data.fotoExtra3 !== undefined) setFotoExtra3(data.fotoExtra3 as string)
-    if (data.fotoExtra4 !== undefined) setFotoExtra4(data.fotoExtra4 as string)
-    if (data.fotoExtra5 !== undefined) setFotoExtra5(data.fotoExtra5 as string)
+    if (data.fotosExtras !== undefined) setFotosExtras(data.fotosExtras as string[])
     if (data.fotosAlmoco !== undefined) setFotosAlmoco(data.fotosAlmoco as Record<string, string>)
     if (data.assCliente !== undefined) setAssCliente(data.assCliente as string)
     if (data.assTecnico !== undefined) setAssTecnico(data.assTecnico as string)
@@ -668,28 +662,42 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     }
   }
 
-  // Slots de foto do serviço em ordem: as 2 primeiras alimentam Horimetro/Chassis,
-  // o resto vira Extra1..5 (total de 7). O tecnico so anexa fotos.
-  const fotoSlots = (): { v: string; set: (v: string) => void; campo: string }[] => [
-    { v: fotoHorimetro, set: setFotoHorimetro, campo: 'FotoHorimetro' },
-    { v: fotoChassis, set: setFotoChassis, campo: 'FotoChassis' },
-    { v: fotoExtra1, set: setFotoExtra1, campo: 'FotoExtra1' },
-    { v: fotoExtra2, set: setFotoExtra2, campo: 'FotoExtra2' },
-    { v: fotoExtra3, set: setFotoExtra3, campo: 'FotoExtra3' },
-    { v: fotoExtra4, set: setFotoExtra4, campo: 'FotoExtra4' },
-    { v: fotoExtra5, set: setFotoExtra5, campo: 'FotoExtra5' },
-  ]
+  const MAX_FOTOS = 20
 
-  // Adiciona uma ou várias fotos de uma vez nos slots vazios (até 7)
+  const fotoSlots = (): { v: string; set: (v: string) => void; campo: string }[] => {
+    const slots: { v: string; set: (v: string) => void; campo: string }[] = [
+      { v: fotoHorimetro, set: setFotoHorimetro, campo: 'FotoHorimetro' },
+      { v: fotoChassis, set: setFotoChassis, campo: 'FotoChassis' },
+    ]
+    for (let i = 0; i < fotosExtras.length; i++) {
+      const idx = i
+      slots.push({
+        v: fotosExtras[i],
+        set: (v: string) => setFotosExtras(prev => { const n = [...prev]; if (v) n[idx] = v; else n.splice(idx, 1); return n }),
+        campo: `FotoExtra${i + 1}`,
+      })
+    }
+    return slots
+  }
+
   const addFotos = (files: FileList | null) => {
     if (!files || files.length === 0) return
-    const vazios = fotoSlots().filter(s => !s.v)
-    if (vazios.length === 0) {
-      alert('Você já anexou o máximo de 7 fotos.')
+    const totalAtual = 2 + fotosExtras.length
+    const restante = MAX_FOTOS - totalAtual
+    if (restante <= 0) {
+      alert(`Você já anexou o máximo de ${MAX_FOTOS} fotos.`)
       return
     }
-    Array.from(files).slice(0, vazios.length).forEach((file, k) => {
-      handleFoto(vazios[k].set, vazios[k].campo, file)
+    const arquivos = Array.from(files).slice(0, restante)
+    const novosIndices = Array.from({ length: arquivos.length }, (_, k) => fotosExtras.length + k)
+    setFotosExtras(prev => [...prev, ...arquivos.map(() => '')])
+    arquivos.forEach((file, k) => {
+      const idx = novosIndices[k]
+      handleFoto(
+        (v: string) => setFotosExtras(prev => { const n = [...prev]; n[idx] = v; return n }),
+        `FotoExtra${idx + 1}`,
+        file,
+      )
     })
   }
 
@@ -781,7 +789,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     // trator exige no mínimo 2.
     if (!tipoServico.includes('Garantia')) {
       const fotosAnexadas = [
-        fotoHorimetro, fotoChassis, fotoExtra1, fotoExtra2, fotoExtra3, fotoExtra4, fotoExtra5,
+        fotoHorimetro, fotoChassis, ...fotosExtras,
       ].filter(f => f && !f.startsWith('blob:'))
       const minFotos = tipoServico.includes('Implemento') ? 1 : 2
       if (fotosAnexadas.length < minFotos) {
@@ -848,7 +856,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       fotoEsquerdaFinal, fotoTraseiraFinal, fotoVolanteFinal,
       fotoFalha1Final, fotoFalha2Final, fotoFalha3Final, fotoFalha4Final,
       fotoPecaNova1Final, fotoPecaNova2Final, fotoPecaInstalada1Final, fotoPecaInstalada2Final,
-      fotoExtra1Final, fotoExtra2Final, fotoExtra3Final, fotoExtra4Final, fotoExtra5Final,
     ] = await Promise.all([
       resolverFoto(fotoHorimetro, 'FotoHorimetro'),
       resolverFoto(fotoChassis, 'FotoChassis'),
@@ -865,12 +872,10 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       resolverFoto(fotoPecaNova2, 'FotoPecaNova2'),
       resolverFoto(fotoPecaInstalada1, 'FotoPecaInstalada1'),
       resolverFoto(fotoPecaInstalada2, 'FotoPecaInstalada2'),
-      resolverFoto(fotoExtra1, 'FotoExtra1'),
-      resolverFoto(fotoExtra2, 'FotoExtra2'),
-      resolverFoto(fotoExtra3, 'FotoExtra3'),
-      resolverFoto(fotoExtra4, 'FotoExtra4'),
-      resolverFoto(fotoExtra5, 'FotoExtra5'),
     ])
+    const fotosExtrasFinal = await Promise.all(
+      fotosExtras.map((f, i) => resolverFoto(f, `FotoExtra${i + 1}`))
+    )
 
     // Resolve as fotos de almoço (uma por dia lançado na OS).
     const almocosFotos: { data: string; valor: number; foto: string }[] = []
@@ -936,11 +941,12 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       FotoPecaNova2: fotoPecaNova2Final,
       FotoPecaInstalada1: fotoPecaInstalada1Final,
       FotoPecaInstalada2: fotoPecaInstalada2Final,
-      FotoExtra1: fotoExtra1Final,
-      FotoExtra2: fotoExtra2Final,
-      FotoExtra3: fotoExtra3Final,
-      FotoExtra4: fotoExtra4Final,
-      FotoExtra5: fotoExtra5Final,
+      FotoExtra1: fotosExtrasFinal[0] || '',
+      FotoExtra2: fotosExtrasFinal[1] || '',
+      FotoExtra3: fotosExtrasFinal[2] || '',
+      FotoExtra4: fotosExtrasFinal[3] || '',
+      FotoExtra5: fotosExtrasFinal[4] || '',
+      FotosExtras: fotosExtrasFinal,
       AlmocosFotos: almocosFotos,
       TemAlmoco: almocosFotos.length > 0,
       ValorAlmoco: almocosFotos[0]?.valor ?? null,
@@ -1643,7 +1649,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         {(() => {
           const slots = fotoSlots()
           const anexadas = slots.filter(s => s.v)
-          const podeMais = anexadas.length < 7
+          const podeMais = (2 + fotosExtras.length) < MAX_FOTOS
           return (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
@@ -1699,7 +1705,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                 )}
               </div>
               <p style={{ fontSize: 11, color: '#9CA3AF', marginTop: 8, textAlign: 'right' }}>
-                {anexadas.length}/7 fotos
+                {anexadas.length}/{MAX_FOTOS} fotos
               </p>
             </>
           )
