@@ -88,8 +88,9 @@ export default function ServiceWorkerRegister() {
           }
         });
 
-        if (user?.tecnico_nome && VAPID_PUBLIC_KEY) {
-          subscribePush(reg, user.tecnico_nome);
+        const pushNome = user?.nome_pos || user?.tecnico_nome
+        if (pushNome && pushNome !== 'Usuário' && VAPID_PUBLIC_KEY) {
+          subscribePush(reg, pushNome);
         }
 
         // Periodic Background Sync — atualiza dados mesmo com app fechado

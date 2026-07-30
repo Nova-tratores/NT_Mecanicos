@@ -330,7 +330,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
         avatarUrl={user.avatar_url}
         userName={user.tecnico_nome}
       />
-      <PushPermissionBanner tecnicoNome={user.tecnico_nome} />
+      <PushPermissionBanner tecnicoNome={user.nome_pos || user.tecnico_nome} />
       {/* Banner fixo: ocorrência disciplinar sem justificativa */}
       {ocDisciplinares > 0 && (
         <Link href="/ocorrencias" style={{
