@@ -44,7 +44,7 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
     supabase
       .from('Ordem_Servico')
       .select('Id_Ordem, Status, Previsao_Execucao')
-      .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
+      .not('Status', 'in', '("Cancelada","cancelada")')
       .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`),
     supabase
       .from('Requisicao')

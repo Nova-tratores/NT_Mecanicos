@@ -127,7 +127,7 @@ export async function prefetchAll(
           if (e.Status === 'enviado') enviadas.add(String(e.Ordem_Servico))
         }
       }
-      const FASES_CONCLUIDAS = ['Relatorio Concluido', 'Relatório Concluído', 'Executada aguardando comercial']
+      const FASES_CONCLUIDAS = ['Relatorio Concluido', 'Relatório Concluído', 'Executada aguardando comercial', 'Concluída', 'Concluida', 'Faturada', 'Faturado', 'Finalizada', 'Finalizado', 'Enviado Para Omie', 'Enviado para Omie']
       for (const o of osList) {
         if (FASES_CONCLUIDAS.includes(o.Status)) enviadas.add(String(o.Id_Ordem))
       }

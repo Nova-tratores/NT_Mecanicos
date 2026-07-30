@@ -15,14 +15,44 @@ interface OsEnviada {
   [key: string]: unknown
 }
 
+const FASES_FINALIZADAS = [
+  'Relatório Concluído', 'Relatorio Concluido',
+  'Executada aguardando comercial',
+  'Concluída', 'Concluida', 'Concluído', 'Concluido',
+  'Faturada', 'Faturado',
+  'Finalizada', 'Finalizado',
+  'Enviado Para Omie', 'Enviado para Omie',
+]
+
 async function fetchOsEnviadas(nome: string): Promise<OsEnviada[]> {
-  const { data } = await supabase
+  // Relatórios enviados pelo técnico
+  const { data: tecData } = await supabase
     .from('Ordem_Servico_Tecnicos')
     .select('*')
     .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
     .eq('Status', 'enviado')
     .order('Data', { ascending: false })
-  return (data || []) as OsEnviada[]
+
+  // OS em fases finais (portal avançou) que o técnico não tem relatório
+  const { data: osFinais } = await supabase
+    .from('Ordem_Servico')
+    .select('Id_Ordem, Status, Os_Cliente, Previsao_Execucao')
+    .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
+    .in('Status', FASES_FINALIZADAS)
+
+  const idsComRelatorio = new Set((tecData || []).map(t => String(t.Ordem_Servico)))
+  const extras: OsEnviada[] = (osFinais || [])
+    .filter(o => !idsComRelatorio.has(String(o.Id_Ordem)))
+    .map(o => ({
+      id: 0,
+      Ordem_Servico: String(o.Id_Ordem),
+      TecResp1: o.Os_Cliente || '',
+      Data: o.Previsao_Execucao || '',
+      TipoServico: o.Status,
+      Status: 'enviado',
+    }))
+
+  return [...(tecData || []) as OsEnviada[], ...extras]
 }
 
 export default function OsEnviadas() {
