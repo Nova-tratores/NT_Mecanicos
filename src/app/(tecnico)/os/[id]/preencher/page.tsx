@@ -419,24 +419,32 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         }
         setFotosAlmoco(_fa)
 
-        const diasLoaded: DiaForm[] = []
-        if (existing.DataInicio) {
-          diasLoaded.push({
-            data: existing.DataInicio, horaInicio: existing.InicioHora || '',
-            horaFim: existing.FinalHora || '', kmTotal: existing.InicioKm || existing.TotalKm || '',
-          })
-        }
-        if (existing.AdicionarData2 && existing.DataInicio2) {
-          diasLoaded.push({
-            data: existing.DataInicio2, horaInicio: existing.InicioHora2 || '',
-            horaFim: existing.FinalHora2 || '', kmTotal: existing.InicioKm2 || '',
-          })
-        }
-        if (existing.AdicionarData3 && existing.DataInicio3) {
-          diasLoaded.push({
-            data: existing.DataInicio3, horaInicio: existing.InicioHora3 || '',
-            horaFim: existing.FinaHora3 || '', kmTotal: existing.InicioKm3 || '',
-          })
+        let diasLoaded: DiaForm[] = []
+        const diasJson = (existing as Record<string, unknown>).DiasExecucao
+        if (Array.isArray(diasJson) && diasJson.length > 0) {
+          diasLoaded = diasJson.map((d: Record<string, string>) => ({
+            data: d.data || '', horaInicio: d.horaInicio || '',
+            horaFim: d.horaFim || '', kmTotal: d.kmTotal || '',
+          }))
+        } else {
+          if (existing.DataInicio) {
+            diasLoaded.push({
+              data: existing.DataInicio, horaInicio: existing.InicioHora || '',
+              horaFim: existing.FinalHora || '', kmTotal: existing.InicioKm || existing.TotalKm || '',
+            })
+          }
+          if (existing.AdicionarData2 && existing.DataInicio2) {
+            diasLoaded.push({
+              data: existing.DataInicio2, horaInicio: existing.InicioHora2 || '',
+              horaFim: existing.FinalHora2 || '', kmTotal: existing.InicioKm2 || '',
+            })
+          }
+          if (existing.AdicionarData3 && existing.DataInicio3) {
+            diasLoaded.push({
+              data: existing.DataInicio3, horaInicio: existing.InicioHora3 || '',
+              horaFim: existing.FinaHora3 || '', kmTotal: existing.InicioKm3 || '',
+            })
+          }
         }
         if (diasLoaded.length > 0) {
           setDias(diasLoaded)
@@ -912,6 +920,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       FinaHora3: dias[2]?.horaFim || '',
       InicioKm3: dias[2]?.kmTotal || '',
       FinalKm3: '',
+      DiasExecucao: dias,
       FotoHorimetro: fotoHorimetroFinal,
       FotoChassis: fotoChassisFinal,
       FotoFrente: fotoFrenteFinal,
@@ -1559,7 +1568,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           </div>
         ))}
 
-        {dias.length < 3 && (
+        {dias.length < 10 && (
           <button type="button" onClick={() => setDias(prev => [...prev, { data: '', horaInicio: '', horaFim: '', kmTotal: '' }])} style={{
             marginTop: 14, padding: '10px 16px', borderRadius: 10, fontSize: 13, fontWeight: 700,
             border: '2px solid #E5E7EB', background: '#fff', color: '#6B7280', cursor: 'pointer',
