@@ -62,6 +62,7 @@ const SUB_LABEL: Record<string, string> = {
   reclamacao_cliente: 'Reclamação de cliente', saida_sem_os: 'Saída sem OS',
   alimentacao_sem_troco: 'Alimentação sem troco', entregue_os_fisica: 'Entregue OS física',
   atraso_ordem: 'Atraso de ordem', apontamento_horas_incorreto: 'Apontamento de horas incorreto',
+  sem_requisicao: 'Não pediu requisição',
   falta_informacao_pv: 'Falta de informação', extravio_peca: 'Extravio de peça',
   peca_danificada: 'Peça danificada',
   pandora_cuidados: 'Cuidados com a Pandora/oficina', atraso_sem_justificativa: 'Atraso +5min s/ justificativa',
