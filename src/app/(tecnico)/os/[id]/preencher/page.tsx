@@ -978,10 +978,15 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       queued = res.queued
     }
 
-    // Atualizar status da OS — SEMPRE, mesmo offline (será enfileirado)
+    // Atualizar status da OS — SEMPRE, mesmo offline (será enfileirado).
+    // Garantia marcada pelo técnico REFLETE na OS mãe: o POS, o módulo de
+    // garantias e o faturamento leem Ordem_Servico.Tipo_Servico — antes a
+    // marcação ficava só no relatório e o portal não via (pedido 03/08).
+    const osUpdate: Record<string, unknown> = { Status: 'Relatório Concluído' }
+    if (tipoServico.includes('Garantia')) osUpdate.Tipo_Servico = tipoServico
     await offlineWrite({
       table: 'Ordem_Servico', action: 'update',
-      data: { Status: 'Relatório Concluído' }, match: { Id_Ordem: id },
+      data: osUpdate, match: { Id_Ordem: id },
     })
 
     // Notificar o portal — SEMPRE (online envia na hora; offline enfileira e
