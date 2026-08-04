@@ -993,6 +993,50 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     // sobe ao reconectar). Antes só rodava online e se perdia no envio offline.
     notificarPortalOS(id, user?.tecnico_nome || '', os?.Os_Cliente || '')
 
+    // Cria a solicitação de garantia ANTES do PDF e do return offline — o
+    // claim é o que faz a OS aparecer pro garantista; rodando por último ele
+    // se perdia quando o envio era offline ou o PDF derrubava o fluxo (caso
+    // real: OS-0633, 31/07). Best-effort: nunca bloqueia o envio da OS.
+    // Offline o claim ainda não nasce aqui — a varredura do Portal cobre.
+    if (!queued && tipoServico.includes('Garantia')) {
+      try {
+        let pecasParaGarantia: PecaOS[] = []
+        if (pecasGarantia.size > 0) {
+          // Busca os preços das peças via listarPecasOS (PPV/movimentacoes + PecasInfo)
+          const pecasComPreco = await listarPecasOS(id)
+          const ppvIdsStr = String(os?.ID_PPV || '')
+          const primeiroPPV = ppvIdsStr.split(',').map(s => s.trim()).filter(Boolean)[0] || null
+
+          pecasParaGarantia = [...pecasGarantia].map((i) => {
+            const p = pecas[i]
+            // Tenta cruzar pelo código de produto, com fallback por descrição
+            const fonte = pecasComPreco.find(
+              (x) => (p.codigo && x.cod_produto === p.codigo) || x.descricao === p.descricao,
+            )
+            return {
+              cod_produto: p.codigo || null,
+              descricao: p.descricao,
+              quantidade: Number(p.qtdUsada) || 1,
+              preco_unitario: fonte ? fonte.preco_unitario : 0,
+              origem: p.origem === 'ppv' ? 'ppv' : 'pecasinfo_manual',
+              fonte_ppv_id: p.origem === 'ppv' ? (fonte?.fonte_ppv_id || primeiroPPV) : null,
+            }
+          })
+        }
+        const res = await criarGarantia({
+          id_ordem: id,
+          tecnico_nome: user?.nome_pos || user?.tecnico_nome || tecResp1,
+          tecnico_horas: calcTotalHoras(),
+          tecnico_km: calcTotalKm(),
+          tecnico_obs: garantiaObs || undefined,
+          pecas: pecasParaGarantia,
+        })
+        if (res.erro) console.warn('[garantia] criação falhou:', res.erro)
+      } catch (err) {
+        console.error('[garantia] erro ao criar requisição:', err)
+      }
+    }
+
     if (queued) {
       // Marca para gerar/anexar o PDF ao reconectar (offline não gera PDF aqui).
       await addPendingPdf(id)
@@ -1137,47 +1181,6 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (!pdfOk) {
       await addPendingPdf(id)
       console.warn('PDF enfileirado para retry em background')
-    }
-
-    // Cria a requisição de garantia se for o caso (best-effort — não bloqueia o envio da OS)
-    // Permitido sem peças (caso de garantia só com mão de obra / deslocamento).
-    if (tipoServico.includes('Garantia')) {
-      try {
-        let pecasParaGarantia: PecaOS[] = []
-        if (pecasGarantia.size > 0) {
-          // Busca os preços das peças via listarPecasOS (PPV/movimentacoes + PecasInfo)
-          const pecasComPreco = await listarPecasOS(id)
-          const ppvIdsStr = String(os?.ID_PPV || '')
-          const primeiroPPV = ppvIdsStr.split(',').map(s => s.trim()).filter(Boolean)[0] || null
-
-          pecasParaGarantia = [...pecasGarantia].map((i) => {
-            const p = pecas[i]
-            // Tenta cruzar pelo código de produto, com fallback por descrição
-            const fonte = pecasComPreco.find(
-              (x) => (p.codigo && x.cod_produto === p.codigo) || x.descricao === p.descricao,
-            )
-            return {
-              cod_produto: p.codigo || null,
-              descricao: p.descricao,
-              quantidade: Number(p.qtdUsada) || 1,
-              preco_unitario: fonte ? fonte.preco_unitario : 0,
-              origem: p.origem === 'ppv' ? 'ppv' : 'pecasinfo_manual',
-              fonte_ppv_id: p.origem === 'ppv' ? (fonte?.fonte_ppv_id || primeiroPPV) : null,
-            }
-          })
-        }
-        const res = await criarGarantia({
-          id_ordem: id,
-          tecnico_nome: user?.nome_pos || user?.tecnico_nome || tecResp1,
-          tecnico_horas: calcTotalHoras(),
-          tecnico_km: calcTotalKm(),
-          tecnico_obs: garantiaObs || undefined,
-          pecas: pecasParaGarantia,
-        })
-        if (res.erro) console.warn('[garantia] criação falhou:', res.erro)
-      } catch (err) {
-        console.error('[garantia] erro ao criar requisição:', err)
-      }
     }
 
     setSaving(false)
