@@ -1648,16 +1648,24 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         {sectionTitle('Fotos')}
         <p style={{ fontSize: 13, color: '#6B7280', margin: '-6px 0 12px', lineHeight: 1.5 }}>
           {tipoServico.includes('Implemento') ? (
-            <>Anexe a foto do <strong style={{ color: '#374151' }}>chassis</strong> do implemento (obrigatória).</>
+            <>Anexe a foto do <strong style={{ color: '#374151' }}>chassis</strong> do implemento (obrigatória) — use o quadro amarelo.</>
           ) : (
             <>Anexe pelo menos <strong style={{ color: '#374151' }}>2 fotos</strong> do serviço.
-              Não esqueça o <strong style={{ color: '#374151' }}>chassis</strong> e o <strong style={{ color: '#374151' }}>horímetro</strong>.</>
+              O <strong style={{ color: '#374151' }}>horímetro</strong> e o <strong style={{ color: '#374151' }}>chassis</strong> têm quadro próprio (amarelo) — a garantia e a fábrica dependem deles.</>
           )}
         </p>
         {(() => {
           const slots = fotoSlots()
           const anexadas = slots.filter(s => s.v)
           const podeMais = (2 + fotosExtras.length) < MAX_FOTOS
+          // Slots nomeados vazios viram quadros próprios — a grade livre grava
+          // tudo em FotosExtras e o chassi/horímetro nunca chegavam aos campos
+          // que a garantia e o SG da fábrica leem (caso real: OS-0640).
+          const ehImplemento = tipoServico.includes('Implemento')
+          const nomeadosVazios: { campo: string; rotulo: string; set: (v: string) => void }[] = [
+            ...(!ehImplemento && !fotoHorimetro ? [{ campo: 'FotoHorimetro', rotulo: 'Horímetro', set: setFotoHorimetro }] : []),
+            ...(!fotoChassis ? [{ campo: 'FotoChassis', rotulo: 'Chassis', set: setFotoChassis }] : []),
+          ]
           return (
             <>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
@@ -1667,6 +1675,15 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                     border: '2px solid #E5E7EB', background: '#F9FAFB',
                   }}>
                     <img src={s.v} alt="Foto" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                    {(s.campo === 'FotoHorimetro' || s.campo === 'FotoChassis') && (
+                      <div style={{
+                        position: 'absolute', left: 0, right: 0, bottom: 0, padding: '3px 0',
+                        background: 'rgba(17,24,39,0.65)', color: '#fff',
+                        fontSize: 10, fontWeight: 700, textAlign: 'center', letterSpacing: 0.5,
+                      }}>
+                        {s.campo === 'FotoHorimetro' ? 'HORÍMETRO' : 'CHASSIS'}
+                      </div>
+                    )}
                     {s.v.startsWith('blob:') && (
                       <div style={{
                         position: 'absolute', inset: 0, background: 'rgba(255,255,255,0.6)',
@@ -1684,6 +1701,20 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                     </button>
                   </div>
                 ) : null)}
+
+                {nomeadosVazios.map((n) => (
+                  <label key={n.campo} className="foto-add" style={{
+                    aspectRatio: '1', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    gap: 6, borderRadius: 14, cursor: 'pointer',
+                    border: '2px dashed #FCD34D', background: '#FFFBEB', color: '#B45309',
+                  }}>
+                    <Camera size={24} />
+                    <span style={{ fontSize: 12, fontWeight: 700 }}>{n.rotulo}</span>
+                    <input type="file" accept="image/*"
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFoto(n.set, n.campo, f); e.target.value = '' }}
+                      style={{ display: 'none' }} />
+                  </label>
+                ))}
 
                 {podeMais && (
                   <>
