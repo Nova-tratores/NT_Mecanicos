@@ -211,6 +211,7 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
         fotoPecaNova2: (registro.FotoPecaNova2 as string) || '',
         fotoPecaInstalada1: (registro.FotoPecaInstalada1 as string) || '',
         fotoPecaInstalada2: (registro.FotoPecaInstalada2 as string) || '',
+        fotosExtras: Array.isArray(registro.FotosExtras) ? (registro.FotosExtras as string[]).filter(Boolean) : [],
         assCliente: (registro.AssCliente as string) || '',
         assTecnico: (registro.AssTecnico as string) || '',
         nomResp: (registro.NomResp as string) || '',

@@ -67,6 +67,9 @@ interface DadosRelatorio {
   fotoPecaInstalada1: string
   fotoPecaInstalada2: string
 
+  // Fotos extras de serviço (URLs ou base64)
+  fotosExtras?: string[]
+
   // Assinaturas (base64)
   assCliente: string
   assTecnico: string
@@ -457,6 +460,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
     { label: 'Peça Nova 2', url: dados.fotoPecaNova2 },
     { label: 'Peça Instalada 1', url: dados.fotoPecaInstalada1 },
     { label: 'Peça Instalada 2', url: dados.fotoPecaInstalada2 },
+    ...(dados.fotosExtras || []).map((url, i) => ({ label: `Serviço ${i + 1}`, url })),
   ].filter(f => f.url)
 
   if (fotos.length > 0) {
