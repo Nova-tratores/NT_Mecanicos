@@ -152,11 +152,11 @@ export async function POST(req: NextRequest) {
         fotoTamanho = buffer.length
 
         const { error: upErr } = await supabase.storage
-          .from('mecanico-files')
+          .from('requisicoes')
           .upload(path, buffer, { upsert: true, contentType: foto.type })
-        if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 })
+        if (upErr) return NextResponse.json({ error: `Falha no upload da foto: ${upErr.message}` }, { status: 500 })
 
-        const { data: urlData } = supabase.storage.from('mecanico-files').getPublicUrl(path)
+        const { data: urlData } = supabase.storage.from('requisicoes').getPublicUrl(path)
         fotoUrl = urlData.publicUrl
       }
 
@@ -299,6 +299,10 @@ export async function POST(req: NextRequest) {
         .from('veiculo_checklist_itens')
         .select('*')
         .eq('checklist_id', checklist_id)
+
+      if (!itens || itens.length === 0) {
+        return NextResponse.json({ error: 'Nenhum item foi salvo. Verifique sua conexão e refaça o checklist.' }, { status: 400 })
+      }
 
       const inicio = new Date(checklist.inicio_em).getTime()
       const fim = Date.now()

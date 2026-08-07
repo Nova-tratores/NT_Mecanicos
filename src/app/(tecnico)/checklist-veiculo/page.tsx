@@ -201,27 +201,37 @@ export default function ChecklistVeiculoPage() {
     fd.append('observacao', obs)
     if (foto) fd.append('foto', foto)
 
-    const res = await fetch('/api/checklist-veiculo', { method: 'POST', body: fd })
-    const json = await res.json()
+    try {
+      const res = await fetch('/api/checklist-veiculo', { method: 'POST', body: fd })
+      const json = await res.json()
 
-    setSavedItems(prev => {
-      const next = new Map(prev)
-      next.set(item.key, {
-        item_key: item.key, resposta, observacao: obs,
-        foto_url: json.foto_url || prev.get(item.key)?.foto_url || null,
+      if (!res.ok) {
+        setSaving(false)
+        alert(`Erro ao salvar item: ${json.error || 'Tente novamente'}`)
+        return
+      }
+
+      setSavedItems(prev => {
+        const next = new Map(prev)
+        next.set(item.key, {
+          item_key: item.key, resposta, observacao: obs,
+          foto_url: json.foto_url || prev.get(item.key)?.foto_url || null,
+        })
+        return next
       })
-      return next
-    })
 
-    // Move to next
-    setFoto(null)
-    setFotoPreview(null)
-    setResposta('')
-    setObs('')
-    if (step < items.length - 1) {
-      setStep(step + 1)
-    } else {
-      setStep(items.length) // summary
+      // Move to next
+      setFoto(null)
+      setFotoPreview(null)
+      setResposta('')
+      setObs('')
+      if (step < items.length - 1) {
+        setStep(step + 1)
+      } else {
+        setStep(items.length) // summary
+      }
+    } catch (err) {
+      alert('Erro de conexão ao salvar. Verifique sua internet e tente novamente.')
     }
     setSaving(false)
   }, [checklistId, step, items, foto, resposta, obs, savedItems])
@@ -237,21 +247,31 @@ export default function ChecklistVeiculoPage() {
       loc = { lat: pos.coords.latitude, lng: pos.coords.longitude }
     } catch {}
 
-    const res = await fetch('/api/checklist-veiculo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'concluir', checklist_id: checklistId, loc }),
-    })
-    const data = await res.json()
+    try {
+      const res = await fetch('/api/checklist-veiculo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'concluir', checklist_id: checklistId, loc }),
+      })
+      const data = await res.json()
 
-    // Get share token
-    const { data: cl } = await supabase
-      .from('veiculo_checklist')
-      .select('share_token')
-      .eq('id', checklistId)
-      .single()
+      if (!res.ok) {
+        setSaving(false)
+        alert(data.error || 'Erro ao concluir checklist')
+        return
+      }
 
-    setResultado({ ...data, shareToken: cl?.share_token, titulo: data.titulo })
+      // Get share token
+      const { data: cl } = await supabase
+        .from('veiculo_checklist')
+        .select('share_token')
+        .eq('id', checklistId)
+        .single()
+
+      setResultado({ ...data, shareToken: cl?.share_token, titulo: data.titulo })
+    } catch {
+      alert('Erro de conexão. Verifique sua internet e tente novamente.')
+    }
     setSaving(false)
   }, [checklistId])
 

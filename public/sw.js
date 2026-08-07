@@ -1,5 +1,5 @@
 const ASSETS_CACHE = 'nt-assets-v29';
-const PAGES_CACHE = 'nt-pages-v10';
+const PAGES_CACHE = 'nt-pages-v11';
 const APP_SHELL_KEY = 'nt-app-shell';
 
 const PRECACHE_URLS = [
@@ -126,9 +126,11 @@ self.addEventListener('fetch', (event) => {
       fetchWithTimeout(event.request, 3000)
         .then((response) => {
           if (response.ok) {
-            // Cachear esta página específica
+            // Cachear esta página específica (pela URL sem query, para match offline)
             const clone1 = response.clone();
-            caches.open(PAGES_CACHE).then((cache) => cache.put(event.request, clone1));
+            const navUrl = new URL(event.request.url);
+            navUrl.search = '';
+            caches.open(PAGES_CACHE).then((cache) => cache.put(navUrl.href, clone1));
             // Salvar como app shell (qualquer página serve de shell)
             const clone2 = response.clone();
             saveAppShell(clone2);
@@ -136,9 +138,19 @@ self.addEventListener('fetch', (event) => {
           return response;
         })
         .catch(async () => {
-          // 1. Tentar cache exato desta URL
+          // 1. Tentar cache exato desta URL (match por Request)
           const exact = await caches.match(event.request);
           if (exact) return exact;
+
+          // 1b. Match por URL sem query (prefetch grava com Request simples)
+          const url = new URL(event.request.url);
+          url.search = '';
+          const byUrl = await caches.match(url.href);
+          if (byUrl) return byUrl;
+
+          // 1c. Match ignorando query/vary
+          const byIgnore = await caches.match(event.request, { ignoreSearch: true, ignoreVary: true });
+          if (byIgnore) return byIgnore;
 
           // 2. Fallback: app shell (qualquer página HTML cacheada)
           const shell = await getAppShell();
@@ -314,11 +326,20 @@ async function backgroundPrefetch() {
     // 5. Pré-cachear páginas HTML + RSC para navegação offline
     const cache = await caches.open(PAGES_CACHE);
     const rscHeaders2 = { RSC: '1', 'Next-Router-Prefetch': '1' };
-    const pageFetches = osList.slice(0, 40).flatMap(os => [
+    const rscFetches = osList.slice(0, 40).flatMap(os => [
       fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}?__rscq`, r)).catch(() => {}),
       fetch(`/os/${os.Id_Ordem}/preencher`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}/preencher?__rscq`, r)).catch(() => {}),
     ]);
-    await Promise.allSettled(pageFetches);
+    // HTML pages (para MPA navigation / fallback offline) — limitado a 10
+    const htmlFetches = osList.slice(0, 10).flatMap(os => [
+      fetch(`/os/${os.Id_Ordem}`).then(r => {
+        if (r.ok) { saveAppShell(r.clone()); return cache.put(new Request(`/os/${os.Id_Ordem}`), r); }
+      }).catch(() => {}),
+      fetch(`/os/${os.Id_Ordem}/preencher`).then(r => {
+        if (r.ok) return cache.put(new Request(`/os/${os.Id_Ordem}/preencher`), r);
+      }).catch(() => {}),
+    ]);
+    await Promise.allSettled([...rscFetches, ...htmlFetches]);
 
     console.log('[SW] Background sync completo:', osList.length, 'OS');
   } catch (err) {

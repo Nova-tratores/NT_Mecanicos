@@ -345,7 +345,16 @@
       "Bash(grep -nE \"function OsEnviadasTab|/\\\\* ═══ Sub-aba Enviadas|const CAMPOS_FOTO|FOTO_CAMPOS\" src/app/'\\(tecnico\\)'/os/page.tsx)",
       "Bash(npx tsc *)",
       "Bash(curl -s -o /dev/null -w \"home HTTP %{http_code}\\\\n\" \"http://localhost:3001/\" --max-time 60)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "PowerShell($dir = \"C:\\\\Users\\\\José Ortiz- Pós Vend\\\\Downloads\\\\Catalogo Valtra\\\\cat_valt\"; $exe = Join-Path $dir \"cat_vlt2.exe\"; if \\(Test-Path -LiteralPath $exe\\) { Start-Process -FilePath $exe -WorkingDirectory $dir; \"Iniciado: $exe\" } else { \"Nao achei cat_vlt2.exe\" })",
+      "PowerShell($dir = \"C:\\\\Users\\\\José Ortiz- Pós Vend\\\\Downloads\\\\Catalogo Valtra\\\\cat_valt\"; Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue | Unblock-File -ErrorAction SilentlyContinue; \"Arquivos desbloqueados em: $dir\")",
+      "PowerShell($dir = \"C:\\\\Users\\\\José Ortiz- Pós Vend\\\\Downloads\\\\Catalogo Valtra\\\\cat_valt\"; foreach \\($f in @\\(\"comando.dat\",\"comando_NT.dat\",\"comando_9X.dat\",\"INST.INF\",\"Cadastro.cfg\",\"MAIN.TXT\",\"idioma.cfg\",\"LINK.TXT\",\"OBJ.TXT\",\"ORC.TXT\",\"ILU.TXT\"\\)\\) { $fp = Join-Path $dir $f; if \\(Test-Path -LiteralPath $fp\\) { \"===== $f =====\" ; Get-Content -LiteralPath $fp -Raw -ErrorAction SilentlyContinue; \"\" } })",
+      "PowerShell(Stop-Process -Id 2876 -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(Stop-Process -Id 24308 -Force -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-Process java,javaw -ErrorAction SilentlyContinue)",
+      "PowerShell(\"Java rodando agora:\")",
+      "Bash(git fetch *)",
+      "Bash(git stash *)"
     ],
     "additionalDirectories": [
       "c:\\projetos\\portal\\src\\lib\\requisicoes",
@@ -357,7 +366,8 @@
       "c:\\projetos\\portal\\src\\components\\orcamentos",
       "c:\\projetos\\portal\\src\\components",
       "c:\\projetos\\portal\\src\\app\\api\\orcamentos\\expirar",
-      "c:\\projetos\\portal"
+      "c:\\projetos\\portal",
+      "C:\\Users\\José Ortiz- Pós Vend\\Downloads\\Catalogo Valtra\\cat_valt"
     ]
   }
 }

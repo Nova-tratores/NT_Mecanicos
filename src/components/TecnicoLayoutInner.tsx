@@ -87,6 +87,22 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   // ── Ocorrências disciplinares (tecnico_ocorrencias) sem justificativa ──
   const [ocDisciplinares, setOcDisciplinares] = useState(0)
 
+  // ── Interceptor global: offline → MPA navigation (evita RSC 503 loop) ──
+  useEffect(() => {
+    const handleClick = (e: MouseEvent) => {
+      if (navigator.onLine) return
+      const anchor = (e.target as HTMLElement).closest('a')
+      if (!anchor) return
+      const href = anchor.getAttribute('href')
+      if (!href || href.startsWith('http') || href.startsWith('#') || href.startsWith('mailto:')) return
+      e.preventDefault()
+      e.stopPropagation()
+      window.location.href = href
+    }
+    document.addEventListener('click', handleClick, true)
+    return () => document.removeEventListener('click', handleClick, true)
+  }, [])
+
 
   const carregarAvisosPendentes = useCallback(async () => {
     if (!user?.tecnico_nome) return
