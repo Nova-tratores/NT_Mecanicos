@@ -200,10 +200,8 @@ export async function POST(req: NextRequest) {
       if (!tecnico_nome) return NextResponse.json({ pendente: false })
 
       const hoje = new Date()
-      const mesAnterior = new Date(hoje.getFullYear(), hoje.getMonth() - 1, 1)
-      const mesRef = `${mesAnterior.getFullYear()}-${String(mesAnterior.getMonth() + 1).padStart(2, '0')}`
+      const mesRef = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`
 
-      // Só bloqueia a partir do dia 1 do mês seguinte
       const { data } = await supabase
         .from('veiculo_checklist')
         .select('id, status, score_confianca')
