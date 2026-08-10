@@ -5,11 +5,11 @@ import { useNotificacoes } from '@/hooks/useNotificacoes'
 import { supabase } from '@/lib/supabase'
 import HeaderMobile from '@/components/HeaderMobile'
 import PushPermissionBanner from '@/components/PushPermissionBanner'
-// BottomNav removido — navegação agora via dashboard
 import OfflineSync from '@/components/OfflineSync'
 import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
 import Link from 'next/link'
-import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon, ChevronRight } from 'lucide-react'
+import { usePathname } from 'next/navigation'
+import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon, ChevronRight, Car, ClipboardCheck } from 'lucide-react'
 
 // ── Avisos confirmados: cache local para nunca mostrar de novo ──
 const AVISOS_CONFIRMADOS_KEY = 'nt-avisos-confirmados'
@@ -70,11 +70,15 @@ function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
 
 export default function TecnicoLayoutInner({ children }: { children: React.ReactNode }) {
   const { user, loading, logout } = useCurrentUser()
+  const pathname = usePathname()
   // dois nomes: o do perfil do portal E o do POS — as notificações chegam com
   // qualquer um dos dois, em qualquer caixa ("DANILO DE SOUZA" vs "Danilo de Souza")
   const { notificacoes, naoLidas, historico, historicoAberto, marcarTodasComoLidas, limparTodas, carregarHistorico, fecharHistorico } = useNotificacoes(user?.tecnico_nome ?? '', user?.nome_pos)
   const [avisosPendentes, setAvisosPendentes] = useState<{ id: number; titulo: string; mensagem: string; prioridade: string }[]>([])
   const [confirmando, setConfirmando] = useState(false)
+
+  // ── Checklist veículo: bloqueio global ──
+  const [checklistPendente, setChecklistPendente] = useState(false)
 
   // ── OPA popup state ──
   const [opasPendentes, setOpasPendentes] = useState<OpaPopup[]>([])
@@ -272,6 +276,39 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     fetch('/api/os/check-notify', { method: 'POST' }).catch(() => {})
   }, [user?.tecnico_nome])
 
+  // ── Checklist veículo: verificar se está pendente ──
+  const verificarChecklist = useCallback(async () => {
+    if (!user?.tecnico_nome || !navigator.onLine) return
+    try {
+      const nome = user.nome_pos || user.tecnico_nome
+      const res = await withTimeout(fetch('/api/checklist-veiculo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'verificar', tecnico_nome: nome }),
+      }))
+      if (res.ok) {
+        const { pendente } = await res.json()
+        setChecklistPendente(pendente)
+      }
+    } catch {}
+  }, [user?.tecnico_nome, user?.nome_pos])
+
+  useEffect(() => {
+    verificarChecklist()
+  }, [verificarChecklist])
+
+  // Re-verifica quando o técnico volta para a tela (pode ter concluído o checklist)
+  useEffect(() => {
+    const onFocus = () => verificarChecklist()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [verificarChecklist])
+
+  // Re-verifica ao mudar de rota (técnico pode ter concluído e voltou)
+  useEffect(() => {
+    verificarChecklist()
+  }, [pathname, verificarChecklist])
+
   const confirmarAviso = async () => {
     if (!user?.tecnico_nome || avisosPendentes.length === 0) return
     setConfirmando(true)
@@ -365,7 +402,41 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
         </Link>
       )}
       <main style={{ padding: 16 }}>
-        {children}
+        {checklistPendente && !pathname.startsWith('/checklist-veiculo') ? (
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center',
+            justifyContent: 'center', minHeight: '70vh', textAlign: 'center',
+            padding: 20, gap: 24,
+          }}>
+            <div style={{
+              width: 80, height: 80, borderRadius: 24,
+              background: 'linear-gradient(135deg, #DC2626, #B91C1C)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              boxShadow: '0 8px 24px rgba(220,38,38,0.3)',
+            }}>
+              <Car size={40} color="#fff" />
+            </div>
+            <div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: '#111', marginBottom: 8 }}>
+                Checklist do veículo pendente
+              </div>
+              <div style={{ fontSize: 14, color: '#6B7280', lineHeight: 1.6, maxWidth: 300 }}>
+                Você precisa completar a inspeção mensal do seu veículo antes de usar o aplicativo.
+              </div>
+            </div>
+            <Link href="/checklist-veiculo" style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              padding: '16px 32px', borderRadius: 16,
+              background: 'linear-gradient(135deg, #DC2626, #B91C1C)',
+              color: '#fff', textDecoration: 'none',
+              fontSize: 16, fontWeight: 800,
+              boxShadow: '0 4px 16px rgba(220,38,38,0.3)',
+            }}>
+              <ClipboardCheck size={20} />
+              Fazer checklist agora
+            </Link>
+          </div>
+        ) : children}
       </main>
 
       {/* Popup bloqueante de aviso */}
