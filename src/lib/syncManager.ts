@@ -10,6 +10,25 @@ let syncing = false
 const MAX_RETRIES = 10
 const SYNC_TIMEOUT = 45000
 
+// Erro de REDE (timeout, sem sinal, DNS…) nunca pode aposentar um item da
+// fila — ela existe exatamente pra aguentar sinal ruim na roça. Só erro de
+// DADO (RLS, coluna, constraint) vira falha permanente após MAX_RETRIES.
+// (Caso real: OS-0670 — 10 timeouts seguidos mataram o relatório no aparelho.)
+function isNetworkError(err: unknown): boolean {
+  const msg = String((err as { message?: string })?.message || err || '').toLowerCase()
+  return (
+    msg.includes('fetch') ||
+    msg.includes('network') ||
+    msg.includes('load failed') ||
+    msg.includes('timeout') ||
+    msg.includes('dns') ||
+    msg.includes('econnrefused') ||
+    msg.includes('enotfound') ||
+    msg.includes('aborted') ||
+    msg.includes('socket')
+  )
+}
+
 const syncFailListeners: Array<(item: SyncItem, error: string) => void> = []
 export function onSyncFail(cb: (item: SyncItem, error: string) => void) {
   syncFailListeners.push(cb)
@@ -203,14 +222,18 @@ export async function processQueue(): Promise<number> {
         if (result?.error) {
           const retries = (item.retries || 0) + 1
           const errMsg = result.error.message || String(result.error)
-          if (retries >= MAX_RETRIES) {
+          if (isNetworkError(result.error)) {
+            // Rede ruim: registra a tentativa mas NUNCA marca como falha
+            console.warn(`[sync] Item ${item.id} falhou por rede (tentativa ${retries}), fica na fila:`, errMsg)
+            if (item.id) await updateQueueItem(item.id, { retries, lastError: errMsg })
+          } else if (retries >= MAX_RETRIES) {
             console.error(`[sync] Item ${item.id} falhou ${MAX_RETRIES}x, marcando como falha permanente:`, result.error)
             if (item.id) await updateQueueItem(item.id, { retries, failed: true, failedAt: Date.now(), lastError: errMsg })
             await logFailureToServer(item, errMsg)
             syncFailListeners.forEach(cb => cb(item, errMsg))
           } else {
             console.warn(`[sync] Item ${item.id} falhou (tentativa ${retries}/${MAX_RETRIES}):`, errMsg)
-            if (item.id) await updateQueueItem(item.id, { retries })
+            if (item.id) await updateQueueItem(item.id, { retries, lastError: errMsg })
           }
           continue
         }
@@ -231,12 +254,15 @@ export async function processQueue(): Promise<number> {
         const retries = (item.retries || 0) + 1
         const errMsg = String((err as { message?: string })?.message || err)
         if (item.id) {
-          if (retries >= MAX_RETRIES) {
+          if (isNetworkError(err)) {
+            // Rede ruim (timeout do withTimeout cai aqui): fica na fila pra sempre
+            await updateQueueItem(item.id, { retries, lastError: errMsg })
+          } else if (retries >= MAX_RETRIES) {
             await updateQueueItem(item.id, { retries, failed: true, failedAt: Date.now(), lastError: errMsg })
             await logFailureToServer(item, errMsg)
             syncFailListeners.forEach(cb => cb(item, errMsg))
           } else {
-            await updateQueueItem(item.id, { retries })
+            await updateQueueItem(item.id, { retries, lastError: errMsg })
           }
         }
       }
@@ -250,6 +276,24 @@ export async function processQueue(): Promise<number> {
   }
 
   return processed
+}
+
+/** Ressuscita itens que versões antigas marcaram como falha permanente por
+ *  ERRO DE REDE (10 timeouts seguidos matavam o item). Com a regra nova,
+ *  rede nunca aposenta — então devolve esses pra fila ativa. */
+export async function ressuscitarFalhasDeRede(): Promise<number> {
+  const items = await getQueue()
+  let n = 0
+  for (const item of items) {
+    if (item.failed && (!item.lastError || isNetworkError(item.lastError))) {
+      if (item.id) {
+        await updateQueueItem(item.id, { failed: false, retries: 0, failedAt: undefined })
+        n++
+      }
+    }
+  }
+  if (n > 0) console.log(`[sync] ${n} item(s) marcados como falha por rede voltaram pra fila`)
+  return n
 }
 
 /** Registra listeners para sync automático quando volta online */
@@ -269,8 +313,8 @@ export function startAutoSync() {
     }
   })
 
-  // Sync inicial se tiver internet
+  // Sync inicial se tiver internet (antes, devolve pra fila o que morreu por rede)
   if (navigator.onLine) {
-    processQueue()
+    ressuscitarFalhasDeRede().then(() => processQueue())
   }
 }
