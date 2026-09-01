@@ -10,7 +10,7 @@ import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getC
 import { offlineSet, addPendingPdf } from '@/lib/offlineCache'
 import FotoUpload from '@/components/FotoUpload'
 import SignaturePad from '@/components/SignaturePad'
-import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown, ImagePlus, X } from 'lucide-react'
+import { ArrowLeft, Plus, Minus, CheckCircle, Send, Truck, Camera, Package, AlertTriangle, FileDown, ImagePlus, X, Video } from 'lucide-react'
 import Link from 'next/link'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
 import { gerarEAnexarRelatorio } from '@/lib/gerarEAnexarRelatorio'
@@ -18,6 +18,15 @@ import { notificarPortalOS } from '@/lib/notificarPortal'
 import { criarGarantia, listarPecasOS } from '@/lib/garantias/client'
 import type { PecaOS } from '@/lib/garantias/types'
 import { ShieldCheck, CheckCircle2 } from 'lucide-react'
+
+const VIDEO_EXTS = /\.(mp4|mov|webm|avi|mkv|3gp)(\?|$)/i
+function isVideo(url: string): boolean {
+  if (!url) return false
+  if (url.startsWith('data:video/')) return true
+  if (url.startsWith('blob:')) return false // can't tell from blob URL alone
+  return VIDEO_EXTS.test(url)
+}
+const MAX_VIDEO_MB = 50
 
 const TIPOS_SERVICO_GRUPOS = [
   {
@@ -586,6 +595,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   }, [loading, restoreBackup])
 
   const comprimirImagem = async (file: File | Blob): Promise<Blob> => {
+    if ((file as File).type?.startsWith('video/')) return file
     if (file.size <= 500_000) return file
     try {
       const bitmap = await createImageBitmap(file as Blob)
@@ -613,7 +623,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   }
 
   const uploadFoto = async (file: File | Blob, campo: string): Promise<string> => {
-    const ext = (file instanceof File ? file.name.split('.').pop() : 'jpg') || 'jpg'
+    const isVid = (file as File).type?.startsWith('video/')
+    const ext = (file instanceof File ? file.name.split('.').pop() : (isVid ? 'mp4' : 'jpg')) || 'jpg'
     const fileToUpload = await comprimirImagem(file)
     const path = `os-tecnicos/${id}/${campo}_${Date.now()}.${ext}`
     // Tentar até 2 vezes
@@ -640,7 +651,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
   const [errosFoto, setErrosFoto] = useState<string[]>([])
 
+  const [videoSlots, setVideoSlots] = useState<Set<string>>(new Set())
+
   const handleFoto = async (setter: (v: string) => void, campo: string, file: File) => {
+    const isVid = file.type.startsWith('video/')
+
+    if (isVid && file.size > MAX_VIDEO_MB * 1024 * 1024) {
+      alert(`Vídeo muito grande (${(file.size / 1024 / 1024).toFixed(0)}MB). Máximo: ${MAX_VIDEO_MB}MB.`)
+      return
+    }
+
+    if (isVid) setVideoSlots(prev => new Set(prev).add(campo))
+    else setVideoSlots(prev => { const n = new Set(prev); n.delete(campo); return n })
+
     const preview = URL.createObjectURL(file)
     setter(preview)
     const compressed = await comprimirImagem(file)
@@ -649,15 +672,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       setter(url)
       setErrosFoto(prev => prev.filter(e => e !== campo))
     } else {
-      // Offline: salvar como base64 para persistir no localStorage via useFormBackup
-      const base64 = await fileToBase64(compressed)
-      if (base64) {
-        setter(base64)
-        setErrosFoto(prev => prev.filter(e => e !== campo))
-        console.log(`[foto] ${campo} salva localmente (offline)`)
+      if (!isVid) {
+        const base64 = await fileToBase64(compressed)
+        if (base64) {
+          setter(base64)
+          setErrosFoto(prev => prev.filter(e => e !== campo))
+          console.log(`[foto] ${campo} salva localmente (offline)`)
+        } else {
+          setErrosFoto(prev => [...prev.filter(e => e !== campo), campo])
+          alert(`Erro ao salvar "${campo}".`)
+        }
       } else {
         setErrosFoto(prev => [...prev.filter(e => e !== campo), campo])
-        alert(`Erro ao salvar foto "${campo}".`)
+        alert('Erro ao enviar vídeo. Verifique sua conexão.')
       }
     }
   }
@@ -685,7 +712,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     const totalAtual = 2 + fotosExtras.length
     const restante = MAX_FOTOS - totalAtual
     if (restante <= 0) {
-      alert(`Você já anexou o máximo de ${MAX_FOTOS} fotos.`)
+      alert(`Você já anexou o máximo de ${MAX_FOTOS} arquivos.`)
       return
     }
     const arquivos = Array.from(files).slice(0, restante)
@@ -1676,7 +1703,21 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                     position: 'relative', aspectRatio: '1', borderRadius: 14, overflow: 'hidden',
                     border: '2px solid #E5E7EB', background: '#F9FAFB',
                   }}>
-                    <img src={s.v} alt="Foto" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                    {(videoSlots.has(s.campo) || isVideo(s.v)) ? (
+                      <video src={s.v} playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                        onLoadedData={(e) => { (e.target as HTMLVideoElement).currentTime = 0.5 }} />
+                    ) : (
+                      <img src={s.v} alt="Foto" style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+                    )}
+                    {(videoSlots.has(s.campo) || isVideo(s.v)) && (
+                      <div style={{
+                        position: 'absolute', left: 6, bottom: 6, background: 'rgba(17,24,39,0.7)',
+                        borderRadius: 6, padding: '2px 6px', display: 'flex', alignItems: 'center', gap: 4,
+                      }}>
+                        <Video size={12} color="#fff" />
+                        <span style={{ fontSize: 10, fontWeight: 700, color: '#fff' }}>VÍDEO</span>
+                      </div>
+                    )}
                     {(s.campo === 'FotoHorimetro' || s.campo === 'FotoChassis') && (
                       <div style={{
                         position: 'absolute', left: 0, right: 0, bottom: 0, padding: '3px 0',
@@ -1694,7 +1735,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                         <div className="spinner" style={{ width: 22, height: 22 }} />
                       </div>
                     )}
-                    <button type="button" onClick={() => s.set('')} style={{
+                    <button type="button" onClick={() => { s.set(''); setVideoSlots(prev => { const n = new Set(prev); n.delete(s.campo); return n }) }} style={{
                       position: 'absolute', top: 5, right: 5, width: 26, height: 26, borderRadius: '50%',
                       border: 'none', background: 'rgba(17,24,39,0.7)', color: '#fff', cursor: 'pointer',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -1726,8 +1767,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                       border: '2px dashed #C7D2FE', background: '#EFF6FF', color: '#2563EB',
                     }}>
                       <Camera size={26} />
-                      <span style={{ fontSize: 12, fontWeight: 600 }}>Câmera</span>
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>Foto</span>
                       <input type="file" accept="image/*" capture="environment"
+                        onChange={(e) => { addFotos(e.target.files); e.target.value = '' }}
+                        style={{ display: 'none' }} />
+                    </label>
+                    <label className="foto-add" style={{
+                      aspectRatio: '1', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                      gap: 6, borderRadius: 14, cursor: 'pointer',
+                      border: '2px dashed #A78BFA', background: '#F5F3FF', color: '#7C3AED',
+                    }}>
+                      <Video size={26} />
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>Vídeo</span>
+                      <input type="file" accept="video/*" capture="environment"
                         onChange={(e) => { addFotos(e.target.files); e.target.value = '' }}
                         style={{ display: 'none' }} />
                     </label>
@@ -1738,7 +1790,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                     }}>
                       <ImagePlus size={26} />
                       <span style={{ fontSize: 12, fontWeight: 600 }}>Galeria</span>
-                      <input type="file" accept="image/*" multiple
+                      <input type="file" accept="image/*,video/*" multiple
                         onChange={(e) => { addFotos(e.target.files); e.target.value = '' }}
                         style={{ display: 'none' }} />
                     </label>
@@ -1746,7 +1798,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
                 )}
               </div>
               <p style={{ fontSize: 11, color: '#9CA3AF', marginTop: 8, textAlign: 'right' }}>
-                {anexadas.length}/{MAX_FOTOS} fotos
+                {anexadas.length}/{MAX_FOTOS} fotos/vídeos
               </p>
             </>
           )

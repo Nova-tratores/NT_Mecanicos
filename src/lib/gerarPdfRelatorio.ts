@@ -89,6 +89,13 @@ interface DadosRelatorio {
   downloadFoto?: (url: string) => Promise<string | null>
 }
 
+const VIDEO_EXTS = /\.(mp4|mov|webm|avi|mkv|3gp)(\?|$)/i
+function isVideoUrl(url: string): boolean {
+  if (!url) return false
+  if (url.startsWith('data:video/')) return true
+  return VIDEO_EXTS.test(url)
+}
+
 const VERMELHO = '#C41E2A'
 const AZUL_ESCURO = '#1E3A5F'
 const CINZA = '#6B7280'
@@ -464,7 +471,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
   ].filter(f => f.url)
 
   if (fotos.length > 0) {
-    drawSectionTitle('FOTOS')
+    drawSectionTitle('FOTOS / VÍDEOS')
     const fotoW = (contentW - 10) / 3
     const fotoH = fotoW * 0.75
     let col = 0
@@ -480,24 +487,34 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
       doc.setTextColor(CINZA)
       doc.text(foto.label, x, y)
 
-      // Placeholder ou imagem
-      const imgData = await loadImageAsBase64(foto.url, dados.downloadFoto)
-      if (imgData) {
-        try {
-          doc.addImage(imgData, 'JPEG', x, y + 2, fotoW, fotoH)
-        } catch {
+      if (isVideoUrl(foto.url)) {
+        doc.setFillColor('#F3F4F6')
+        doc.roundedRect(x, y + 2, fotoW, fotoH, 2, 2, 'F')
+        doc.setFontSize(9)
+        doc.setTextColor(AZUL_ESCURO)
+        doc.text('Vídeo anexado', x + fotoW / 2, y + 2 + fotoH / 2 - 3, { align: 'center' })
+        doc.setFontSize(7)
+        doc.setTextColor(CINZA)
+        doc.text('(ver no sistema)', x + fotoW / 2, y + 2 + fotoH / 2 + 4, { align: 'center' })
+      } else {
+        const imgData = await loadImageAsBase64(foto.url, dados.downloadFoto)
+        if (imgData) {
+          try {
+            doc.addImage(imgData, 'JPEG', x, y + 2, fotoW, fotoH)
+          } catch {
+            doc.setDrawColor('#E5E7EB')
+            doc.rect(x, y + 2, fotoW, fotoH)
+            doc.setFontSize(8)
+            doc.setTextColor('#D1D5DB')
+            doc.text('Erro ao carregar', x + fotoW / 2, y + 2 + fotoH / 2, { align: 'center' })
+          }
+        } else {
           doc.setDrawColor('#E5E7EB')
           doc.rect(x, y + 2, fotoW, fotoH)
           doc.setFontSize(8)
           doc.setTextColor('#D1D5DB')
-          doc.text('Erro ao carregar', x + fotoW / 2, y + 2 + fotoH / 2, { align: 'center' })
+          doc.text('Foto', x + fotoW / 2, y + 2 + fotoH / 2, { align: 'center' })
         }
-      } else {
-        doc.setDrawColor('#E5E7EB')
-        doc.rect(x, y + 2, fotoW, fotoH)
-        doc.setFontSize(8)
-        doc.setTextColor('#D1D5DB')
-        doc.text('Foto', x + fotoW / 2, y + 2 + fotoH / 2, { align: 'center' })
       }
       col++
     }
