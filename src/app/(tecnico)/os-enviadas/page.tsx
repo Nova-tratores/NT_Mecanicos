@@ -22,15 +22,15 @@ const FASES_FINALIZADAS = [
   'Faturada', 'Faturado',
   'Finalizada', 'Finalizado',
   'Enviado Para Omie', 'Enviado para Omie',
+  'Preenchido Garantia',
 ]
 
 async function fetchOsEnviadas(nome: string): Promise<OsEnviada[]> {
-  // Relatórios enviados pelo técnico
+  // Relatórios preenchidos pelo técnico (enviados ou não)
   const { data: tecData } = await supabase
     .from('Ordem_Servico_Tecnicos')
     .select('*')
     .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
-    .eq('Status', 'enviado')
     .order('Data', { ascending: false })
 
   // OS em fases finais (portal avançou) que o técnico não tem relatório

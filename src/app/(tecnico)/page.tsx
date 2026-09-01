@@ -115,9 +115,14 @@ async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<Da
     'Faturada', 'Faturado',
     'Finalizada', 'Finalizado',
     'Enviado Para Omie', 'Enviado para Omie',
+    'Preenchido Garantia',
   ]
   for (const o of todas) {
     if (FASES_CONCLUIDAS.includes(o.Status)) enviadaSet.add(String(o.Id_Ordem))
+  }
+  // Técnico já preencheu o relatório → conta como enviada
+  for (const id of preenchSet) {
+    enviadaSet.add(id)
   }
 
   let osPendentes = 0
@@ -223,6 +228,7 @@ const FASES_FINAIS = [
   'Executada aguardando comercial',
   'Faturada','Faturado','Finalizada','Finalizado',
   'Enviado Para Omie','Enviado para Omie',
+  'Preenchido Garantia',
 ]
 
 async function fetchMinhasOrdensAbertas(nome: string): Promise<OrdemAberta[]> {
@@ -256,9 +262,8 @@ async function fetchMinhasOrdensAbertas(nome: string): Promise<OrdemAberta[]> {
   const resultado: OrdemAberta[] = []
   for (const o of todas) {
     const id = String(o.Id_Ordem)
-    if (enviadaSet.has(id)) continue
-    const pendente = o.Status === 'Aguardando ordem Técnico' && !preenchSet.has(id)
-    resultado.push({ ...o, _classe: pendente ? 'pendente' : 'aberta' })
+    if (enviadaSet.has(id) || preenchSet.has(id)) continue
+    resultado.push({ ...o, _classe: o.Status === 'Aguardando ordem Técnico' ? 'pendente' : 'aberta' })
   }
 
   resultado.sort((a, b) => {
