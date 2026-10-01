@@ -14,6 +14,7 @@ export const STATUS_LABEL: Record<GarantiaStatus, string> = {
   ressarcimento_fabrica: 'Ressarcimento na fábrica',
   aprovada: 'Aprovada',
   rejeitada: 'Recusada',
+  cancelada: 'Cancelada (duplicada)',
 }
 
 export const STATUS_COR: Record<GarantiaStatus, string> = {
@@ -26,6 +27,7 @@ export const STATUS_COR: Record<GarantiaStatus, string> = {
   ressarcimento_fabrica: '#C026D3',
   aprovada: '#10B981',
   rejeitada: '#EF4444',
+  cancelada: '#64748B',
 }
 
 export const STATUS_BG: Record<GarantiaStatus, string> = {
@@ -38,9 +40,10 @@ export const STATUS_BG: Record<GarantiaStatus, string> = {
   ressarcimento_fabrica: '#FAE8FF',
   aprovada: '#ECFDF5',
   rejeitada: '#FEF2F2',
+  cancelada: '#F1F5F9',
 }
 
-export const STATUS_FINALIZADOS: GarantiaStatus[] = ['aprovada', 'rejeitada']
+export const STATUS_FINALIZADOS: GarantiaStatus[] = ['aprovada', 'rejeitada', 'cancelada']
 
 // Status em que o técnico ainda tem ação a fazer (aparece com destaque)
 export const STATUS_AGUARDANDO_TECNICO: GarantiaStatus[] = ['bo_tecnico', 'info_pendente']

@@ -10,6 +10,7 @@ export type GarantiaStatus =
   | 'ressarcimento_fabrica' // duas etapas: ressarcimento de horas/km na fábrica
   | 'aprovada'
   | 'rejeitada'
+  | 'cancelada' // cancelada SÓ por duplicação (aponta a garantia original)
 
 export type GarantiaResultado = 'aprovada' | 'rejeitada'
 export type PendenciaTipo = 'bo' | 'info_fabrica'
