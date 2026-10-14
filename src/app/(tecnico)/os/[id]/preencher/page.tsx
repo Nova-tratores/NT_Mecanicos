@@ -200,7 +200,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         const cod = (m.CodProduto || '').trim()
         if (!cod) continue
         const existing = agrupado.get(cod)
-        const qty = parseFloat(m.Qtde) || 0
+        const q = parseFloat(String(m.Qtde ?? '').replace(',', '.')) || 0
+        const qty = /devolu/i.test(m.TipoMovimento || '') ? -q : q
         if (existing) {
           existing.qtdTotal += qty
           if (m.Descricao) existing.descricao = m.Descricao
@@ -213,10 +214,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         }
       }
 
-      const pecasPPV = Array.from(agrupado.values()).map(a => ({
+      // só o que ainda está separado no PPV (item todo devolvido some da lista)
+      const pecasPPV = Array.from(agrupado.values()).filter(a => a.qtdTotal > 0).map(a => ({
         descricao: a.descricao,
         codigo: a.codigo,
-        qtdOriginal: a.qtdTotal > 0 ? String(a.qtdTotal) : '1',
+        qtdOriginal: String(Math.round(a.qtdTotal * 1000) / 1000),
       }))
 
       // Map de peças já preenchidas pelo técnico (por código)
@@ -230,7 +232,10 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         const jaExiste = ppvExistentes.get(ppv.codigo)
         if (jaExiste) {
           // Atualiza descrição e quantidade do PPV, preserva revisão do técnico
-          return { ...jaExiste, descricao: ppv.descricao, qtdOriginal: ppv.qtdOriginal }
+          // quantidade usada nunca passa do que está separado
+          const usada = parseFloat(String(jaExiste.qtdUsada || '').replace(',', '.'))
+          const max = parseFloat(ppv.qtdOriginal)
+          return { ...jaExiste, descricao: ppv.descricao, qtdOriginal: ppv.qtdOriginal, qtdUsada: usada > max ? ppv.qtdOriginal : jaExiste.qtdUsada }
         }
         return {
           descricao: ppv.descricao,
@@ -304,14 +309,23 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         if (cachedOs?.ID_PPV) {
           const cachedMovs = await getCachedPPV(cachedOs.ID_PPV as string)
           if (cachedMovs && cachedMovs.length > 0) {
-            const pecasPPV = cachedMovs.map((m: Record<string, unknown>) => ({
-              descricao: (m.Descricao as string) || (m.CodProduto as string),
-              codigo: (m.CodProduto as string) || '',
-              qtdUsada: (m.Qtde as string) || '1',
+            const saldo = new Map<string, { descricao: string; qtd: number }>()
+            for (const m of cachedMovs as Record<string, unknown>[]) {
+              const cod = String(m.CodProduto || '').trim()
+              if (!cod) continue
+              const q = parseFloat(String(m.Qtde ?? '').replace(',', '.')) || 0
+              const atual = saldo.get(cod) || { descricao: String(m.Descricao || cod), qtd: 0 }
+              atual.qtd += /devolu/i.test(String(m.TipoMovimento || '')) ? -q : q
+              saldo.set(cod, atual)
+            }
+            const pecasPPV = Array.from(saldo.entries()).filter(([, v]) => v.qtd > 0).map(([codigo, v]) => ({
+              descricao: v.descricao,
+              codigo,
+              qtdUsada: String(Math.round(v.qtd * 1000) / 1000),
               devolvida: false,
               qtdDevolvida: '',
               origem: 'ppv' as const,
-              qtdOriginal: (m.Qtde as string) || '1',
+              qtdOriginal: String(Math.round(v.qtd * 1000) / 1000),
               naoUsada: false,
               revisado: false,
             }))
