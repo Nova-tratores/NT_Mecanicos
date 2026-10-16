@@ -10,6 +10,7 @@ import { ArrowLeft, Send, CheckCircle, Wrench, Utensils, Package, Truck, Car, Fu
 import Link from 'next/link'
 import type { OrdemServico } from '@/lib/types'
 import { notificarPortalReq } from '@/lib/notificarPortal'
+import { dataLocalISO } from '@/lib/tecnico-utils'
 
 const TIPOS = [
   { value: 'Peças', label: 'Peças', icon: Wrench, color: '#C41E2A' },
@@ -49,7 +50,9 @@ export default function NovaSolicitacao() {
   const { user } = useCurrentUser()
   const router = useRouter()
   const [saving, setSaving] = useState(false)
+  const savingRef = useRef(false)
   const [sucesso, setSucesso] = useState(false)
+  const [enviadaOffline, setEnviadaOffline] = useState(false)
   const [ordens, setOrdens] = useState<OSComDetalhes[]>([])
   const [veiculos, setVeiculos] = useState<{ IdPlaca: number; NumPlaca: string }[]>([])
   const [buscaIdManual, setBuscaIdManual] = useState('')
@@ -100,15 +103,20 @@ export default function NovaSolicitacao() {
     if (!user) return
     const carregar = async () => {
       const nome = user.nome_pos || user.tecnico_nome
+      const usarCache = async () => {
+        try {
+          const [osList, veics] = await Promise.all([getCachedOSList(), getCachedVeiculos()])
+          if (osList) setOrdens(osList as unknown as OSComDetalhes[])
+          if (veics) setVeiculos(veics)
+        } catch { /* sem cache */ }
+      }
       // Offline: le do cache do prefetch
       if (!navigator.onLine) {
-        const [osList, veics] = await Promise.all([getCachedOSList(), getCachedVeiculos()])
-        if (osList) setOrdens(osList as unknown as OSComDetalhes[])
-        if (veics) setVeiculos(veics)
+        await usarCache()
         return
       }
       try {
-        const [{ data: osData }, { data: veicData }] = await Promise.all([
+        const [{ data: osData, error: osErr }, { data: veicData, error: veicErr }] = await Promise.all([
           supabase
             .from('Ordem_Servico')
             .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Tipo_Servico, ID_PPV')
@@ -120,12 +128,13 @@ export default function NovaSolicitacao() {
             .select('IdPlaca, NumPlaca')
             .order('NumPlaca'),
         ])
+        // supabase-js não lança em falha de rede — devolve error. Sem isso as
+        // listas ficavam vazias com sinal fraco em vez de usar o cache.
+        if (osErr || veicErr) throw osErr || veicErr
         setOrdens((osData || []) as OSComDetalhes[])
         setVeiculos(veicData || [])
       } catch {
-        const [osList, veics] = await Promise.all([getCachedOSList(), getCachedVeiculos()])
-        if (osList) setOrdens(osList as unknown as OSComDetalhes[])
-        if (veics) setVeiculos(veics)
+        await usarCache()
       }
     }
     carregar()
@@ -133,24 +142,37 @@ export default function NovaSolicitacao() {
 
   // Buscar OS por ID manual (que não está no nome do técnico)
   const buscarOSPorId = async () => {
-    if (!buscaIdManual.trim()) return
-    setBuscandoOS(true)
+    if (!buscaIdManual.trim() || buscandoOS) return
     setErroBusca('')
     setOsBuscada(null)
-
-    const { data, error } = await supabase
-      .from('Ordem_Servico')
-      .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Tipo_Servico, ID_PPV')
-      .eq('Id_Ordem', buscaIdManual.trim())
-      .maybeSingle()
-
-    if (error || !data) {
-      setErroBusca('OS não encontrada. Verifique o ID.')
-    } else {
-      setOsBuscada(data as OSComDetalhes)
+    if (!navigator.onLine) {
+      setErroBusca('Sem conexão. A busca por ID precisa de sinal — escolha uma das suas OS acima.')
+      return
     }
-    setBuscandoOS(false)
+    setBuscandoOS(true)
+    try {
+      const { data, error } = await supabase
+        .from('Ordem_Servico')
+        .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Tipo_Servico, ID_PPV')
+        .eq('Id_Ordem', buscaIdManual.trim())
+        .maybeSingle()
+
+      if (error) {
+        setErroBusca('Não foi possível buscar a OS (sinal fraco?). Tente de novo.')
+      } else if (!data) {
+        setErroBusca('OS não encontrada. Verifique o ID.')
+      } else {
+        setOsBuscada(data as OSComDetalhes)
+      }
+    } catch {
+      setErroBusca('Não foi possível buscar a OS (sinal fraco?). Tente de novo.')
+    } finally {
+      setBuscandoOS(false)
+    }
   }
+
+  // Última OS escolhida — evita que a resposta de uma OS antiga sobrescreva o chassi da atual
+  const osSelecionadaRef = useRef('')
 
   // Ao selecionar uma OS, preencher cliente e buscar chassis/modelo
   const selecionarOS = async (idOrdem: string) => {
@@ -172,11 +194,19 @@ export default function NovaSolicitacao() {
     // Buscar chassis/modelo da OS Técnica se existir
     setChassisPOS('')
     setModeloPOS('')
-    const { data: osTec } = await supabase
-      .from('Ordem_Servico_Tecnicos')
-      .select('Chassis, FotoChassis')
-      .eq('Ordem_Servico', idOrdem)
-      .maybeSingle()
+    osSelecionadaRef.current = idOrdem
+    let osTec: { Chassis?: unknown } | null = null
+    try {
+      const { data } = await supabase
+        .from('Ordem_Servico_Tecnicos')
+        .select('Chassis, FotoChassis')
+        .eq('Ordem_Servico', idOrdem)
+        .maybeSingle()
+      osTec = data
+    } catch {
+      // offline: técnico digita o chassi manualmente
+    }
+    if (osSelecionadaRef.current !== idOrdem) return
 
     if (osTec) {
       const chassis = (osTec.Chassis as string) || ''
@@ -219,11 +249,27 @@ export default function NovaSolicitacao() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    // Guarda síncrona: toque duplo / Enter repetido criava requisição em dobro
+    if (savingRef.current) return
     if (!user || !canSubmit()) return
+    savingRef.current = true
     setSaving(true)
+    try {
+      await enviarSolicitacao()
+    } catch (err) {
+      console.error('[req-nova] enviar:', err)
+      alert('Erro ao enviar solicitação. Seus dados continuam salvos — tente novamente.')
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
+  }
 
+  const enviarSolicitacao = async () => {
+    if (!user) return
     const placaSelecionada = veiculos.find(v => String(v.IdPlaca) === form.veiculo)
-    const hoje = new Date().toISOString().split('T')[0]
+    // Data local (toISOString é UTC: depois das 21h gravava o dia seguinte)
+    const hoje = dataLocalISO()
     const materialUpper = form.material.trim().toUpperCase()
     const idReq = `APP-${Date.now()}`
     const nomePOS = user.nome_pos || user.tecnico_nome
@@ -256,7 +302,6 @@ export default function NovaSolicitacao() {
 
     if (!resReq.ok) {
       alert('Erro ao enviar solicitação. Tente novamente.')
-      setSaving(false)
       return
     }
 
@@ -267,7 +312,7 @@ export default function NovaSolicitacao() {
     )
 
     // 3. Insere na Supa-Solicitacao_Req (portal recebe realtime + imprime) — enfileira se offline
-    await offlineWrite({
+    const resSol = await offlineWrite({
       table: 'Supa-Solicitacao_Req',
       action: 'insert',
       data: {
@@ -290,6 +335,9 @@ export default function NovaSolicitacao() {
       },
     })
 
+    if (!resSol.ok) console.error('[req-nova] Supa-Solicitacao_Req falhou:', resSol.error)
+
+    setEnviadaOffline(resReq.queued)
     setSucesso(true)
     clearBackup()
   }
@@ -307,11 +355,20 @@ export default function NovaSolicitacao() {
           <CheckCircle size={48} color="#10B981" />
         </div>
         <h2 style={{ fontSize: 22, fontWeight: 700, color: '#1F2937', marginBottom: 8 }}>
-          Solicitação Enviada!
+          {enviadaOffline ? 'Solicitação Salva!' : 'Solicitação Enviada!'}
         </h2>
         <p style={{ fontSize: 15, color: '#6B7280', marginBottom: 28, lineHeight: 1.5 }}>
-          O escritório já recebeu seu pedido.
-          <br />Você será avisado quando estiver pronto.
+          {enviadaOffline ? (
+            <>
+              Sem sinal agora — o pedido ficou salvo no aparelho
+              <br />e será enviado assim que a conexão voltar.
+            </>
+          ) : (
+            <>
+              O escritório já recebeu seu pedido.
+              <br />Você será avisado quando estiver pronto.
+            </>
+          )}
         </p>
         <Link href="/requisicoes" style={{
           background: '#C41E2A', color: '#fff', borderRadius: 14,
@@ -498,6 +555,7 @@ export default function NovaSolicitacao() {
                   if (e.target.value) {
                     selecionarOS(e.target.value)
                   } else {
+                    osSelecionadaRef.current = ''
                     setForm(prev2 => ({ ...prev2, osVinculada: '', cliente: '', chassisModelo: '' }))
                     setChassisPOS('')
                   }
@@ -525,14 +583,16 @@ export default function NovaSolicitacao() {
                     value={buscaIdManual}
                     onChange={(e) => { setBuscaIdManual(e.target.value); setErroBusca('') }}
                     placeholder="Digite o ID da OS..."
-                    style={{ ...inputStyle, borderColor: '#BBF7D0', flex: 1 }}
+                    style={{ ...inputStyle, borderColor: '#BBF7D0', flex: 1, minWidth: 0 }}
                     onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); buscarOSPorId() } }}
                   />
                   <button
                     type="button"
                     onClick={buscarOSPorId}
                     disabled={buscandoOS || !buscaIdManual.trim()}
+                    aria-label="Buscar OS"
                     style={{
+                      minWidth: 52, flexShrink: 0,
                       background: '#166534', color: '#fff', border: 'none', borderRadius: 14,
                       padding: '0 18px', cursor: buscandoOS ? 'wait' : 'pointer',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -543,24 +603,25 @@ export default function NovaSolicitacao() {
                   </button>
                 </div>
                 {erroBusca && (
-                  <div style={{ fontSize: 12, color: '#DC2626', marginTop: 6 }}>{erroBusca}</div>
+                  <div role="alert" style={{ fontSize: 13, color: '#DC2626', marginTop: 6 }}>{erroBusca}</div>
                 )}
                 {osBuscada && (
                   <div style={{
                     background: '#fff', borderRadius: 12, padding: 14, marginTop: 8,
                     border: '1.5px solid #BBF7D0',
-                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                    display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10,
                   }}>
-                    <div>
+                    <div style={{ minWidth: 0 }}>
                       <div style={{ fontSize: 14, fontWeight: 700, color: '#C41E2A' }}>{osBuscada.Id_Ordem}</div>
-                      <div style={{ fontSize: 13, color: '#374151' }}>{osBuscada.Os_Cliente}</div>
+                      <div style={{ fontSize: 13, color: '#374151', overflowWrap: 'anywhere' }}>{osBuscada.Os_Cliente}</div>
                     </div>
                     <button
                       type="button"
                       onClick={usarOSBuscada}
                       style={{
                         background: '#166534', color: '#fff', border: 'none', borderRadius: 10,
-                        padding: '8px 16px', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                        padding: '8px 16px', minHeight: 44, flexShrink: 0,
+                        fontSize: 13, fontWeight: 700, cursor: 'pointer',
                       }}
                     >
                       Selecionar
@@ -575,7 +636,8 @@ export default function NovaSolicitacao() {
               <div style={{
                 background: '#DCFCE7', borderRadius: 10, padding: 12,
                 fontSize: 13, color: '#166534', fontWeight: 600,
-                display: 'flex', alignItems: 'center', gap: 8,
+                display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+                overflowWrap: 'anywhere',
               }}>
                 <CheckCircle size={16} />
                 OS vinculada: <strong>{form.osVinculada}</strong>
@@ -601,7 +663,7 @@ export default function NovaSolicitacao() {
                   }}
                 />
                 {!chassisPOS && !chassisPreenchido && (
-                  <div style={{ fontSize: 11, color: '#DC2626', marginTop: 4 }}>
+                  <div style={{ fontSize: 12, color: '#DC2626', marginTop: 4 }}>
                     Chassis não encontrado no POS. Preencha o modelo ou chassis do equipamento.
                   </div>
                 )}

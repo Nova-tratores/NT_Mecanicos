@@ -2,7 +2,12 @@
 import { useEffect, useState } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { supabase } from '@/lib/supabase'
-import { Search, Download, Camera, X, Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Search, Download, Camera, X, Loader2, ChevronLeft, ChevronRight, WifiOff, RefreshCw } from 'lucide-react'
+
+const CARREGAR_TIMEOUT = 12000
+function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
+  return Promise.race([Promise.resolve(p), new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), CARREGAR_TIMEOUT))])
+}
 
 interface FotoItem {
   label: string
@@ -41,8 +46,9 @@ const FOTO_CAMPOS = Object.keys(FOTO_LABELS)
 const CAMPOS_SELECT = FOTO_CAMPOS.join(', ') + ', TecResp1, Data, Ordem_Servico'
 
 function formatarData(d: string) {
-  if (!d) return '-'
-  const [y, m, day] = d.split('-')
+  if (!d || d === '-') return '-'
+  const [y, m, day] = d.slice(0, 10).split('-')
+  if (!y || !m || !day) return d
   return `${day}/${m}/${y}`
 }
 
@@ -67,7 +73,7 @@ function montarResultados(registros: any[], clienteMap: Record<string, string>):
 }
 
 export default function FotosTecnicoPage() {
-  const { user } = useCurrentUser()
+  const { user, loading: userLoading } = useCurrentUser()
   const nome = user?.nome_pos || user?.tecnico_nome || ''
 
   const [busca, setBusca] = useState('')
@@ -76,33 +82,41 @@ export default function FotosTecnicoPage() {
   const [fotoAberta, setFotoAberta] = useState<FotoItem | null>(null)
   const [baixando, setBaixando] = useState<string | null>(null)
   const [osAberta, setOsAberta] = useState<string | null>(null)
+  const [erroCarga, setErroCarga] = useState(false)
+  const [tentativa, setTentativa] = useState(0)
 
   // Carregar todas as fotos do tecnico ao montar
   useEffect(() => {
-    if (!nome) return
+    if (!nome) {
+      // Perfil carregado mas sem nome: não prende no spinner
+      if (!userLoading) setCarregando(false)
+      return
+    }
     let cancelado = false
 
     async function carregar() {
       setCarregando(true)
-
-      const { data: regs } = await supabase
+      setErroCarga(false)
+      try {
+      const { data: regs, error } = await withTimeout(supabase
         .from('Ordem_Servico_Tecnicos')
         .select(CAMPOS_SELECT)
         .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
         .eq('Status', 'enviado')
         .order('Data', { ascending: false })
-        .limit(200)
+        .limit(200))
 
       if (cancelado) return
+      if (error) throw error
       const registros = regs || []
 
       if (registros.length > 0) {
         const osIds = registros.map((r: any) => String(r.Ordem_Servico))
         const uniqueIds = [...new Set(osIds)]
-        const { data: osData } = await supabase
+        const { data: osData } = await withTimeout(supabase
           .from('Ordem_Servico')
           .select('Id_Ordem, Os_Cliente')
-          .in('Id_Ordem', uniqueIds)
+          .in('Id_Ordem', uniqueIds))
 
         if (cancelado) return
         const clienteMap: Record<string, string> = {}
@@ -114,13 +128,19 @@ export default function FotosTecnicoPage() {
       } else {
         setTodos([])
       }
-
-      setCarregando(false)
+      } catch {
+        // Sem sinal: não dizer "nenhuma foto" — mostra aviso com "tentar de novo"
+        if (!cancelado) setErroCarga(true)
+      } finally {
+        if (!cancelado) setCarregando(false)
+      }
     }
 
     carregar()
-    return () => { cancelado = true }
-  }, [nome])
+    const onOnline = () => setTentativa(t => t + 1)
+    window.addEventListener('online', onOnline)
+    return () => { cancelado = true; window.removeEventListener('online', onOnline) }
+  }, [nome, userLoading, tentativa])
 
   // Filtrar por busca (OS ou cliente)
   const termo = busca.trim().toLowerCase()
@@ -132,20 +152,28 @@ export default function FotosTecnicoPage() {
     : todos
 
   const baixarFoto = async (foto: FotoItem, osId: string) => {
+    if (baixando) return
     setBaixando(foto.campo + osId)
     try {
       const resp = await fetch(foto.url)
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const blob = await resp.blob()
-      const ext = foto.url.split('.').pop()?.split('?')[0] || 'jpg'
+      const extUrl = foto.url.split('?')[0].split('.').pop() || ''
+      const ext = /^[a-z0-9]{2,5}$/i.test(extUrl) ? extUrl : 'jpg'
+      const href = URL.createObjectURL(blob)
       const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob)
+      a.href = href
       a.download = `${osId}_${foto.campo}.${ext}`
+      document.body.appendChild(a)
       a.click()
-      URL.revokeObjectURL(a.href)
+      a.remove()
+      // Revogar na hora cancela o download em alguns navegadores (Safari/Firefox)
+      setTimeout(() => URL.revokeObjectURL(href), 10000)
     } catch {
-      alert('Erro ao baixar foto')
+      alert('Não foi possível baixar a foto. Verifique a conexão e tente novamente.')
+    } finally {
+      setBaixando(null)
     }
-    setBaixando(null)
   }
 
   return (
@@ -168,7 +196,7 @@ export default function FotosTecnicoPage() {
           placeholder="Filtrar por OS ou cliente..."
           style={{
             width: '100%', padding: '12px 12px 12px 40px', borderRadius: 12,
-            border: '2px solid #E5E7EB', fontSize: 15, outline: 'none',
+            border: '2px solid #E5E7EB', fontSize: 16, outline: 'none',
             boxSizing: 'border-box', background: '#FAFAFA',
           }}
         />
@@ -182,8 +210,29 @@ export default function FotosTecnicoPage() {
         </div>
       )}
 
+      {/* Erro de rede */}
+      {!carregando && erroCarga && todos.length === 0 && (
+        <div style={{
+          background: '#fff', borderRadius: 16, padding: 32,
+          textAlign: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+        }}>
+          <WifiOff size={36} color="#9CA3AF" style={{ margin: '0 auto 12px', display: 'block' }} />
+          <div style={{ fontSize: 15, fontWeight: 600, color: '#374151' }}>Não consegui carregar as fotos</div>
+          <div style={{ fontSize: 13, color: '#6B7280', marginTop: 4, marginBottom: 16 }}>
+            Verifique a conexão e tente de novo.
+          </div>
+          <button onClick={() => setTentativa(t => t + 1)} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 22px',
+            borderRadius: 12, border: 'none', background: '#C41E2A', color: '#fff',
+            fontSize: 14, fontWeight: 700, cursor: 'pointer',
+          }}>
+            <RefreshCw size={16} /> Tentar de novo
+          </button>
+        </div>
+      )}
+
       {/* Sem fotos */}
-      {!carregando && resultados.length === 0 && (
+      {!carregando && !(erroCarga && todos.length === 0) && resultados.length === 0 && (
         <div style={{
           background: '#fff', borderRadius: 16, padding: 40,
           textAlign: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
@@ -276,18 +325,21 @@ export default function FotosTecnicoPage() {
                             />
                           </div>
                           <div style={{ padding: '6px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span style={{ fontSize: 10, fontWeight: 600, color: '#374151' }}>{foto.label}</span>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: '#374151', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{foto.label}</span>
                             <button
                               onClick={() => baixarFoto(foto, res.ordemServico)}
                               disabled={baixando === foto.campo + res.ordemServico}
+                              aria-label={`Baixar foto ${foto.label}`}
                               style={{
-                                background: 'none', border: 'none', cursor: 'pointer', padding: 3,
+                                background: 'none', border: 'none', cursor: 'pointer',
+                                width: 36, height: 36, margin: -8, flexShrink: 0,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
                                 opacity: baixando === foto.campo + res.ordemServico ? 0.4 : 1,
                               }}
                             >
                               {baixando === foto.campo + res.ordemServico
-                                ? <Loader2 size={13} color="#6B7280" className="spinner" />
-                                : <Download size={13} color="#6B7280" />
+                                ? <Loader2 size={15} color="#6B7280" className="spinner" />
+                                : <Download size={15} color="#6B7280" />
                               }
                             </button>
                           </div>
@@ -311,7 +363,7 @@ export default function FotosTecnicoPage() {
             background: 'rgba(0,0,0,0.85)',
             display: 'flex', flexDirection: 'column',
             alignItems: 'center', justifyContent: 'center',
-            padding: 16,
+            padding: 'calc(16px + env(safe-area-inset-top, 0px)) 16px calc(16px + env(safe-area-inset-bottom, 0px))',
           }}
         >
           <div style={{
@@ -321,9 +373,11 @@ export default function FotosTecnicoPage() {
             <span style={{ color: '#fff', fontSize: 14, fontWeight: 600 }}>{fotoAberta.label}</span>
             <button
               onClick={() => setFotoAberta(null)}
+              aria-label="Fechar"
               style={{
-                background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 8,
-                padding: 8, cursor: 'pointer',
+                background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: 10,
+                width: 44, height: 44, cursor: 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
             >
               <X size={18} color="#fff" />

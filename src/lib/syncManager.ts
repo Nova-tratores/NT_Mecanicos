@@ -6,9 +6,14 @@
 import { supabase } from './supabase'
 import { getQueue, removeFromQueue, updateQueueItem, type SyncItem } from './offlineCache'
 
-let syncing = false
+// Promise do sync em andamento: quem chamar processQueue() durante um sync
+// espera ESSE terminar (antes recebia 0 na hora — o OfflineSync então gerava
+// o PDF antes de o relatório ter subido).
+let syncingPromise: Promise<number> | null = null
+let autoSyncStarted = false
 const MAX_RETRIES = 10
 const SYNC_TIMEOUT = 45000
+const UPLOAD_TIMEOUT = 90000
 
 // Erro de REDE (timeout, sem sinal, DNS…) nunca pode aposentar um item da
 // fila — ela existe exatamente pra aguentar sinal ruim na roça. Só erro de
@@ -49,11 +54,12 @@ async function logFailureToServer(item: SyncItem, errorMsg: string) {
   } catch { /* melhor não travar por causa do log */ }
 }
 
-function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
+function withTimeout<T>(p: PromiseLike<T>, ms = SYNC_TIMEOUT): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
   return Promise.race([
     p,
-    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('sync timeout')), SYNC_TIMEOUT)),
-  ])
+    new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('sync timeout')), ms) }),
+  ]).finally(() => clearTimeout(timer))
 }
 
 // Campos que podem conter fotos em base64 pendentes de upload
@@ -70,7 +76,9 @@ async function uploadBase64Foto(base64: string, campo: string, osId: string): Pr
     const res = await fetch(base64)
     const blob = await res.blob()
     const path = `os-tecnicos/${osId}/${campo}_sync_${Date.now()}.jpg`
-    const { error } = await supabase.storage.from('requisicoes').upload(path, blob, { upsert: true })
+    // Com sinal fraco o upload podia ficar pendurado pra sempre — e como o
+    // processQueue segura a flag `syncing`, a fila inteira travava até recarregar.
+    const { error } = await withTimeout(supabase.storage.from('requisicoes').upload(path, blob, { upsert: true }), UPLOAD_TIMEOUT)
     if (!error) {
       const { data } = supabase.storage.from('requisicoes').getPublicUrl(path)
       return data.publicUrl
@@ -84,15 +92,25 @@ async function uploadBase64Foto(base64: string, campo: string, osId: string): Pr
 
 /** Resolve fotos base64 pendentes no payload antes de sincronizar.
  *  Retorna { data, pendente } — pendente=true se alguma foto não subiu. */
-async function resolverFotosPendentes(data: Record<string, unknown>): Promise<{ data: Record<string, unknown>; pendente: boolean }> {
+async function resolverFotosPendentes(data: Record<string, unknown>): Promise<{ data: Record<string, unknown>; pendente: boolean; subiu: boolean }> {
   const osId = String(data.Ordem_Servico || 'unknown')
   const resolved = { ...data }
   let pendente = false
+  // A mesma foto aparece em mais de um campo (FotoExtra1 + FotosExtras[0],
+  // FotoAlmoco + AlmocosFotos[0]) — sobe cada base64 uma vez só.
+  const jaSubidas = new Map<string, string>()
+  const upload = async (base64: string, campo: string): Promise<string | null> => {
+    const ja = jaSubidas.get(base64)
+    if (ja) return ja
+    const url = await uploadBase64Foto(base64, campo, osId)
+    if (url) jaSubidas.set(base64, url)
+    return url
+  }
 
   for (const campo of FOTO_FIELDS) {
     const valor = resolved[campo]
     if (typeof valor === 'string' && valor.startsWith('data:')) {
-      const url = await uploadBase64Foto(valor, campo, osId)
+      const url = await upload(valor, campo)
       if (url) {
         resolved[campo] = url
       } else {
@@ -109,7 +127,7 @@ async function resolverFotosPendentes(data: Record<string, unknown>): Promise<{ 
       const obj = (item || {}) as Record<string, unknown>
       const foto = obj.foto
       if (typeof foto === 'string' && foto.startsWith('data:')) {
-        const url = await uploadBase64Foto(foto, `FotoAlmoco_${obj.data || 'x'}`, osId)
+        const url = await upload(foto, `FotoAlmoco_${obj.data || 'x'}`)
         if (url) {
           resolvedAlmocos.push({ ...obj, foto: url })
         } else {
@@ -137,7 +155,7 @@ async function resolverFotosPendentes(data: Record<string, unknown>): Promise<{ 
     for (let i = 0; i < extras.length; i++) {
       const foto = extras[i] as string
       if (typeof foto === 'string' && foto.startsWith('data:')) {
-        const url = await uploadBase64Foto(foto, `FotoExtra${i + 1}`, osId)
+        const url = await upload(foto, `FotoExtra${i + 1}`)
         if (url) {
           resolvedExtras.push(url)
         } else {
@@ -162,7 +180,7 @@ async function resolverFotosPendentes(data: Record<string, unknown>): Promise<{ 
   for (const campo of ['AssCliente', 'AssTecnico']) {
     const valor = resolved[campo]
     if (typeof valor === 'string' && valor.startsWith('data:')) {
-      const url = await uploadBase64Foto(valor, campo, osId)
+      const url = await upload(valor, campo)
       if (url) {
         resolved[campo] = url
       } else {
@@ -171,108 +189,148 @@ async function resolverFotosPendentes(data: Record<string, unknown>): Promise<{ 
     }
   }
 
-  return { data: resolved, pendente }
+  return { data: resolved, pendente, subiu: jaSubidas.size > 0 }
 }
 
-export async function processQueue(): Promise<number> {
-  if (syncing) return 0
-  if (!navigator.onLine) return 0
+export function processQueue(): Promise<number> {
+  if (typeof navigator === 'undefined' || !navigator.onLine) return Promise.resolve(0)
+  // Já tem sync rodando: devolve o mesmo resultado em vez de 0
+  if (syncingPromise) return syncingPromise
+  const p = runQueue().finally(() => { syncingPromise = null })
+  syncingPromise = p
+  return p
+}
 
-  syncing = true
+/** Insert de relatório que já existe no banco vira update — evita linha
+ *  duplicada quando o insert original "deu timeout" mas chegou no servidor,
+ *  ou quando a OS foi aberta offline sem o IdOs em cache. */
+async function resolverInsertDuplicado(item: SyncItem, data: Record<string, unknown>): Promise<{ action: SyncItem['action']; match?: Record<string, unknown> }> {
+  if (item.action !== 'insert' || item.table !== 'Ordem_Servico_Tecnicos' || !data.Ordem_Servico) {
+    return { action: item.action, match: item.match }
+  }
+  const { data: existente, error } = await withTimeout(
+    supabase.from('Ordem_Servico_Tecnicos').select('IdOs')
+      .eq('Ordem_Servico', data.Ordem_Servico as string)
+      .order('IdOs', { ascending: false }).limit(1),
+  )
+  if (error) throw new Error(error.message)
+  const idOs = (existente as { IdOs: number }[] | null)?.[0]?.IdOs
+  if (idOs) return { action: 'update', match: { IdOs: idOs } }
+  return { action: 'insert' }
+}
+
+async function runQueue(): Promise<number> {
   let processed = 0
 
-  try {
-    const items = await getQueue()
-    if (items.length === 0) return 0
+  const items = await getQueue()
+  if (items.length === 0) return 0
 
-    console.log(`[sync] Processando ${items.length} item(s) pendente(s)...`)
+  console.log(`[sync] Processando ${items.length} item(s) pendente(s)...`)
 
-    for (const item of items) {
-      if (item.failed) continue
-      try {
-        // Resolver fotos base64 antes de gravar
-        let data = item.data
-        let fotoPendente = false
-        if (item.table === 'Ordem_Servico_Tecnicos') {
-          const r = await resolverFotosPendentes(item.data)
-          data = r.data
-          fotoPendente = r.pendente
+  for (const item of items) {
+    if (item.failed) continue
+    // Sinal caiu no meio: para aqui. Seguir adiante só acumula timeouts de
+    // 45s por item e pode gravar itens fora de ordem (ex.: status da OS sem
+    // o relatório). O resto sobe no próximo sync.
+    if (!navigator.onLine) break
+    let redeCaiu = false
+    try {
+      // Resolver fotos base64 antes de gravar
+      let data = item.data
+      let fotoPendente = false
+      if (item.table === 'Ordem_Servico_Tecnicos') {
+        const r = await resolverFotosPendentes(item.data)
+        // Guarda as URLs já subidas na fila: se a gravação abaixo falhar por
+        // rede, a próxima tentativa não re-envia as mesmas fotos (sinal fraco)
+        if (r.subiu && item.id) {
+          await updateQueueItem(item.id, { data: r.data })
         }
+        data = r.data
+        fotoPendente = r.pendente
+      }
 
-        let result
+      const { action, match } = await resolverInsertDuplicado(item, data)
 
-        if (item.action === 'insert') {
-          result = await withTimeout(supabase.from(item.table).insert(data))
-        } else if (item.action === 'update' && item.match) {
-          let query = supabase.from(item.table).update(data)
-          for (const [k, v] of Object.entries(item.match)) {
-            query = query.eq(k, v)
-          }
-          result = await withTimeout(query)
-        } else if (item.action === 'upsert') {
-          result = await withTimeout(supabase.from(item.table).upsert(data))
-        } else if (item.action === 'delete' && item.match) {
-          let query = supabase.from(item.table).delete()
-          for (const [k, v] of Object.entries(item.match)) {
-            query = query.eq(k, v)
-          }
-          result = await withTimeout(query)
+      let result
+
+      if (action === 'insert') {
+        result = await withTimeout(supabase.from(item.table).insert(data))
+      } else if (action === 'update' && match) {
+        let query = supabase.from(item.table).update(data)
+        for (const [k, v] of Object.entries(match)) {
+          query = query.eq(k, v)
         }
-
-        if (result?.error) {
-          const retries = (item.retries || 0) + 1
-          const errMsg = result.error.message || String(result.error)
-          if (isNetworkError(result.error)) {
-            // Rede ruim: registra a tentativa mas NUNCA marca como falha
-            console.warn(`[sync] Item ${item.id} falhou por rede (tentativa ${retries}), fica na fila:`, errMsg)
-            if (item.id) await updateQueueItem(item.id, { retries, lastError: errMsg })
-          } else if (retries >= MAX_RETRIES) {
-            console.error(`[sync] Item ${item.id} falhou ${MAX_RETRIES}x, marcando como falha permanente:`, result.error)
-            if (item.id) await updateQueueItem(item.id, { retries, failed: true, failedAt: Date.now(), lastError: errMsg })
-            await logFailureToServer(item, errMsg)
-            syncFailListeners.forEach(cb => cb(item, errMsg))
-          } else {
-            console.warn(`[sync] Item ${item.id} falhou (tentativa ${retries}/${MAX_RETRIES}):`, errMsg)
-            if (item.id) await updateQueueItem(item.id, { retries, lastError: errMsg })
-          }
-          continue
+        result = await withTimeout(query)
+      } else if (action === 'upsert') {
+        result = await withTimeout(supabase.from(item.table).upsert(data))
+      } else if (action === 'delete' && match) {
+        let query = supabase.from(item.table).delete()
+        for (const [k, v] of Object.entries(match)) {
+          query = query.eq(k, v)
         }
+        result = await withTimeout(query)
+      }
 
-        if (fotoPendente && item.id) {
-          // Dados gravados no banco mas algumas fotos ficaram como base64.
-          // Atualiza o item na fila com os dados parcialmente resolvidos
-          // para tentar subir as fotos restantes no próximo sync.
-          await updateQueueItem(item.id, { data, action: 'update', match: item.match || { IdOs: data.Ordem_Servico } })
-          console.warn(`[sync] Item ${item.id} gravado, mas ${item.table} tem fotos pendentes — tentará de novo`)
-        } else {
-          if (item.id) await removeFromQueue(item.id)
-          console.log(`[sync] Item ${item.id} sincronizado (${item.table}/${item.action})`)
-        }
-        processed++
-      } catch (err) {
-        console.error(`[sync] Erro no item ${item.id}:`, err)
+      if (result?.error) {
         const retries = (item.retries || 0) + 1
-        const errMsg = String((err as { message?: string })?.message || err)
-        if (item.id) {
-          if (isNetworkError(err)) {
-            // Rede ruim (timeout do withTimeout cai aqui): fica na fila pra sempre
-            await updateQueueItem(item.id, { retries, lastError: errMsg })
-          } else if (retries >= MAX_RETRIES) {
-            await updateQueueItem(item.id, { retries, failed: true, failedAt: Date.now(), lastError: errMsg })
-            await logFailureToServer(item, errMsg)
-            syncFailListeners.forEach(cb => cb(item, errMsg))
-          } else {
-            await updateQueueItem(item.id, { retries, lastError: errMsg })
-          }
+        const errMsg = result.error.message || String(result.error)
+        if (isNetworkError(result.error)) {
+          // Rede ruim: registra a tentativa mas NUNCA marca como falha
+          console.warn(`[sync] Item ${item.id} falhou por rede (tentativa ${retries}), fica na fila:`, errMsg)
+          if (item.id) await updateQueueItem(item.id, { retries, lastError: errMsg })
+          redeCaiu = true
+        } else if (retries >= MAX_RETRIES) {
+          console.error(`[sync] Item ${item.id} falhou ${MAX_RETRIES}x, marcando como falha permanente:`, result.error)
+          if (item.id) await updateQueueItem(item.id, { retries, failed: true, failedAt: Date.now(), lastError: errMsg })
+          await logFailureToServer(item, errMsg)
+          syncFailListeners.forEach(cb => cb(item, errMsg))
+        } else {
+          console.warn(`[sync] Item ${item.id} falhou (tentativa ${retries}/${MAX_RETRIES}):`, errMsg)
+          if (item.id) await updateQueueItem(item.id, { retries, lastError: errMsg })
+        }
+        if (redeCaiu) break
+        continue
+      }
+
+      if (fotoPendente && item.id) {
+        // Dados gravados no banco mas algumas fotos ficaram como base64.
+        // Atualiza o item na fila com os dados parcialmente resolvidos
+        // para tentar subir as fotos restantes no próximo sync.
+        // (match por Ordem_Servico: antes usava { IdOs: Ordem_Servico } —
+        // código da OS no campo numérico — e as fotos nunca subiam.)
+        await updateQueueItem(item.id, {
+          data, action: 'update',
+          match: match && action === 'update' ? match : { Ordem_Servico: data.Ordem_Servico },
+        })
+        console.warn(`[sync] Item ${item.id} gravado, mas ${item.table} tem fotos pendentes — tentará de novo`)
+      } else {
+        if (item.id) await removeFromQueue(item.id)
+        console.log(`[sync] Item ${item.id} sincronizado (${item.table}/${action})`)
+      }
+      processed++
+    } catch (err) {
+      console.error(`[sync] Erro no item ${item.id}:`, err)
+      const retries = (item.retries || 0) + 1
+      const errMsg = String((err as { message?: string })?.message || err)
+      if (isNetworkError(err)) redeCaiu = true
+      if (item.id) {
+        if (redeCaiu) {
+          // Rede ruim (timeout do withTimeout cai aqui): fica na fila pra sempre
+          await updateQueueItem(item.id, { retries, lastError: errMsg })
+        } else if (retries >= MAX_RETRIES) {
+          await updateQueueItem(item.id, { retries, failed: true, failedAt: Date.now(), lastError: errMsg })
+          await logFailureToServer(item, errMsg)
+          syncFailListeners.forEach(cb => cb(item, errMsg))
+        } else {
+          await updateQueueItem(item.id, { retries, lastError: errMsg })
         }
       }
+      if (redeCaiu) break
     }
+  }
 
-    if (processed > 0) {
-      console.log(`[sync] ${processed} item(s) sincronizado(s) com sucesso`)
-    }
-  } finally {
-    syncing = false
+  if (processed > 0) {
+    console.log(`[sync] ${processed} item(s) sincronizado(s) com sucesso`)
   }
 
   return processed
@@ -299,22 +357,28 @@ export async function ressuscitarFalhasDeRede(): Promise<number> {
 /** Registra listeners para sync automático quando volta online */
 export function startAutoSync() {
   if (typeof window === 'undefined') return
+  // Registra os listeners uma vez só (o componente pode montar de novo —
+  // StrictMode, troca de layout — e cada montagem duplicava os listeners)
+  if (autoSyncStarted) return
+  autoSyncStarted = true
+
+  const sync = () => { processQueue().catch(err => console.error('[sync] Erro no sync:', err)) }
 
   // Sync quando volta online
   window.addEventListener('online', () => {
     console.log('[sync] Conexão restaurada, sincronizando...')
-    processQueue()
+    sync()
   })
 
   // Sync quando o app volta ao foco
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && navigator.onLine) {
-      processQueue()
+      sync()
     }
   })
 
   // Sync inicial se tiver internet (antes, devolve pra fila o que morreu por rede)
   if (navigator.onLine) {
-    ressuscitarFalhasDeRede().then(() => processQueue())
+    ressuscitarFalhasDeRede().then(sync, sync)
   }
 }

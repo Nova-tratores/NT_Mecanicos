@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
+import { requireUser } from '@/app/api/_lib/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
@@ -11,6 +12,12 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
     const { action } = body
+
+    // Só abrir pelo link de compartilhamento (token) é público; o resto exige login
+    if (!(action === 'carregar' && body.token)) {
+      const auth = await requireUser(req)
+      if (auth instanceof NextResponse) return auth
+    }
 
     // ── Listar carrinhos ──
     if (action === 'listar') {

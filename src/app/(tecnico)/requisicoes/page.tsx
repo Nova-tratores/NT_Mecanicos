@@ -1,13 +1,15 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
 import { supabase } from '@/lib/supabase'
 import { offlineWrite } from '@/lib/offlineWrite'
 import { cacheInvalidate } from '@/lib/cache'
+import { getCachedRequisicoes } from '@/lib/prefetch'
+import { fmtData } from '@/lib/garantias/format'
 import {
   FilePlus, FileCheck, History, ClipboardList, XCircle,
-  CheckCircle2, Clock, Package,
+  CheckCircle2, Clock, Package, WifiOff,
 } from 'lucide-react'
 import Link from 'next/link'
 import { notificarPortalReq } from '@/lib/notificarPortal'
@@ -59,10 +61,36 @@ async function fetchReqData(nome: string, tecnicoNome: string): Promise<ReqData>
       .limit(50),
   ])
 
+  // Falha de rede/consulta tem que lançar: senão o useCached grava listas
+  // vazias por cima do cache bom e a tela diz "nenhuma requisição".
+  const erro = pendRes.error || envRes.error || histRes.error
+  if (erro) throw new Error(erro.message)
+
   return {
     pendentes: (pendRes.data || []) as RequisicaoPOS[],
     enviadas: (envRes.data || []) as RequisicaoPOS[],
     historico: (histRes.data || []) as RequisicaoPOS[],
+  }
+}
+
+/** valor_despeza é texto digitado pelo técnico ("1.250,50", "150,00", "150.5").
+ *  Number("150,00") dava NaN e a tela mostrava "R$ NaN". */
+function fmtValorReq(v: string | null): string {
+  if (!v) return ''
+  const s = String(v).replace(/[R$\s]/g, '')
+  const milharBR = /^\d{1,3}(\.\d{3})+$/.test(s) // "1.250" = mil duzentos e cinquenta
+  const n = Number(s.includes(',') || milharBR ? s.replace(/\./g, '').replace(',', '.') : s)
+  if (!isFinite(n)) return `R$ ${v}`
+  return `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+/** Monta as 3 listas a partir do prefetch offline (Requisicao select *) */
+function separarReqs(rows: RequisicaoPOS[]): ReqData {
+  const pedidos = rows.filter((r) => r.status === 'pedido')
+  return {
+    pendentes: pedidos.filter((r) => !r.recibo_fornecedor),
+    enviadas: pedidos,
+    historico: rows.filter((r) => r.status !== 'pedido' && r.status !== 'lixeira').slice(0, 50),
   }
 }
 
@@ -89,28 +117,53 @@ export default function RequisicoesHub() {
 
   const [aba, setAba] = useState<'atualizar' | 'enviadas' | 'historico'>('enviadas')
   const [cancelando, setCancelando] = useState<number | null>(null)
+  const cancelandoRef = useRef(false)
 
-  const { pendentes = [], enviadas = [], historico = [] } = data || {}
+  // Sem cache e sem rede: cai nos dados baixados pelo prefetch
+  const [fallback, setFallback] = useState<ReqData | null>(null)
+  useEffect(() => {
+    if (loading || data || !user) return
+    let vivo = true
+    getCachedRequisicoes()
+      .then((rows) => { if (vivo && rows) setFallback(separarReqs(rows as unknown as RequisicaoPOS[])) })
+      .catch(() => {})
+    return () => { vivo = false }
+  }, [loading, data, user])
+
+  const usandoFallback = !data && !!fallback
+  const semDados = !loading && !!user && !data && !fallback
+  const { pendentes = [], enviadas = [], historico = [] } = data || fallback || {}
 
   const solicitarCancelamento = async (id: number) => {
+    // Guarda síncrona contra toque duplo (o disabled só vale após o re-render)
+    if (cancelandoRef.current) return
     const confirmar = window.confirm('Tem certeza que deseja solicitar o cancelamento desta requisição?')
     if (!confirmar) return
+    cancelandoRef.current = true
     setCancelando(id)
-    const req = enviadas.find(r => r.id === id)
-    const res = await offlineWrite({
-      table: 'Requisicao', action: 'update', data: { status: 'cancelar' }, match: { id },
-    })
-    if (!res.ok) {
-      alert('Erro ao solicitar cancelamento. Tente novamente.')
-    } else {
-      notificarPortalReq(
-        'Solicitação de Cancelamento',
-        `Técnico ${nome} solicitou cancelamento da requisição #${id}${req ? ` — ${req.titulo}` : ''}`
-      )
-      cacheInvalidate(cacheKey)
-      refresh()
+    try {
+      const req = enviadas.find(r => r.id === id)
+      const res = await offlineWrite({
+        table: 'Requisicao', action: 'update', data: { status: 'cancelar' }, match: { id },
+      })
+      if (!res.ok) {
+        alert('Erro ao solicitar cancelamento. Tente novamente.')
+      } else {
+        notificarPortalReq(
+          'Solicitação de Cancelamento',
+          `Técnico ${nome} solicitou cancelamento da requisição #${id}${req ? ` — ${req.titulo}` : ''}`
+        )
+        if (res.queued) alert('Sem sinal agora — o pedido de cancelamento será enviado assim que a conexão voltar.')
+        cacheInvalidate(cacheKey)
+        refresh()
+      }
+    } catch (err) {
+      console.error('[requisicoes] cancelar:', err)
+      alert('Erro ao solicitar cancelamento. Verifique o sinal e tente novamente.')
+    } finally {
+      cancelandoRef.current = false
+      setCancelando(null)
     }
-    setCancelando(null)
   }
 
   return (
@@ -121,7 +174,7 @@ export default function RequisicoesHub() {
         title="Requisições"
         action={
           <Link href="/requisicoes/nova" style={{
-            background: colors.primary, borderRadius: radius.md, padding: '10px 16px',
+            background: colors.primary, borderRadius: radius.md, padding: '10px 16px', minHeight: 44,
             color: '#fff', textDecoration: 'none',
             display: 'flex', alignItems: 'center', gap: 6,
             fontSize: 13, fontWeight: 700,
@@ -132,6 +185,29 @@ export default function RequisicoesHub() {
           </Link>
         }
       />
+
+      {(usandoFallback || semDados) && (
+        <div role="status" style={{
+          display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+          padding: '10px 12px', borderRadius: radius.md,
+          background: usandoFallback ? colors.warningBg : colors.dangerBg,
+          color: usandoFallback ? '#92400E' : colors.danger,
+          fontSize: 13, fontWeight: 600,
+        }}>
+          <WifiOff size={15} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1, minWidth: 0 }}>
+            {usandoFallback
+              ? 'Sem conexão — mostrando as requisições salvas no aparelho.'
+              : 'Não foi possível carregar as requisições. Verifique o sinal.'}
+          </span>
+          <button type="button" onClick={refresh} style={{
+            minHeight: 40, padding: '0 12px', borderRadius: radius.md, border: 'none',
+            background: '#fff', color: 'inherit', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+          }}>
+            Tentar de novo
+          </button>
+        </div>
+      )}
 
       {/* Métricas */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
@@ -173,7 +249,7 @@ export default function RequisicoesHub() {
                 iconBg={colors.warningBg}
                 badge={<ReqBadge id={req.id} status="pendente" />}
                 title={req.titulo}
-                subtitle={`${req.tipo} · ${new Date(req.data).toLocaleDateString('pt-BR')}`}
+                subtitle={`${req.tipo} · ${fmtData(req.data)}`}
               />
             ))
           )}
@@ -209,7 +285,7 @@ export default function RequisicoesHub() {
                     iconBg={st.bg}
                     badge={<ReqBadge id={req.id} status={req.status} />}
                     title={req.titulo}
-                    subtitle={`${req.tipo} · ${req.data ? new Date(req.data).toLocaleDateString('pt-BR') : ''}`}
+                    subtitle={`${req.tipo} · ${fmtData(req.data)}`}
                   />
                   {podeCancelar && (
                     <div style={{ padding: '0 14px 12px' }}>
@@ -217,7 +293,7 @@ export default function RequisicoesHub() {
                         onClick={() => solicitarCancelamento(req.id)}
                         disabled={cancelando === req.id}
                         style={{
-                          width: '100%', padding: '9px 0',
+                          width: '100%', padding: '9px 0', minHeight: 40,
                           borderRadius: radius.md,
                           border: `1px solid ${colors.dangerBorder}`,
                           background: cancelando === req.id ? colors.dangerBg : colors.surface,
@@ -256,12 +332,12 @@ export default function RequisicoesHub() {
                   iconBg={st.bg}
                   badge={<ReqBadge id={req.id} status={req.status} color={colors.accent} />}
                   title={req.titulo}
-                  subtitle={`${req.tipo} · ${new Date(req.data).toLocaleDateString('pt-BR')}`}
+                  subtitle={`${req.tipo} · ${fmtData(req.data)}`}
                   meta={
                     req.fornecedor && (
-                      <span style={{ color: colors.success, fontWeight: 600 }}>
+                      <span style={{ color: colors.success, fontWeight: 600, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {req.fornecedor}
-                        {req.valor_despeza ? ` · R$ ${Number(req.valor_despeza).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : ''}
+                        {req.valor_despeza ? ` · ${fmtValorReq(req.valor_despeza)}` : ''}
                       </span>
                     )
                   }

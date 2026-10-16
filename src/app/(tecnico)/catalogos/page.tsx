@@ -1,4 +1,5 @@
 'use client'
+import { authHeaders } from '@/lib/supabase'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { colors, radius, shadow } from '@/lib/ui'
@@ -41,14 +42,44 @@ interface HistoricoEntry {
   id: string; acao: string; descricao: string; quem: string; created_at: string
 }
 
-async function api(body: Record<string, unknown>) {
-  const r = await fetch('/api/catalogo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  return r.json()
+const MSG_REDE = 'Sem conexão ou sinal fraco. Verifique a internet e tente novamente.'
+
+/**
+ * POST JSON que nunca rejeita: em falha de rede/timeout devolve { error, rede: true };
+ * em HTTP de erro devolve o corpo com `error` garantido. Antes um fetch sem sinal
+ * gerava unhandled rejection e deixava o spinner girando para sempre.
+ */
+async function postJson(url: string, body: Record<string, unknown>, ms = 20000) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), ms)
+  try {
+    const r = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+      body: JSON.stringify(body), signal: ctrl.signal,
+    })
+    const data = await r.json().catch(() => null)
+    if (!r.ok) {
+      return data && typeof data === 'object' && !Array.isArray(data)
+        ? { ...data, error: data.error || 'Erro no servidor' }
+        : { error: 'Erro no servidor' }
+    }
+    return data ?? { error: 'Resposta inválida do servidor' }
+  } catch {
+    return { error: MSG_REDE, rede: true }
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
-async function apiCart(body: Record<string, unknown>) {
-  const r = await fetch('/api/catalogo/carrinho', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-  return r.json()
+function api(body: Record<string, unknown>) { return postJson('/api/catalogo', body) }
+function apiCart(body: Record<string, unknown>) { return postJson('/api/catalogo/carrinho', body) }
+
+function lista<T>(x: unknown): T[] { return Array.isArray(x) ? (x as T[]) : [] }
+
+function normFigura(d: unknown): FiguraDetalhe | null {
+  const f = d as FiguraDetalhe & { error?: string } | null
+  if (!f || typeof f !== 'object' || f.error || !f.id) return null
+  return { ...f, pecas: lista<Peca>(f.pecas), hotspots: lista<Hotspot>(f.hotspots) }
 }
 
 function IconeSecao({ secao }: { secao: string }) {
@@ -60,7 +91,9 @@ function IconeSecao({ secao }: { secao: string }) {
 }
 
 function tempoAtras(data: string) {
-  const diff = Date.now() - new Date(data).getTime()
+  const t = new Date(data).getTime()
+  if (Number.isNaN(t)) return ''
+  const diff = Date.now() - t
   const min = Math.floor(diff / 60000)
   if (min < 1) return 'Agora'
   if (min < 60) return `Há ${min}min`
@@ -127,8 +160,28 @@ export default function CatalogosPage() {
   const searchParams = useSearchParams()
   const totalCarrinho = itensAtivos.reduce((s, i) => s + i.qtd, 0)
   const skipPushRef = useRef(false)
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  // Sequência de navegação: descarta respostas lentas de telas que o usuário já deixou
+  const navSeq = useRef(0)
+  const [erroCarga, setErroCarga] = useState('')
+  const retryRef = useRef<(() => void) | null>(null)
+  const addingRef = useRef(false)
+  const [adicionando, setAdicionando] = useState(false)
+  const criandoRef = useRef(false)
+  const itemBusyRef = useRef<Set<string>>(new Set())
 
-  function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(''), 2500) }
+  function showToast(msg: string) {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast(msg)
+    toastTimer.current = setTimeout(() => setToast(''), 2500)
+  }
+  useEffect(() => () => { if (toastTimer.current) clearTimeout(toastTimer.current) }, [])
+
+  /** Marca falha de carga: mostra mensagem e guarda como tentar de novo. */
+  function falhaCarga(data: { error?: string; rede?: boolean } | null | undefined, retry: () => void) {
+    setErroCarga(data?.rede ? MSG_REDE : 'Não foi possível carregar. Tente novamente.')
+    retryRef.current = retry
+  }
 
   useEffect(() => {
     const saved = localStorage.getItem('catalogo_usuario')
@@ -148,31 +201,43 @@ export default function CatalogosPage() {
     const urlFigura = params.get('figura')
 
     if (urlMarca) {
-      ;(async () => {
+      const carregarDeepLink = async () => {
         setLoading(true)
-        skipPushRef.current = true
-        setMarcaSel(urlMarca)
-        const mods: Modelo[] = await api({ action: 'modelos', marca: urlMarca })
-        setModelos(mods)
-        if (!urlModelo) { setVista('modelos'); setLoading(false); window.history.replaceState({ vista: 'modelos' }, '', window.location.href); return }
-        skipPushRef.current = true
-        setModeloSel(urlModelo)
-        setModeloObj(mods.find(m => m.nome === urlModelo) || null)
-        const secs: Secao[] = await api({ action: 'secoes', modelo: urlModelo })
-        setSecoes(secs)
-        if (!urlSecao) { setVista('secoes'); setLoading(false); window.history.replaceState({ vista: 'secoes' }, '', window.location.href); return }
-        skipPushRef.current = true
-        setSecaoSel(urlSecao)
-        const figs: Figura[] = await api({ action: 'figuras', modelo: urlModelo, secao: urlSecao })
-        setFiguras(figs)
-        if (!urlFigura) { setVista('figuras'); setLoading(false); window.history.replaceState({ vista: 'figuras' }, '', window.location.href); return }
-        skipPushRef.current = true
-        setVista('figura')
-        setZoom(1); setPan({ x: 0, y: 0 })
-        setFigDetalhe(await api({ action: 'figura', figuraId: urlFigura }))
-        setLoading(false)
-        window.history.replaceState({ vista: 'figura' }, '', window.location.href)
-      })()
+        setErroCarga('')
+        try {
+          skipPushRef.current = true
+          setMarcaSel(urlMarca)
+          const modsResp = await api({ action: 'modelos', marca: urlMarca })
+          const mods = lista<Modelo>(modsResp)
+          setModelos(mods)
+          if (modsResp?.error) falhaCarga(modsResp, carregarDeepLink)
+          if (!urlModelo) { setVista('modelos'); window.history.replaceState({ vista: 'modelos' }, '', window.location.href); return }
+          skipPushRef.current = true
+          setModeloSel(urlModelo)
+          setModeloObj(mods.find(m => m.nome === urlModelo) || null)
+          const secsResp = await api({ action: 'secoes', modelo: urlModelo })
+          setSecoes(lista<Secao>(secsResp))
+          if (secsResp?.error) falhaCarga(secsResp, carregarDeepLink)
+          if (!urlSecao) { setVista('secoes'); window.history.replaceState({ vista: 'secoes' }, '', window.location.href); return }
+          skipPushRef.current = true
+          setSecaoSel(urlSecao)
+          const figsResp = await api({ action: 'figuras', modelo: urlModelo, secao: urlSecao })
+          setFiguras(lista<Figura>(figsResp))
+          if (figsResp?.error) falhaCarga(figsResp, carregarDeepLink)
+          if (!urlFigura) { setVista('figuras'); window.history.replaceState({ vista: 'figuras' }, '', window.location.href); return }
+          skipPushRef.current = true
+          setVista('figura')
+          setZoom(1); setPan({ x: 0, y: 0 })
+          const figResp = await api({ action: 'figura', figuraId: urlFigura })
+          const fig = normFigura(figResp)
+          setFigDetalhe(fig)
+          if (!fig) falhaCarga(figResp, carregarDeepLink)
+          window.history.replaceState({ vista: 'figura' }, '', window.location.href)
+        } finally {
+          setLoading(false)
+        }
+      }
+      carregarDeepLink()
     } else {
       loadMarcas()
       window.history.replaceState({ vista: 'marcas' }, '', '/catalogos')
@@ -186,6 +251,7 @@ export default function CatalogosPage() {
         return
       }
       if (st.vista) {
+        setErroCarga('')
         skipPushRef.current = true
         setVista(st.vista)
         if (st.vista !== 'figura') setFigDetalhe(null)
@@ -200,7 +266,8 @@ export default function CatalogosPage() {
     if (!token) return
     ;(async () => {
       const data = await apiCart({ action: 'carregar', token })
-      if (data.carrinho) {
+      if (data?.error) { showToast(data.rede ? MSG_REDE : 'Não foi possível abrir o carrinho compartilhado'); return }
+      if (data?.carrinho) {
         const c = { id: data.carrinho.id, nome: data.carrinho.nome, share_token: data.carrinho.share_token }
         setCarrinhoAtivo(c)
         localStorage.setItem('catalogo_carrinho_ativo', JSON.stringify(c))
@@ -221,8 +288,14 @@ export default function CatalogosPage() {
     const cid = id || carrinhoAtivo?.id
     if (!cid) return
     const data = await apiCart({ action: 'carregar', id: cid })
-    if (data.error) {
-      if (carrinhoAtivo?.id === cid) {
+    // Falha de rede não significa que o carrinho sumiu — mantém o que está salvo
+    if (data?.rede) return
+    if (data?.error) {
+      // Lê do localStorage: `carrinhoAtivo` pode estar desatualizado nesta closure
+      // (ex.: chamada logo após setCarrinhoAtivo no mount)
+      let salvoId: string | undefined
+      try { salvoId = JSON.parse(localStorage.getItem('catalogo_carrinho_ativo') || 'null')?.id } catch { /* ignore */ }
+      if (carrinhoAtivo?.id === cid || salvoId === cid) {
         setCarrinhoAtivo(null)
         localStorage.removeItem('catalogo_carrinho_ativo')
       }
@@ -234,25 +307,39 @@ export default function CatalogosPage() {
   }
 
   async function loadCarrinhos(status: string) {
+    const seq = ++navSeq.current
     setLoading(true)
+    setErroCarga('')
     const data = await apiCart({ action: 'listar', status })
-    setCarrinhos(Array.isArray(data) ? data : [])
+    if (seq !== navSeq.current) return
+    setCarrinhos(lista<CarrinhoDB>(data))
+    if (data?.error) falhaCarga(data, () => loadCarrinhos(status))
     setLoading(false)
   }
 
   async function executarAdd(carrinhoId: string, usuario: string, peca: Peca, figura: { code: string; name: string }, qtd: number) {
-    await apiCart({
-      action: 'adicionar_item', carrinho_id: carrinhoId,
-      peca: { id: peca.id, code: peca.code, name: peca.name, reference: peca.reference },
-      figura, qtd, quem: usuario,
-    })
-    await recarregarCarrinho(carrinhoId)
-    setSheetAberta(false); setPecaSel(null)
-    showToast('Peça adicionada!')
+    // Evita item duplicado por toque duplo / Enter + clique
+    if (addingRef.current) return
+    addingRef.current = true
+    setAdicionando(true)
+    try {
+      const data = await apiCart({
+        action: 'adicionar_item', carrinho_id: carrinhoId,
+        peca: { id: peca.id, code: peca.code, name: peca.name, reference: peca.reference },
+        figura, qtd, quem: usuario,
+      })
+      if (data?.error) { showToast(data.rede ? MSG_REDE : 'Não foi possível adicionar a peça'); return }
+      await recarregarCarrinho(carrinhoId)
+      setSheetAberta(false); setPecaSel(null)
+      showToast('Peça adicionada!')
+    } finally {
+      addingRef.current = false
+      setAdicionando(false)
+    }
   }
 
   function handleAddToCart() {
-    if (!pecaSel || !figDetalhe) return
+    if (!pecaSel || !figDetalhe || addingRef.current) return
     const peca = pecaSel
     const figura = { code: figDetalhe.code, name: figDetalhe.name }
     const qtd = qtdSheet
@@ -287,14 +374,22 @@ export default function CatalogosPage() {
 
   async function handleCriarSubmit() {
     const nomeCar = nomeNovo.trim()
-    if (!nomeCar) return
+    if (!nomeCar || criandoRef.current) return
+    criandoRef.current = true
     const usuario = nomeUsuario
-    const data = await apiCart({ action: 'criar', nome: nomeCar, criado_por: usuario })
-    if (data.error) { showToast('Erro ao criar carrinho'); return }
+    let data
+    try {
+      data = await apiCart({ action: 'criar', nome: nomeCar, criado_por: usuario })
+    } finally {
+      criandoRef.current = false
+    }
+    if (data?.error || !data?.id) { showToast(data?.rede ? MSG_REDE : 'Erro ao criar carrinho'); return }
     const novoCart = { id: data.id, nome: data.nome, share_token: data.share_token }
     setCarrinhoAtivo(novoCart)
+    setItensAtivos([]); setHistoricoAtivo([])
     setShowCriarModal(false); setNomeNovo('')
     showToast('Carrinho criado!')
+    if (vista === 'carrinhos') loadCarrinhos(tabCarrinhos)
 
     if (pendingAdd.current) {
       const { peca, figura, qtd } = pendingAdd.current
@@ -304,20 +399,30 @@ export default function CatalogosPage() {
   }
 
   async function removerItemCarrinho(itemId: string) {
-    if (!carrinhoAtivo) return
-    await apiCart({ action: 'remover_item', carrinho_id: carrinhoAtivo.id, item_id: itemId, quem: nomeUsuario || 'Visitante' })
-    await recarregarCarrinho()
-    showToast('Peça removida')
+    if (!carrinhoAtivo || itemBusyRef.current.has(itemId)) return
+    itemBusyRef.current.add(itemId)
+    try {
+      const data = await apiCart({ action: 'remover_item', carrinho_id: carrinhoAtivo.id, item_id: itemId, quem: nomeUsuario || 'Visitante' })
+      if (data?.error) { showToast(data.rede ? MSG_REDE : 'Não foi possível remover a peça'); return }
+      await recarregarCarrinho()
+      showToast('Peça removida')
+    } finally {
+      itemBusyRef.current.delete(itemId)
+    }
   }
 
   async function alterarQtdItem(itemId: string, novaQtd: number) {
     if (!carrinhoAtivo || novaQtd < 1) return
-    await apiCart({ action: 'alterar_qtd', carrinho_id: carrinhoAtivo.id, item_id: itemId, qtd: novaQtd, quem: nomeUsuario || 'Visitante' })
+    // Otimista: toques rápidos em +/- usam a quantidade já atualizada
+    setItensAtivos(prev => prev.map(i => i.id === itemId ? { ...i, qtd: novaQtd } : i))
+    const data = await apiCart({ action: 'alterar_qtd', carrinho_id: carrinhoAtivo.id, item_id: itemId, qtd: novaQtd, quem: nomeUsuario || 'Visitante' })
+    if (data?.error) showToast(data.rede ? MSG_REDE : 'Não foi possível alterar a quantidade')
     await recarregarCarrinho()
   }
 
   async function mudarStatus(carrinhoId: string, status: string) {
-    await apiCart({ action: 'mudar_status', id: carrinhoId, status, quem: nomeUsuario || 'Sistema' })
+    const data = await apiCart({ action: 'mudar_status', id: carrinhoId, status, quem: nomeUsuario || 'Sistema' })
+    if (data?.error) { showToast(data.rede ? MSG_REDE : 'Não foi possível alterar o carrinho'); return }
     if (carrinhoAtivo?.id === carrinhoId && status !== 'aberto') {
       setCarrinhoAtivo(null)
       localStorage.removeItem('catalogo_carrinho_ativo')
@@ -330,7 +435,8 @@ export default function CatalogosPage() {
   }
 
   async function excluirCarrinho(carrinhoId: string) {
-    await apiCart({ action: 'excluir', id: carrinhoId })
+    const data = await apiCart({ action: 'excluir', id: carrinhoId })
+    if (data?.error) { showToast(data.rede ? MSG_REDE : 'Não foi possível excluir o carrinho'); return }
     if (carrinhoAtivo?.id === carrinhoId) {
       setCarrinhoAtivo(null)
       localStorage.removeItem('catalogo_carrinho_ativo')
@@ -348,9 +454,14 @@ export default function CatalogosPage() {
   }
 
   async function loadMarcas() {
+    const seq = ++navSeq.current
     setLoading(true)
-    const result: Marca[] = await api({ action: 'marcas' })
+    setErroCarga('')
+    const resp = await api({ action: 'marcas' })
+    if (seq !== navSeq.current) return
+    const result = lista<Marca>(resp)
     setMarcas(result)
+    if (resp?.error) falhaCarga(resp, loadMarcas)
     setLoading(false)
     if (result.length === 1) selecionarMarca(result[0].nome)
   }
@@ -375,8 +486,17 @@ export default function CatalogosPage() {
   async function selecionarMarca(marca: string) {
     setMarcaSel(marca); setVista('modelos')
     pushVista('modelos', catUrl({ marca }))
+    await carregarModelos(marca)
+  }
+
+  async function carregarModelos(marca: string) {
+    const seq = ++navSeq.current
     setLoading(true)
-    setModelos(await api({ action: 'modelos', marca }))
+    setErroCarga('')
+    const resp = await api({ action: 'modelos', marca })
+    if (seq !== navSeq.current) return
+    setModelos(lista<Modelo>(resp))
+    if (resp?.error) falhaCarga(resp, () => carregarModelos(marca))
     setLoading(false)
   }
 
@@ -384,26 +504,54 @@ export default function CatalogosPage() {
     setModeloSel(modelo); setModeloObj(modelos.find(m => m.nome === modelo) || null)
     setVista('secoes')
     pushVista('secoes', catUrl({ marca: marcaSel, modelo }))
+    await carregarSecoes(modelo)
+  }
+
+  async function carregarSecoes(modelo: string) {
+    const seq = ++navSeq.current
     setLoading(true)
-    setSecoes(await api({ action: 'secoes', modelo }))
+    setErroCarga('')
+    const resp = await api({ action: 'secoes', modelo })
+    if (seq !== navSeq.current) return
+    setSecoes(lista<Secao>(resp))
+    if (resp?.error) falhaCarga(resp, () => carregarSecoes(modelo))
     setLoading(false)
   }
 
   async function selecionarSecao(secao: string) {
     setSecaoSel(secao); setVista('figuras')
     pushVista('figuras', catUrl({ marca: marcaSel, modelo: modeloSel, secao }))
+    await carregarFiguras(modeloSel, secao)
+  }
+
+  async function carregarFiguras(modelo: string, secao: string) {
+    const seq = ++navSeq.current
     setLoading(true)
-    setFiguras(await api({ action: 'figuras', modelo: modeloSel, secao }))
+    setErroCarga('')
+    const resp = await api({ action: 'figuras', modelo, secao })
+    if (seq !== navSeq.current) return
+    setFiguras(lista<Figura>(resp))
+    if (resp?.error) falhaCarga(resp, () => carregarFiguras(modelo, secao))
     setLoading(false)
   }
 
   async function selecionarFigura(id: string) {
     setVista('figura')
     pushVista('figura', catUrl({ marca: marcaSel, modelo: modeloSel, secao: secaoSel, figura: id }))
-    setLoading(true)
     setZoom(1); setPan({ x: 0, y: 0 })
     setPecaSel(null); setSheetAberta(false)
-    setFigDetalhe(await api({ action: 'figura', figuraId: id }))
+    await carregarFigura(id)
+  }
+
+  async function carregarFigura(id: string) {
+    const seq = ++navSeq.current
+    setLoading(true)
+    setErroCarga('')
+    const resp = await api({ action: 'figura', figuraId: id })
+    if (seq !== navSeq.current) return
+    const fig = normFigura(resp)
+    setFigDetalhe(fig)
+    if (!fig) falhaCarga(resp, () => carregarFigura(id))
     setLoading(false)
   }
 
@@ -412,9 +560,17 @@ export default function CatalogosPage() {
   }
 
   const executarBusca = useCallback(async (q: string) => {
-    if (q.length < 2) { setResultadosBusca([]); return }
-    setLoading(true); setVista('busca')
-    setResultadosBusca(await api({ action: 'busca', busca: q }))
+    const termo = q.trim()
+    if (termo.length < 2) { setResultadosBusca([]); return }
+    const seq = ++navSeq.current
+    setLoading(true); setVista('busca'); setErroCarga('')
+    const resp = await api({ action: 'busca', busca: termo })
+    if (seq !== navSeq.current) return // resultado de uma busca anterior (mais lenta)
+    setResultadosBusca(lista<PecaBusca>(resp))
+    if (resp?.error) {
+      setErroCarga(resp.rede ? MSG_REDE : 'Não foi possível buscar. Tente novamente.')
+      retryRef.current = () => executarBusca(q)
+    }
     setLoading(false)
   }, [])
 
@@ -539,6 +695,10 @@ export default function CatalogosPage() {
         ctx.drawImage(img, 0, 0)
         baseImageRef.current = img
       }
+      img.onerror = () => {
+        setDesenhando(false)
+        showToast('Não foi possível carregar a imagem para rabiscar')
+      }
       img.src = figDetalhe.image_url
     }, 100)
   }
@@ -612,24 +772,32 @@ export default function CatalogosPage() {
   function salvarDesenho() {
     const canvas = canvasRef.current
     if (!canvas) return
-    canvas.toBlob(blob => {
-      if (!blob) return
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${figDetalhe?.code || 'figura'}-anotado.jpg`
-      a.click()
-      URL.revokeObjectURL(url)
-      setDesenhando(false)
-      showToast('Imagem salva!')
-    }, 'image/jpeg', 0.9)
+    try {
+      canvas.toBlob(blob => {
+        if (!blob) { showToast('Não foi possível salvar a imagem'); return }
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${figDetalhe?.code || 'figura'}-anotado.jpg`
+        a.click()
+        // Revogar na hora cancela o download em alguns navegadores (iOS/Firefox)
+        setTimeout(() => URL.revokeObjectURL(url), 10000)
+        setDesenhando(false)
+        showToast('Imagem salva!')
+      }, 'image/jpeg', 0.9)
+    } catch {
+      // Canvas "contaminado" (imagem sem CORS) lança SecurityError
+      showToast('Não foi possível salvar a imagem')
+    }
   }
 
   function baixarFiguraPdf() {
     if (!figDetalhe?.image_url) return
     const img = new Image()
     img.crossOrigin = 'anonymous'
+    img.onerror = () => showToast('Não foi possível carregar a imagem para o PDF')
     img.onload = () => {
+     try {
       const isLandscape = img.naturalWidth > img.naturalHeight
       const doc = new jsPDF({ orientation: isLandscape ? 'landscape' : 'portrait', unit: 'mm', format: 'a4' })
       const W = doc.internal.pageSize.getWidth()
@@ -651,6 +819,9 @@ export default function CatalogosPage() {
         .replace(/[^a-zA-Z0-9\s-]/g, '').replace(/\s+/g, '-').toLowerCase()
       doc.save(`${fileName}.pdf`)
       showToast('PDF baixado!')
+     } catch {
+      showToast('Não foi possível gerar o PDF')
+     }
     }
     img.src = figDetalhe.image_url
   }
@@ -658,7 +829,9 @@ export default function CatalogosPage() {
   function copiarLink() {
     const link = gerarLinkCarrinho()
     if (!link) return
-    navigator.clipboard?.writeText(link).then(() => showToast('Link copiado!'))
+    const fallback = () => { try { window.prompt('Copie o link:', link) } catch { /* ignore */ } }
+    if (!navigator.clipboard?.writeText) { fallback(); return }
+    navigator.clipboard.writeText(link).then(() => showToast('Link copiado!'), fallback)
   }
 
   function baixarPdf() {
@@ -692,20 +865,20 @@ export default function CatalogosPage() {
       if (i % 2 === 0) { doc.setFillColor(249, 250, 251); doc.rect(startX, y - 1, W - 28, 14, 'F') }
 
       doc.setTextColor(30, 58, 95); doc.setFont('helvetica', 'bold')
-      doc.text(item.peca_reference || '-', startX + 2, y + 4)
+      doc.text(String(item.peca_reference || '-'), startX + 2, y + 4)
 
       doc.setTextColor(50); doc.setFont('helvetica', 'bold')
-      doc.text(item.peca_code, 50, y + 4)
+      doc.text(String(item.peca_code || '-'), 50, y + 4)
 
       doc.setFont('helvetica', 'normal'); doc.setTextColor(80)
-      const nome = doc.splitTextToSize(item.peca_name, 70)
+      const nome = doc.splitTextToSize(String(item.peca_name || ''), 70)
       doc.text(nome[0] || '', 90, y + 4)
 
       doc.setTextColor(50); doc.setFont('helvetica', 'bold')
       doc.text(String(item.qtd), W - 20, y + 4, { align: 'right' })
 
       doc.setFontSize(7); doc.setFont('helvetica', 'normal'); doc.setTextColor(140)
-      doc.text(`${item.figura_code} — ${item.figura_name}`, 50, y + 9)
+      doc.text(`${item.figura_code || ''} — ${item.figura_name || ''}`, 50, y + 9)
       doc.setFontSize(8)
       y += 14
     })
@@ -723,6 +896,7 @@ export default function CatalogosPage() {
   }
 
   function voltar() {
+    setErroCarga('')
     if (zoom > 1) { setZoom(1); setPan({ x: 0, y: 0 }); wasZoomedRef.current = false; window.history.back(); return }
     if (vista === 'carrinho_detalhe') { setVista('carrinhos'); loadCarrinhos(tabCarrinhos); return }
     if (vista === 'carrinhos') { setVista(vistaAntes.current); return }
@@ -740,6 +914,7 @@ export default function CatalogosPage() {
 
   function irParaCarrinhos() {
     vistaAntes.current = vista
+    setErroCarga('')
     setVista('carrinhos')
     loadCarrinhos(tabCarrinhos)
   }
@@ -767,15 +942,15 @@ export default function CatalogosPage() {
       {/* ═══ HEADER ═══ */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16 }}>
         {vista !== 'marcas' && (
-          <button onClick={voltar} style={{
+          <button onClick={voltar} aria-label="Voltar" style={{
             background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: radius.sm,
-            width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
+            width: 40, height: 40, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
           }}>
             <ChevronLeft size={20} color={colors.text} />
           </button>
         )}
         <h1 style={{
-          fontSize: vista === 'figura' ? 16 : 20, fontWeight: 800, color: colors.primary, margin: 0, flex: 1,
+          fontSize: vista === 'figura' ? 16 : 20, fontWeight: 800, color: colors.primary, margin: 0, flex: 1, minWidth: 0,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>{titulo}</h1>
 
@@ -784,10 +959,10 @@ export default function CatalogosPage() {
             setBuscaAberta(!buscaAberta)
             if (!buscaAberta) setTimeout(() => buscaRef.current?.focus(), 100)
             else { setBusca(''); if (vista === 'busca') voltar() }
-          }} style={{
+          }} aria-label={buscaAberta ? 'Fechar busca' : 'Buscar peça'} style={{
             background: buscaAberta ? colors.primary : colors.surface,
             border: `1px solid ${buscaAberta ? colors.primary : colors.border}`,
-            borderRadius: radius.sm, width: 36, height: 36,
+            borderRadius: radius.sm, width: 40, height: 40, flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
           }}>
             {buscaAberta ? <X size={18} color="#fff" /> : <Search size={18} color={colors.textMuted} />}
@@ -795,9 +970,9 @@ export default function CatalogosPage() {
         )}
 
         {vista !== 'carrinhos' && vista !== 'carrinho_detalhe' && (
-          <button onClick={irParaCarrinhos} style={{
+          <button onClick={irParaCarrinhos} aria-label="Carrinhos" style={{
             position: 'relative', background: colors.surface, border: `1px solid ${colors.border}`,
-            borderRadius: radius.sm, width: 36, height: 36,
+            borderRadius: radius.sm, width: 40, height: 40, flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
           }}>
             <ShoppingCart size={18} color={colors.textMuted} />
@@ -818,7 +993,7 @@ export default function CatalogosPage() {
             setShowCriarModal(true)
           }} style={{
             background: colors.primary, border: 'none', borderRadius: radius.sm,
-            padding: '8px 14px', display: 'flex', alignItems: 'center', gap: 6,
+            padding: '8px 14px', minHeight: 40, flexShrink: 0, display: 'flex', alignItems: 'center', gap: 6,
             color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer',
           }}>
             <Plus size={16} /> Novo
@@ -832,8 +1007,8 @@ export default function CatalogosPage() {
           <input ref={buscaRef} value={busca} onChange={e => setBusca(e.target.value)}
             placeholder="Buscar peça por nome ou código..." style={{
               width: '100%', padding: '12px 14px', borderRadius: radius.md,
-              border: `1px solid ${colors.borderStrong}`, fontSize: 15,
-              outline: 'none', background: colors.surface,
+              border: `1px solid ${colors.borderStrong}`, fontSize: 16,
+              outline: 'none', background: colors.surface, boxSizing: 'border-box',
             }} />
         </div>
       )}
@@ -871,6 +1046,25 @@ export default function CatalogosPage() {
         </div>
       )}
 
+      {/* ═══ ERRO DE CARGA ═══ */}
+      {!loading && erroCarga && vista !== 'carrinho_detalhe' && (
+        <div style={{
+          background: colors.dangerBg, border: `1px solid ${colors.dangerBorder}`, borderRadius: radius.md,
+          padding: '12px 14px', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+        }}>
+          <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 600, color: colors.danger }}>{erroCarga}</span>
+          {(
+            <button onClick={() => { const r = retryRef.current; setErroCarga(''); r?.() }} style={{
+              padding: '8px 14px', minHeight: 40, borderRadius: radius.sm, border: `1px solid ${colors.dangerBorder}`,
+              background: colors.surface, color: colors.danger, fontSize: 13, fontWeight: 700, cursor: 'pointer',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              <RotateCcw size={14} /> Tentar novamente
+            </button>
+          )}
+        </div>
+      )}
+
       {/* ═══ MARCAS ═══ */}
       {!loading && vista === 'marcas' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -887,18 +1081,18 @@ export default function CatalogosPage() {
                   width: 48, height: 48, borderRadius: radius.sm, background: colors.accentBg,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 20, fontWeight: 800, color: colors.accent,
-                }}>{m.nome[0]}</div>
+                }}>{(m.nome || '?')[0]}</div>
               )}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: colors.text }}>{m.nome}</div>
                 <div style={{ fontSize: 12, color: colors.textMuted }}>
-                  {m.modelos} modelo{m.modelos !== 1 ? 's' : ''} • {m.tipos.join(', ')}
+                  {m.modelos} modelo{m.modelos !== 1 ? 's' : ''}{(m.tipos || []).length > 0 ? ` • ${(m.tipos || []).join(', ')}` : ''}
                 </div>
               </div>
               <ChevronRight size={20} color={colors.textSubtle} />
             </button>
           ))}
-          {marcas.length === 0 && (
+          {marcas.length === 0 && !erroCarga && (
             <div style={{ textAlign: 'center', padding: 40, color: colors.textMuted, fontSize: 14 }}>
               Nenhum catálogo disponível
             </div>
@@ -908,7 +1102,7 @@ export default function CatalogosPage() {
 
       {/* ═══ MODELOS ═══ */}
       {!loading && vista === 'modelos' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
           {modelos.map(m => (
             <button key={m.slug} onClick={() => selecionarModelo(m.nome)} className="hb" style={{
               display: 'flex', flexDirection: 'column', alignItems: 'center', padding: 12,
@@ -927,7 +1121,7 @@ export default function CatalogosPage() {
                   <Package size={32} color={colors.textGhost} />
                 </div>
               )}
-              <div style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{m.nome}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, maxWidth: '100%', overflowWrap: 'anywhere' }}>{m.nome}</div>
               {m.tipo && (
                 <span style={{
                   fontSize: 10, fontWeight: 600, padding: '2px 8px', borderRadius: 6, marginTop: 4,
@@ -993,7 +1187,7 @@ export default function CatalogosPage() {
 
       {/* ═══ FIGURAS ═══ */}
       {!loading && vista === 'figuras' && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 10 }}>
           {figuras.map(f => (
             <button key={f.id} onClick={() => selecionarFigura(f.id)} className="hb" style={{
               display: 'flex', flexDirection: 'column', padding: 8,
@@ -1010,7 +1204,7 @@ export default function CatalogosPage() {
                   <Layers size={28} color={colors.textGhost} />
                 )}
               </div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: colors.primary }}>{f.code}</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: colors.primary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' }}>{f.code}</div>
               <div style={{
                 fontSize: 12, fontWeight: 600, color: colors.text,
                 overflow: 'hidden', textOverflow: 'ellipsis',
@@ -1090,7 +1284,7 @@ export default function CatalogosPage() {
 
               {/* Fullscreen controls */}
               <div style={{
-                position: 'absolute', top: 16, left: 16, right: 16,
+                position: 'absolute', top: 'calc(16px + env(safe-area-inset-top, 0px))', left: 16, right: 16,
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center', zIndex: 82,
               }}>
                 <span style={{
@@ -1098,17 +1292,17 @@ export default function CatalogosPage() {
                   padding: '6px 12px', borderRadius: radius.md,
                 }}>{Math.round(zoom * 100)}%</span>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <button onClick={() => setZoom(z => Math.min(5, z + 0.5))} style={{
+                  <button onClick={() => setZoom(z => Math.min(5, z + 0.5))} aria-label="Aumentar zoom" style={{
                     background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
-                    borderRadius: radius.md, width: 36, height: 36,
+                    borderRadius: radius.md, width: 44, height: 44,
                     color: '#fff', cursor: 'pointer',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}>
                     <Plus size={18} />
                   </button>
-                  <button onClick={() => { setZoom(z => { const nz = Math.max(1, z - 0.5); if (nz <= 1) setPan({ x: 0, y: 0 }); return nz }) }} style={{
+                  <button onClick={() => { setZoom(z => Math.max(1, z - 0.5)); if (zoom - 0.5 <= 1) setPan({ x: 0, y: 0 }) }} aria-label="Diminuir zoom" style={{
                     background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
-                    borderRadius: radius.md, width: 36, height: 36,
+                    borderRadius: radius.md, width: 44, height: 44,
                     color: '#fff', cursor: 'pointer',
                     display: 'flex', alignItems: 'center', justifyContent: 'center',
                   }}>
@@ -1116,7 +1310,7 @@ export default function CatalogosPage() {
                   </button>
                   <button onClick={() => { setZoom(1); setPan({ x: 0, y: 0 }); setFullscreen(false) }} style={{
                     background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
-                    borderRadius: radius.md, padding: '6px 14px',
+                    borderRadius: radius.md, padding: '6px 14px', minHeight: 44,
                     fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer',
                     display: 'flex', alignItems: 'center', gap: 6,
                   }}>
@@ -1135,12 +1329,12 @@ export default function CatalogosPage() {
             }}>
               {/* Barra superior */}
               <div style={{
-                padding: '10px 12px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                padding: 'calc(10px + env(safe-area-inset-top, 0px)) 12px 10px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 background: 'rgba(0,0,0,0.85)', zIndex: 86, gap: 8,
               }}>
                 <button onClick={() => setDesenhando(false)} style={{
                   background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
-                  borderRadius: radius.md, padding: '6px 12px',
+                  borderRadius: radius.md, padding: '6px 12px', minHeight: 40,
                   fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer',
                   display: 'flex', alignItems: 'center', gap: 4,
                 }}>
@@ -1149,7 +1343,7 @@ export default function CatalogosPage() {
                 <span style={{ fontSize: 13, fontWeight: 700, color: '#fff', flex: 1, textAlign: 'center' }}>Rabiscar</span>
                 <button onClick={salvarDesenho} style={{
                   background: colors.success, border: 'none',
-                  borderRadius: radius.md, padding: '6px 12px',
+                  borderRadius: radius.md, padding: '6px 12px', minHeight: 40,
                   fontSize: 12, fontWeight: 700, color: '#fff', cursor: 'pointer',
                   display: 'flex', alignItems: 'center', gap: 4,
                 }}>
@@ -1172,7 +1366,7 @@ export default function CatalogosPage() {
               </div>
               {/* Barra inferior: Desfazer + Limpar tudo */}
               <div style={{
-                padding: '10px 16px', display: 'flex', justifyContent: 'center', gap: 12,
+                padding: '10px 16px calc(10px + env(safe-area-inset-bottom, 0px))', display: 'flex', justifyContent: 'center', gap: 12,
                 background: 'rgba(0,0,0,0.85)', zIndex: 86,
               }}>
                 <button onClick={desfazerRabisco} style={{
@@ -1296,7 +1490,7 @@ export default function CatalogosPage() {
 
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <div style={{
-              display: 'grid', gridTemplateColumns: '36px 1fr 50px 40px',
+              display: 'grid', gridTemplateColumns: '36px minmax(0, 1fr) 50px 40px',
               padding: '8px 10px', background: colors.accent, borderRadius: `${radius.sm}px ${radius.sm}px 0 0`,
               fontSize: 10, fontWeight: 700, color: '#fff', textTransform: 'uppercase', letterSpacing: 0.5,
             }}>
@@ -1310,7 +1504,7 @@ export default function CatalogosPage() {
                   onPointerEnter={() => setRefHover(p.reference)}
                   onPointerLeave={() => setRefHover(null)}
                   style={{
-                    display: 'grid', gridTemplateColumns: '36px 1fr 50px 40px',
+                    display: 'grid', gridTemplateColumns: '36px minmax(0, 1fr) 50px 40px',
                     padding: '10px 10px', cursor: 'pointer', alignItems: 'center',
                     background: ativo ? colors.primaryBg : i % 2 === 0 ? colors.surface : colors.surfaceAlt,
                     borderLeft: ativo ? `3px solid ${colors.primary}` : '3px solid transparent',
@@ -1324,7 +1518,7 @@ export default function CatalogosPage() {
                     border: '2px solid #fff', boxShadow: shadow.sm,
                   }}>{p.reference || '-'}</span>
                   <div style={{ minWidth: 0, paddingLeft: 6 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: colors.text }}>{p.code}</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.code}</div>
                     <div style={{
                       fontSize: 11, color: colors.textMuted,
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -1428,7 +1622,7 @@ export default function CatalogosPage() {
                   }} onClick={() => selecionarCarrinho(c)}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 15, fontWeight: 700, color: colors.text, marginBottom: 4 }}>{c.nome}</div>
+                        <div style={{ fontSize: 15, fontWeight: 700, color: colors.text, marginBottom: 4, overflowWrap: 'anywhere' }}>{c.nome}</div>
                         <div style={{ fontSize: 12, color: colors.textMuted }}>
                           {count} {count === 1 ? 'peça' : 'peças'} • {tempoAtras(c.updated_at)}
                         </div>
@@ -1529,16 +1723,16 @@ export default function CatalogosPage() {
                                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                               }}>{item.peca_reference}</span>
                             )}
-                            <div style={{ fontSize: 14, fontWeight: 700, color: colors.primary }}>{item.peca_code}</div>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: colors.primary, minWidth: 0, overflowWrap: 'anywhere' }}>{item.peca_code}</div>
                           </div>
-                          <div style={{ fontSize: 13, color: colors.text }}>{item.peca_name}</div>
+                          <div style={{ fontSize: 13, color: colors.text, overflowWrap: 'anywhere' }}>{item.peca_name}</div>
                           <div style={{ fontSize: 11, color: colors.textSubtle, marginTop: 2 }}>
                             {item.figura_code} — {item.figura_name}
                           </div>
                         </div>
-                        <button onClick={() => removerItemCarrinho(item.id)} style={{
+                        <button onClick={() => removerItemCarrinho(item.id)} aria-label="Remover peça" style={{
                           background: colors.dangerBg, border: `1px solid ${colors.dangerBorder}`, borderRadius: radius.sm,
-                          width: 32, height: 32, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                          width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
                           cursor: 'pointer', flexShrink: 0, marginLeft: 8,
                         }}>
                           <Trash2 size={14} color={colors.danger} />
@@ -1546,8 +1740,8 @@ export default function CatalogosPage() {
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                         <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted }}>Qtd:</span>
-                        <button onClick={() => alterarQtdItem(item.id, item.qtd - 1)} style={{
-                          width: 32, height: 32, borderRadius: radius.sm, border: `1px solid ${colors.border}`,
+                        <button onClick={() => alterarQtdItem(item.id, item.qtd - 1)} disabled={item.qtd <= 1} aria-label="Diminuir quantidade" style={{
+                          width: 40, height: 40, opacity: item.qtd <= 1 ? 0.4 : 1, borderRadius: radius.sm, border: `1px solid ${colors.border}`,
                           background: colors.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
                         }}>
                           <Minus size={14} color={colors.text} />
@@ -1555,8 +1749,8 @@ export default function CatalogosPage() {
                         <span style={{ fontSize: 16, fontWeight: 700, color: colors.text, minWidth: 30, textAlign: 'center' }}>
                           {item.qtd}
                         </span>
-                        <button onClick={() => alterarQtdItem(item.id, item.qtd + 1)} style={{
-                          width: 32, height: 32, borderRadius: radius.sm, border: `1px solid ${colors.border}`,
+                        <button onClick={() => alterarQtdItem(item.id, item.qtd + 1)} aria-label="Aumentar quantidade" style={{
+                          width: 40, height: 40, borderRadius: radius.sm, border: `1px solid ${colors.border}`,
                           background: colors.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
                         }}>
                           <Plus size={14} color={colors.text} />
@@ -1691,18 +1885,18 @@ export default function CatalogosPage() {
       {/* ═══ BARRA FLUTUANTE DO CARRINHO ═══ */}
       {showFloating && (
         <button onClick={irParaCarrinhoDetalhe} style={{
-          position: 'fixed', bottom: 70, left: 16, right: 16,
+          position: 'fixed', bottom: 'calc(70px + env(safe-area-inset-bottom, 0px))', left: 16, right: 16, gap: 10,
           background: colors.primary, color: '#fff', borderRadius: radius.lg,
           padding: '14px 20px', border: 'none', cursor: 'pointer',
           boxShadow: '0 4px 20px rgba(196,30,42,0.35)',
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           zIndex: 50,
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <ShoppingCart size={20} />
-            <span style={{ fontSize: 15, fontWeight: 700 }}>{carrinhoAtivo?.nome || 'Carrinho'}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+            <ShoppingCart size={20} style={{ flexShrink: 0 }} />
+            <span style={{ fontSize: 15, fontWeight: 700, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{carrinhoAtivo?.nome || 'Carrinho'}</span>
           </div>
-          <span style={{
+          <span style={{ flexShrink: 0,
             background: '#fff', color: colors.primary, fontSize: 13, fontWeight: 800,
             borderRadius: radius.pill, padding: '4px 12px',
           }}>{totalCarrinho} {totalCarrinho === 1 ? 'item' : 'itens'}</span>
@@ -1718,7 +1912,7 @@ export default function CatalogosPage() {
           <div style={{
             position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 91,
             background: colors.surface, borderRadius: `${radius.xl}px ${radius.xl}px 0 0`,
-            boxShadow: '0 -4px 24px rgba(0,0,0,0.15)', padding: '20px 20px 28px',
+            boxShadow: '0 -4px 24px rgba(0,0,0,0.15)', padding: '20px 20px calc(28px + env(safe-area-inset-bottom, 0px))',
             maxHeight: '60vh', overflow: 'auto',
           }}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: colors.textGhost, margin: '0 auto 16px' }} />
@@ -1731,7 +1925,7 @@ export default function CatalogosPage() {
               }}>{pecaSel.reference}</div>
             )}
 
-            <div style={{ fontSize: 18, fontWeight: 800, color: colors.primary, marginBottom: 4 }}>{pecaSel.code}</div>
+            <div style={{ fontSize: 18, fontWeight: 800, color: colors.primary, marginBottom: 4, overflowWrap: 'anywhere' }}>{pecaSel.code}</div>
             <div style={{ fontSize: 14, color: colors.text, marginBottom: 12 }}>{pecaSel.name}</div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 20 }}>
@@ -1753,8 +1947,8 @@ export default function CatalogosPage() {
 
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16 }}>
               <span style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>Quantidade:</span>
-              <button onClick={() => setQtdSheet(q => Math.max(1, q - 1))} style={{
-                width: 36, height: 36, borderRadius: radius.sm, border: `1px solid ${colors.border}`,
+              <button onClick={() => setQtdSheet(q => Math.max(1, q - 1))} aria-label="Diminuir quantidade" style={{
+                width: 44, height: 44, borderRadius: radius.sm, border: `1px solid ${colors.border}`,
                 background: colors.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
               }}>
                 <Minus size={16} color={colors.text} />
@@ -1762,22 +1956,24 @@ export default function CatalogosPage() {
               <span style={{ fontSize: 20, fontWeight: 800, color: colors.primary, minWidth: 36, textAlign: 'center' }}>
                 {qtdSheet}
               </span>
-              <button onClick={() => setQtdSheet(q => q + 1)} style={{
-                width: 36, height: 36, borderRadius: radius.sm, border: `1px solid ${colors.border}`,
+              <button onClick={() => setQtdSheet(q => q + 1)} aria-label="Aumentar quantidade" style={{
+                width: 44, height: 44, borderRadius: radius.sm, border: `1px solid ${colors.border}`,
                 background: colors.surface, display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
               }}>
                 <Plus size={16} color={colors.text} />
               </button>
             </div>
 
-            <button onClick={handleAddToCart} style={{
+            <button onClick={handleAddToCart} disabled={adicionando} style={{
               width: '100%', padding: '14px 20px', borderRadius: radius.md,
               background: colors.primary, color: '#fff', fontSize: 15, fontWeight: 700,
-              border: 'none', cursor: 'pointer', boxShadow: shadow.primary,
+              border: 'none', cursor: adicionando ? 'wait' : 'pointer', boxShadow: shadow.primary, opacity: adicionando ? 0.7 : 1,
               display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             }}>
-              <ShoppingCart size={18} />
-              {carrinhoAtivo ? `Adicionar a "${carrinhoAtivo.nome}"` : 'Adicionar ao Carrinho'}
+              <ShoppingCart size={18} style={{ flexShrink: 0 }} />
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                {adicionando ? 'Adicionando...' : carrinhoAtivo ? `Adicionar a "${carrinhoAtivo.nome}"` : 'Adicionar ao Carrinho'}
+              </span>
             </button>
           </div>
         </>
@@ -1806,7 +2002,7 @@ export default function CatalogosPage() {
               onKeyDown={e => e.key === 'Enter' && handleCriarSubmit()}
               style={{
                 width: '100%', padding: '12px 14px', borderRadius: radius.md,
-                border: `1px solid ${colors.borderStrong}`, fontSize: 15,
+                border: `1px solid ${colors.borderStrong}`, fontSize: 16,
                 outline: 'none', background: colors.surface, marginBottom: 16,
                 boxSizing: 'border-box',
               }}
@@ -1853,7 +2049,7 @@ export default function CatalogosPage() {
               onKeyDown={e => e.key === 'Enter' && handleNomeSubmit()}
               style={{
                 width: '100%', padding: '12px 14px', borderRadius: radius.md,
-                border: `1px solid ${colors.borderStrong}`, fontSize: 15,
+                border: `1px solid ${colors.borderStrong}`, fontSize: 16,
                 outline: 'none', background: colors.surface, marginBottom: 16,
                 boxSizing: 'border-box',
               }}
@@ -1870,7 +2066,8 @@ export default function CatalogosPage() {
       {/* ═══ TOAST ═══ */}
       {toast && (
         <div style={{
-          position: 'fixed', top: 80, left: '50%', transform: 'translateX(-50%)',
+          position: 'fixed', top: 'calc(80px + env(safe-area-inset-top, 0px))', left: '50%', transform: 'translateX(-50%)',
+          maxWidth: 'calc(100vw - 32px)', textAlign: 'center',
           background: '#0f172a', color: '#fff', padding: '10px 20px', borderRadius: radius.md,
           fontSize: 14, fontWeight: 600, boxShadow: shadow.lg, zIndex: 200,
         }}>{toast}</div>

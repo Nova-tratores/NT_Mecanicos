@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useAdmin } from '@/hooks/useAdmin'
+import { authHeaders } from '@/lib/supabase'
 import { colors, shadow } from '@/lib/ui'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -40,6 +41,30 @@ function fmtDuracao(min: number) {
 
 function primeiroNome(n: string) { return n.split(' ')[0] || n }
 
+// Nomes/placas vêm do Rota Exata e do cadastro de clientes e entram em HTML do Leaflet
+function esc(v: unknown): string {
+  return String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch] as string))
+}
+
+async function apiGet(url: string) {
+  const res = await fetch(url, { headers: await authHeaders() })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+  return data
+}
+
+// Lança erro se a API responder != 2xx (antes uma falha no Rota Exata era contada como sucesso)
+async function postRastreamento(body: Record<string, unknown>) {
+  const res = await fetch('/api/rastreamento', {
+    method: 'POST',
+    headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  const data = await res.json().catch(() => null)
+  if (!res.ok) throw new Error(String(data?.error || `HTTP ${res.status}`).slice(0, 200))
+  return data
+}
+
 function veiculoIcon(v: VeiculoMapa): L.DivIcon {
   const cor = v.na_loja ? '#9CA3AF' : v.ignicao ? '#16A34A' : '#F59E0B'
   const nome = v.tecnico || v.motorista || ''
@@ -47,7 +72,7 @@ function veiculoIcon(v: VeiculoMapa): L.DivIcon {
   return L.divIcon({
     className: '', iconSize: [36, 44], iconAnchor: [18, 44], popupAnchor: [0, -44],
     html: `<div style="display:flex;flex-direction:column;align-items:center${v.na_loja ? ';opacity:0.7' : ''}">
-      <div style="background:${cor};color:#fff;font-size:9px;font-weight:800;padding:3px 7px;border-radius:6px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);max-width:130px;overflow:hidden;text-overflow:ellipsis">${label}</div>
+      <div style="background:${cor};color:#fff;font-size:9px;font-weight:800;padding:3px 7px;border-radius:6px;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,.3);max-width:130px;overflow:hidden;text-overflow:ellipsis">${esc(label)}</div>
       <div style="width:0;height:0;border-left:6px solid transparent;border-right:6px solid transparent;border-top:6px solid ${cor}"></div>
     </div>`,
   })
@@ -139,12 +164,17 @@ function MapaTab() {
   const carregar = useCallback(async () => {
     setLoading(true)
     try {
-      const [veicRes, cliRes] = await Promise.all([
-        fetch('/api/rastreamento?acao=veiculos_mapa').then(r => r.json()),
-        fetch('/api/rastreamento?acao=clientes').then(r => r.json()),
+      // allSettled: falha em clientes não pode esconder os veículos (e vice-versa)
+      const [veicRes, cliRes] = await Promise.allSettled([
+        apiGet('/api/rastreamento?acao=veiculos_mapa'),
+        apiGet('/api/rastreamento?acao=clientes'),
       ])
-      setVeiculos(Array.isArray(veicRes) ? veicRes : [])
-      setClientes(Array.isArray(cliRes) ? cliRes : [])
+      if (veicRes.status === 'rejected') console.error(veicRes.reason)
+      if (cliRes.status === 'rejected') console.error(cliRes.reason)
+      const veic = veicRes.status === 'fulfilled' ? veicRes.value : null
+      const cli = cliRes.status === 'fulfilled' ? cliRes.value : null
+      setVeiculos(Array.isArray(veic) ? veic : [])
+      setClientes(Array.isArray(cli) ? cli : [])
     } catch (e) { console.error(e) }
     setLoading(false)
   }, [])
@@ -154,15 +184,18 @@ function MapaTab() {
   useEffect(() => {
     const iv = setInterval(async () => {
       try {
-        const res = await fetch('/api/rastreamento?acao=veiculos_mapa')
-        const data = await res.json()
+        const data = await apiGet('/api/rastreamento?acao=veiculos_mapa')
         if (Array.isArray(data)) setVeiculos(data)
       } catch {}
     }, 15000)
     return () => clearInterval(iv)
   }, [])
 
-  const carregarDetalhe = useCallback(async (veicId: number, dtPosicao?: string | null) => {
+  // Sequência de seleção: ignora respostas de um veículo clicado antes (cliques rápidos
+  // desenhavam a rota/paradas do veículo anterior por cima do atual)
+  const selSeq = useRef(0)
+
+  const carregarDetalhe = useCallback(async (veicId: number, dtPosicao?: string | null, seq?: number) => {
     setDetalheLoading(true)
     setDetalhe(null)
     try {
@@ -171,14 +204,14 @@ function MapaTab() {
         const d = new Date(dtPosicao)
         url += `&data=${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       }
-      const res = await fetch(url)
-      const data = await res.json()
+      const data = await apiGet(url)
+      if (seq !== undefined && seq !== selSeq.current) return
       setDetalhe(data)
-    } catch { setDetalhe(null) }
-    setDetalheLoading(false)
+    } catch { if (seq === undefined || seq === selSeq.current) setDetalhe(null) }
+    if (seq === undefined || seq === selSeq.current) setDetalheLoading(false)
   }, [])
 
-  const carregarRota = useCallback(async (veicId: number, dtPosicao?: string | null) => {
+  const carregarRota = useCallback(async (veicId: number, dtPosicao?: string | null, seq?: number) => {
     setRotaLoading(true)
     rotaLayer.current.clearLayers()
     try {
@@ -187,9 +220,10 @@ function MapaTab() {
         const d = new Date(dtPosicao)
         url += `&data=${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
       }
-      const res = await fetch(url)
-      const data = await res.json()
-      const pontos: RotaPonto[] = data.posicoes || []
+      const data = await apiGet(url)
+      if (seq !== undefined && seq !== selSeq.current) return
+      rotaLayer.current.clearLayers()
+      const pontos: RotaPonto[] = data?.posicoes || []
       if (pontos.length > 1) {
         const latlngs: L.LatLngExpression[] = pontos.map(p => [p.lat, p.lng])
         L.polyline(latlngs, { color: '#1E3A5F', weight: 6, opacity: 0.4 }).addTo(rotaLayer.current)
@@ -210,15 +244,16 @@ function MapaTab() {
           .bindPopup(`<b>Última posição</b><br>${fmtHora(last.dt)}`).addTo(rotaLayer.current)
         mapInstance.current?.fitBounds(L.latLngBounds(latlngs), { padding: [40, 40] })
       }
-      setRota({ pontos, km: data.km_total || 0 })
+      setRota({ pontos, km: data?.km_total || 0 })
     } catch (e) { console.error(e) }
-    setRotaLoading(false)
+    if (seq === undefined || seq === selSeq.current) setRotaLoading(false)
   }, [])
 
   const abrirVeiculo = useCallback((v: VeiculoMapa) => {
+    const seq = ++selSeq.current
     setSelected(v); setSheetOpen(true); setRota(null); setDetalhe(null)
-    carregarDetalhe(v.id, v.dt_posicao)
-    carregarRota(v.id, v.dt_posicao)
+    carregarDetalhe(v.id, v.dt_posicao, seq)
+    carregarRota(v.id, v.dt_posicao, seq)
   }, [carregarDetalhe, carregarRota])
 
   useEffect(() => {
@@ -237,7 +272,7 @@ function MapaTab() {
     for (const p of detalhe.paradas_hoje) {
       if (!p.lat || !p.lng) continue
       const m = L.marker([p.lat, p.lng], { icon: paradaIcon(p) })
-      m.bindPopup(`<b>${selected.placa}</b><br>${fmtHora(p.inicio)} → ${fmtHora(p.fim)}<br>${fmtDuracao(p.duracao_min)}`)
+      m.bindPopup(`<b>${esc(selected.placa)}</b><br>${fmtHora(p.inicio)} → ${fmtHora(p.fim)}<br>${fmtDuracao(p.duracao_min)}`)
       paradasLayer.current.addLayer(m)
     }
   }, [selected, detalhe, showParadas])
@@ -247,7 +282,7 @@ function MapaTab() {
     if (!showClientes) return
     for (const c of clientes) {
       const m = L.marker([c.lat, c.lng], { icon: clienteIcon() })
-      m.bindPopup(`<b>${c.nome}</b><br>${c.cidade}/${c.estado}`)
+      m.bindPopup(`<b>${esc(c.nome)}</b><br>${esc(c.cidade)}/${esc(c.estado)}`)
       clientesLayer.current.addLayer(m)
     }
   }, [clientes, showClientes])
@@ -464,7 +499,7 @@ function MapaTab() {
 
           {/* Route button */}
           <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-            <button onClick={() => carregarRota(selected.id, selected.dt_posicao)} disabled={rotaLoading} style={{
+            <button onClick={() => carregarRota(selected.id, selected.dt_posicao, selSeq.current)} disabled={rotaLoading} style={{
               flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               padding: '11px 0', borderRadius: 10, border: 'none', fontSize: 13, fontWeight: 700,
               background: '#1E3A5F', color: '#fff',
@@ -554,10 +589,10 @@ function VinculosTab() {
     setLoading(true); setMsg(null)
     try {
       const [veicRes, motRes, usrRes, vincRes] = await Promise.all([
-        fetch('/api/rastreamento?acao=veiculos').then(r => r.json()),
-        fetch('/api/rastreamento?acao=motoristas').then(r => r.json()),
-        fetch('/api/rastreamento?acao=usuarios_motoristas').then(r => r.json()),
-        fetch('/api/rastreamento?acao=vinculos_supabase').then(r => r.json()),
+        apiGet('/api/rastreamento?acao=veiculos'),
+        apiGet('/api/rastreamento?acao=motoristas'),
+        apiGet('/api/rastreamento?acao=usuarios_motoristas'),
+        apiGet('/api/rastreamento?acao=vinculos_supabase'),
       ])
       setUsuarios(Array.isArray(usrRes) ? usrRes : [])
       const vinculoMap: Record<number, VinculoSupa> = {}
@@ -583,32 +618,43 @@ function VinculosTab() {
   const salvarAlteracoes = async () => {
     const alterados = veiculos.filter(v => v.novoMotoristaId !== null)
     if (!alterados.length) { setMsg({ tipo: 'err', texto: 'Nenhuma alteração' }); return }
+    if (salvando) return
     setSalvando(true); setMsg(null); let count = 0
+    let resultado: { tipo: 'ok' | 'err'; texto: string }
     try {
       for (const v of alterados) {
-        if (v.motoristaAtual?._id) await fetch('/api/rastreamento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'desvincular_motorista', vinculo_id: v.motoristaAtual._id }) })
+        if (v.motoristaAtual?._id) await postRastreamento({ acao: 'desvincular_motorista', vinculo_id: v.motoristaAtual._id })
         if (v.novoMotoristaId === -1) {
-          await fetch('/api/rastreamento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'remover_vinculo_supabase', adesao_id: v.id }) })
+          await postRastreamento({ acao: 'remover_vinculo_supabase', adesao_id: v.id })
         } else {
-          await fetch('/api/rastreamento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'vincular_motorista', adesao_id: v.id, motorista_id: v.novoMotoristaId }) })
+          await postRastreamento({ acao: 'vincular_motorista', adesao_id: v.id, motorista_id: v.novoMotoristaId })
           const usr = usuarios.find(u => u.id === v.novoMotoristaId)
-          if (usr) await fetch('/api/rastreamento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'salvar_vinculo_supabase', tecnico_nome: usr.nome, adesao_id: v.id, placa: v.placa, descricao: v.descricao }) })
+          if (usr) await postRastreamento({ acao: 'salvar_vinculo_supabase', tecnico_nome: usr.nome, adesao_id: v.id, placa: v.placa, descricao: v.descricao })
         }
         count++
       }
-      setMsg({ tipo: 'ok', texto: `${count} vínculo(s) atualizado(s)!` }); await carregar()
-    } catch (e: any) { setMsg({ tipo: 'err', texto: 'Erro: ' + e.message }) }
+      resultado = { tipo: 'ok', texto: `${count} vínculo(s) atualizado(s)!` }
+    } catch (e: any) {
+      resultado = { tipo: 'err', texto: `Erro${count ? ` (após ${count} salvo(s))` : ''}: ${e.message}` }
+    }
+    // Recarrega primeiro: carregar() limpa a mensagem (antes o "sucesso" sumia na hora)
+    await carregar()
+    setMsg(resultado)
     setSalvando(false)
   }
 
   const desvincularDireto = async (v: any) => {
+    if (salvando) return
     if (!confirm(`Desvincular motorista de ${v.placa}?`)) return
     setSalvando(true)
+    let resultado: { tipo: 'ok' | 'err'; texto: string }
     try {
-      if (v.motoristaAtual?._id) await fetch('/api/rastreamento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'desvincular_motorista', vinculo_id: v.motoristaAtual._id }) })
-      await fetch('/api/rastreamento', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'remover_vinculo_supabase', adesao_id: v.id }) })
-      setMsg({ tipo: 'ok', texto: `Desvinculado de ${v.placa}!` }); await carregar()
-    } catch (e: any) { setMsg({ tipo: 'err', texto: 'Erro: ' + e.message }) }
+      if (v.motoristaAtual?._id) await postRastreamento({ acao: 'desvincular_motorista', vinculo_id: v.motoristaAtual._id })
+      await postRastreamento({ acao: 'remover_vinculo_supabase', adesao_id: v.id })
+      resultado = { tipo: 'ok', texto: `Desvinculado de ${v.placa}!` }
+    } catch (e: any) { resultado = { tipo: 'err', texto: 'Erro: ' + e.message } }
+    await carregar()
+    setMsg(resultado)
     setSalvando(false)
   }
 

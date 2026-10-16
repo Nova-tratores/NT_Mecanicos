@@ -19,14 +19,15 @@ export default function RegerarPdf() {
   }, [osParam])
 
   const carregar = async () => {
-    if (!osId.trim()) return
+    if (!osId.trim() || status === 'loading') return
     setStatus('loading')
     setMsg('Buscando OS...')
-    const { data } = await supabase
+    // Pode haver mais de uma linha por OS: maybeSingle() dava erro e mostrava 'não encontrado'
+    const { data: rows } = await supabase
       .from('Ordem_Servico_Tecnicos')
       .select('Ordem_Servico, TecResp1, Status, pdf_criado, Data')
       .eq('Ordem_Servico', osId.trim())
-      .maybeSingle()
+    const data = (rows || []).find(r => r.Status === 'enviado') || (rows || [])[0] || null
     if (!data) {
       setStatus('error')
       setMsg(`Nenhum registro de técnico encontrado para ${osId}`)
@@ -39,7 +40,7 @@ export default function RegerarPdf() {
   }
 
   const regerar = async () => {
-    if (!osId.trim()) return
+    if (!osId.trim() || status === 'loading') return
     setStatus('loading')
     setMsg('Gerando PDF... Isso pode demorar até 30s (fotos).')
     try {

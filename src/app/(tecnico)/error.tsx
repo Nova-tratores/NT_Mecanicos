@@ -1,4 +1,5 @@
 'use client'
+import { useEffect } from 'react'
 
 export default function TecnicoError({
   error,
@@ -7,6 +8,8 @@ export default function TecnicoError({
   error: Error & { digest?: string }
   reset: () => void
 }) {
+  useEffect(() => { console.error('[tecnico] erro de renderização:', error) }, [error])
+  const offline = typeof navigator !== 'undefined' && !navigator.onLine
   return (
     <div style={{
       minHeight: '60vh', display: 'flex', flexDirection: 'column',
@@ -14,12 +17,15 @@ export default function TecnicoError({
     }}>
       <div style={{ fontSize: 48, marginBottom: 16 }}>!</div>
       <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 8, color: '#111' }}>
-        Erro ao carregar a pagina
+        Erro ao carregar a página
       </h2>
-      <p style={{ fontSize: 13, color: '#666', marginBottom: 24, maxWidth: 300 }}>
-        {error.message || 'Algo deu errado. Tente recarregar.'}
+      <p style={{ fontSize: 13, color: '#666', marginBottom: 24, maxWidth: 300, lineHeight: 1.5 }}>
+        {offline
+          ? 'Você está sem conexão. Toque em "Tentar novamente" quando o sinal voltar.'
+          : 'Algo deu errado. Tente novamente — se continuar, limpe o cache.'}
+        {error.digest && <span style={{ display: 'block', fontSize: 11, color: '#999', marginTop: 8 }}>Código: {error.digest}</span>}
       </p>
-      <div style={{ display: 'flex', gap: 12 }}>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', justifyContent: 'center' }}>
         <button
           onClick={reset}
           style={{
@@ -31,10 +37,14 @@ export default function TecnicoError({
           Tentar novamente
         </button>
         <button
-          onClick={() => {
-            if ('caches' in window) {
-              caches.keys().then(keys => keys.forEach(k => caches.delete(k)))
-            }
+          onClick={async () => {
+            // Espera apagar antes de recarregar (antes recarregava com o cache antigo ainda lá)
+            try {
+              if ('caches' in window) {
+                const keys = await caches.keys()
+                await Promise.all(keys.map(k => caches.delete(k)))
+              }
+            } catch {}
             window.location.reload()
           }}
           style={{

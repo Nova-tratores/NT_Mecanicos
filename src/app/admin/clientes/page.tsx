@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
 import { colors, shadow } from '@/lib/ui'
+import { authHeaders } from '@/lib/supabase'
 import {
   Building2, Search, ChevronLeft, ChevronDown, ChevronUp, Phone, Mail, MapPin,
   FileText, DollarSign, Tag, Loader2, ClipboardList, ShoppingCart,
@@ -46,7 +47,11 @@ function fmtMoeda(v: number) {
 
 function fmtData(iso: string) {
   if (!iso) return '--'
-  return new Date(iso).toLocaleDateString('pt-BR')
+  // 'YYYY-MM-DD' puro é interpretado como UTC → no fuso -03:00 mostrava o dia anterior
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso))
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? '--' : d.toLocaleDateString('pt-BR')
 }
 
 export default function ClientesPage() {
@@ -58,15 +63,22 @@ export default function ClientesPage() {
   const [empresaFilter, setEmpresaFilter] = useState('')
   const [selected, setSelected] = useState<Cliente | null>(null)
 
+  const [erro, setErro] = useState<string | null>(null)
+
   const carregar = useCallback(async () => {
     setLoading(true)
+    setErro(null)
     try {
-      const res = await fetch('/api/clientes')
+      const res = await fetch('/api/clientes', { headers: await authHeaders() })
       const data = await res.json()
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
       setClientes(data.clientes || [])
       setEtiquetas(data.etiquetas || [])
       setEtiquetasMapa(data.etiquetasMapa || [])
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      console.error(e)
+      setErro('Não foi possível carregar os clientes.')
+    }
     setLoading(false)
   }, [])
 
@@ -224,7 +236,14 @@ export default function ClientesPage() {
             </div>
           )}
 
-          {filtrados.length === 0 && !loading && (
+          {erro && (
+            <div style={{ textAlign: 'center', padding: 20, color: '#991B1B', fontSize: 13, background: '#FEF2F2', borderRadius: 12, border: '1px solid #FECACA' }}>
+              {erro}{' '}
+              <button onClick={carregar} style={{ marginLeft: 6, padding: '4px 10px', borderRadius: 8, border: '1px solid #FCA5A5', background: '#fff', color: '#991B1B', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}>Tentar novamente</button>
+            </div>
+          )}
+
+          {filtrados.length === 0 && !loading && !erro && (
             <div style={{ textAlign: 'center', padding: 30, color: colors.textSubtle, fontSize: 13, background: colors.surfaceAlt, borderRadius: 12, border: `1px solid ${colors.border}` }}>
               Nenhum cliente encontrado
             </div>
@@ -260,23 +279,35 @@ function ClienteDetalhe({ cliente, etiquetas, etiquetasMapa, onBack, onTagsChang
     setProjetoData(null)
     setProjetoTab('resumo')
     try {
-      const res = await fetch(`/api/clientes/projeto?nome=${encodeURIComponent(nome)}&empresa=${encodeURIComponent(cliente.empresa)}`)
+      const res = await fetch(`/api/clientes/projeto?nome=${encodeURIComponent(nome)}&empresa=${encodeURIComponent(cliente.empresa)}`, { headers: await authHeaders() })
       const data = await res.json()
-      setProjetoData(data)
+      // Resposta de erro ({ error }) era renderizada como projeto vazio
+      setProjetoData(res.ok && !data?.error ? data : null)
     } catch {}
     setProjetoLoading(false)
   }
 
+  const [erroDetalhe, setErroDetalhe] = useState(false)
   useEffect(() => {
+    let cancelado = false
     setLoading(true)
-    fetch(`/api/clientes?codCli=${cliente.cod_cli}&empresa=${encodeURIComponent(cliente.empresa)}`)
-      .then(r => r.json())
-      .then(data => {
+    setErroDetalhe(false)
+    ;(async () => {
+      try {
+        const r = await fetch(`/api/clientes?codCli=${cliente.cod_cli}&empresa=${encodeURIComponent(cliente.empresa)}`, { headers: await authHeaders() })
+        const data = await r.json()
+        if (!r.ok) throw new Error(data?.error || `HTTP ${r.status}`)
+        if (cancelado) return
         setOrdens(data.ordens || [])
         setPedidos(data.pedidos || [])
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false))
+      } catch (e) {
+        console.error(e)
+        if (!cancelado) setErroDetalhe(true)
+      } finally {
+        if (!cancelado) setLoading(false)
+      }
+    })()
+    return () => { cancelado = true }
   }, [cliente])
 
   const clienteTags = etiquetasMapa
@@ -284,16 +315,33 @@ function ClienteDetalhe({ cliente, etiquetas, etiquetasMapa, onBack, onTagsChang
     .map(m => etiquetas.find(e => e.id === m.etiqueta_id))
     .filter(Boolean) as Etiqueta[]
 
+  const [tagSalvando, setTagSalvando] = useState(false)
+  const postTag = async (acao: string, etId: number): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/clientes', { method: 'POST', headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acao, cnpj_cpf: cliente.cnpj_cpf, etiqueta_id: etId }) })
+      if (!res.ok) { alert('Erro ao salvar etiqueta.'); return false }
+      return true
+    } catch {
+      alert('Erro de conexão ao salvar etiqueta.')
+      return false
+    }
+  }
+
   const addTag = async (etId: number) => {
-    await fetch('/api/clientes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ acao: 'salvar_etiqueta', cnpj_cpf: cliente.cnpj_cpf, etiqueta_id: etId }) })
-    onTagsChange([...etiquetasMapa, { cnpj_cpf: cliente.cnpj_cpf, etiqueta_id: etId }])
+    if (tagSalvando || clienteTags.some(t => t.id === etId)) return
+    setTagSalvando(true)
+    const ok = await postTag('salvar_etiqueta', etId)
+    setTagSalvando(false)
+    if (ok) onTagsChange([...etiquetasMapa, { cnpj_cpf: cliente.cnpj_cpf, etiqueta_id: etId }])
   }
 
   const removeTag = async (etId: number) => {
-    await fetch('/api/clientes', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ acao: 'remover_etiqueta', cnpj_cpf: cliente.cnpj_cpf, etiqueta_id: etId }) })
-    onTagsChange(etiquetasMapa.filter(m => !(m.cnpj_cpf === cliente.cnpj_cpf && m.etiqueta_id === etId)))
+    if (tagSalvando) return
+    setTagSalvando(true)
+    const ok = await postTag('remover_etiqueta', etId)
+    setTagSalvando(false)
+    if (ok) onTagsChange(etiquetasMapa.filter(m => !(m.cnpj_cpf === cliente.cnpj_cpf && m.etiqueta_id === etId)))
   }
 
   const osOrdenadas = [...ordens].sort((a, b) => (b.data_previsao || b.data_inclusao || '').localeCompare(a.data_previsao || a.data_inclusao || ''))
@@ -408,6 +456,11 @@ function ClienteDetalhe({ cliente, etiquetas, etiquetasMapa, onBack, onTagsChang
 
       {/* Loading */}
       {loading && <div style={{ padding: 30, textAlign: 'center' }}><Loader2 size={24} className="spinner" color="#1E3A5F" /></div>}
+      {!loading && erroDetalhe && (
+        <div style={{ textAlign: 'center', padding: 16, color: '#991B1B', fontSize: 12, background: '#FEF2F2', borderRadius: 12, border: '1px solid #FECACA' }}>
+          Não foi possível carregar as OS e pedidos deste cliente.
+        </div>
+      )}
 
       {/* OS Tab */}
       {!loading && tab === 'os' && (

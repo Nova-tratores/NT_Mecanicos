@@ -108,6 +108,22 @@ function formatarDataBR(dateStr: string) {
   return `${d}/${m}/${y}`
 }
 
+const FOTO_TIMEOUT = 20000
+
+function comTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), ms) }),
+  ]).finally(() => clearTimeout(timer))
+}
+
+/** Formato para o jsPDF a partir do data URL (assinatura é PNG, foto é JPEG,
+ *  mas depois do sync ambas podem vir como qualquer um dos dois). */
+function formatoImagem(dataUrl: string): 'PNG' | 'JPEG' {
+  return /^data:image\/png/i.test(dataUrl) ? 'PNG' : 'JPEG'
+}
+
 async function loadImageAsBase64(url: string, downloadFoto?: (url: string) => Promise<string | null>): Promise<string | null> {
   if (!url) return null
   // Já é base64 — retorna direto
@@ -115,17 +131,20 @@ async function loadImageAsBase64(url: string, downloadFoto?: (url: string) => Pr
   // Ignora blob: URLs que não são válidas fora do navegador
   if (url.startsWith('blob:')) return null
 
-  // Tenta downloader customizado primeiro (Supabase Storage, sem CORS)
+  // Tenta downloader customizado primeiro (Supabase Storage, sem CORS).
+  // Com timeout: sinal fraco deixava o download pendurado e o PDF nunca saía.
   if (downloadFoto) {
     try {
-      const result = await downloadFoto(url)
+      const result = await comTimeout(downloadFoto(url), FOTO_TIMEOUT)
       if (result) return result
     } catch { /* fall through */ }
   }
 
   try {
     // Tenta fetch (funciona se CORS permite)
-    const resp = await fetch(url, { mode: 'cors' })
+    const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const timer = setTimeout(() => ctrl?.abort(), FOTO_TIMEOUT)
+    const resp = await fetch(url, { mode: 'cors', signal: ctrl?.signal }).finally(() => clearTimeout(timer))
     if (resp.ok) {
       const blob = await resp.blob()
       return new Promise((resolve) => {
@@ -500,7 +519,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
         const imgData = await loadImageAsBase64(foto.url, dados.downloadFoto)
         if (imgData) {
           try {
-            doc.addImage(imgData, 'JPEG', x, y + 2, fotoW, fotoH)
+            doc.addImage(imgData, formatoImagem(imgData), x, y + 2, fotoW, fotoH)
           } catch {
             doc.setDrawColor('#E5E7EB')
             doc.rect(x, y + 2, fotoW, fotoH)
@@ -527,13 +546,20 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
 
   const assW = (contentW - 10) / 2
 
+  // Assinatura feita offline é base64, mas o sync sobe para o Storage e grava
+  // a URL — addImage(URL) falhava calado e o PDF regerado saía sem assinaturas.
+  const [assClienteImg, assTecnicoImg] = await Promise.all([
+    loadImageAsBase64(dados.assCliente, dados.downloadFoto),
+    loadImageAsBase64(dados.assTecnico, dados.downloadFoto),
+  ])
+
   // Assinatura do cliente
   doc.setFontSize(8)
   doc.setTextColor(CINZA)
   doc.text('Assinatura do Cliente', marginL, y)
-  if (dados.assCliente) {
+  if (assClienteImg) {
     try {
-      doc.addImage(dados.assCliente, 'PNG', marginL, y + 2, assW, 25)
+      doc.addImage(assClienteImg, formatoImagem(assClienteImg), marginL, y + 2, assW, 25)
     } catch { /* */ }
   } else {
     doc.setDrawColor('#E5E7EB')
@@ -542,9 +568,9 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
 
   // Assinatura do técnico
   doc.text('Assinatura do Técnico', marginL + assW + 10, y)
-  if (dados.assTecnico) {
+  if (assTecnicoImg) {
     try {
-      doc.addImage(dados.assTecnico, 'PNG', marginL + assW + 10, y + 2, assW, 25)
+      doc.addImage(assTecnicoImg, formatoImagem(assTecnicoImg), marginL + assW + 10, y + 2, assW, 25)
     } catch { /* */ }
   } else {
     doc.setDrawColor('#E5E7EB')

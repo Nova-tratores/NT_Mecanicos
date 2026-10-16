@@ -1,5 +1,58 @@
 import { supabase } from './supabase'
 import { gerarPdfRelatorio } from './gerarPdfRelatorio'
+import { getQueue } from './offlineCache'
+
+const TIMEOUT = 30000
+
+function comTimeout<T>(p: PromiseLike<T>, ms = TIMEOUT): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), ms) }),
+  ]).finally(() => clearTimeout(timer))
+}
+
+/** Dias do relatório: DiasExecucao (JSON, sem limite) com fallback para as
+ *  colunas legadas de até 3 dias. Antes só lia as legadas — OS com 4+ dias
+ *  saía com dias faltando no PDF. */
+export function diasDoRegistro(registro: Record<string, unknown>): { data: string; horaInicio: string; horaFim: string; kmTotal: string }[] {
+  const s = (v: unknown) => (v == null ? '' : String(v))
+  const json = registro.DiasExecucao
+  if (Array.isArray(json) && json.length > 0) {
+    return json.map((d) => {
+      const o = (d || {}) as Record<string, unknown>
+      return { data: s(o.data), horaInicio: s(o.horaInicio), horaFim: s(o.horaFim), kmTotal: s(o.kmTotal) }
+    })
+  }
+  const dias: { data: string; horaInicio: string; horaFim: string; kmTotal: string }[] = []
+  if (registro.DataInicio) {
+    dias.push({
+      data: s(registro.DataInicio), horaInicio: s(registro.InicioHora),
+      horaFim: s(registro.FinalHora), kmTotal: s(registro.InicioKm) || s(registro.TotalKm),
+    })
+  }
+  if (registro.AdicionarData2 && registro.DataInicio2) {
+    dias.push({
+      data: s(registro.DataInicio2), horaInicio: s(registro.InicioHora2),
+      horaFim: s(registro.FinalHora2), kmTotal: s(registro.InicioKm2),
+    })
+  }
+  if (registro.AdicionarData3 && registro.DataInicio3) {
+    dias.push({
+      data: s(registro.DataInicio3), horaInicio: s(registro.InicioHora3),
+      horaFim: s(registro.FinaHora3), kmTotal: s(registro.InicioKm3),
+    })
+  }
+  return dias
+}
+
+/** Fotos extras: FotosExtras (JSON) com fallback para FotoExtra1-5. */
+export function fotosExtrasDoRegistro(registro: Record<string, unknown>): string[] {
+  const json = registro.FotosExtras
+  if (Array.isArray(json) && json.some(Boolean)) return (json as unknown[]).filter(Boolean).map(String)
+  return [registro.FotoExtra1, registro.FotoExtra2, registro.FotoExtra3, registro.FotoExtra4, registro.FotoExtra5]
+    .filter(Boolean).map(String)
+}
 
 /**
  * Regera o PDF do relatório a partir do registro já gravado no banco
@@ -12,54 +65,50 @@ import { gerarPdfRelatorio } from './gerarPdfRelatorio'
  * Retorna true se anexou (ou já estava anexado), false se falhou.
  */
 export async function gerarEAnexarRelatorio(osId: string): Promise<boolean> {
-  const { data: registro } = await supabase
+  // O relatório desta OS ainda está na fila (não subiu, ou tem foto base64
+  // pendente)? Gerar agora anexaria um PDF com dados velhos/sem fotos e marcaria
+  // pdf_criado=true — e ele nunca mais seria refeito. Espera a fila esvaziar.
+  try {
+    const fila = await getQueue()
+    const pendente = fila.some(i =>
+      !i.failed && i.table === 'Ordem_Servico_Tecnicos' &&
+      String(i.data?.Ordem_Servico ?? i.match?.Ordem_Servico ?? '') === String(osId),
+    )
+    if (pendente) return false
+  } catch { /* sem IndexedDB: segue */ }
+
+  const { data: registro, error: regErr } = await comTimeout(supabase
     .from('Ordem_Servico_Tecnicos')
     .select('*')
     .eq('Ordem_Servico', osId)
-    .maybeSingle()
-  if (!registro) return false
+    .order('IdOs', { ascending: false })
+    .limit(1)
+    .maybeSingle())
+  if (regErr || !registro) return false
   if (registro.pdf_criado) return true // já anexado
 
-  const { data: osInfo } = await supabase
+  const { data: osInfo } = await comTimeout(supabase
     .from('Ordem_Servico')
     .select('*')
     .eq('Id_Ordem', osId)
-    .maybeSingle()
+    .maybeSingle())
 
   let cidade = ''
   if (osInfo?.Cnpj_Cliente) {
-    const { data: cli } = await supabase
+    const { data: cli } = await comTimeout(supabase
       .from('Clientes')
       .select('cidade')
       .eq('cnpj_cpf', osInfo.Cnpj_Cliente)
-      .maybeSingle()
+      .maybeSingle())
     cidade = cli?.cidade || ''
   }
 
-  const dias: { data: string; horaInicio: string; horaFim: string; kmTotal: string }[] = []
-  if (registro.DataInicio) {
-    dias.push({
-      data: registro.DataInicio || '', horaInicio: registro.InicioHora || '',
-      horaFim: registro.FinalHora || '', kmTotal: registro.InicioKm || registro.TotalKm || '',
-    })
-  }
-  if (registro.AdicionarData2 && registro.DataInicio2) {
-    dias.push({
-      data: registro.DataInicio2 || '', horaInicio: registro.InicioHora2 || '',
-      horaFim: registro.FinalHora2 || '', kmTotal: registro.InicioKm2 || '',
-    })
-  }
-  if (registro.AdicionarData3 && registro.DataInicio3) {
-    dias.push({
-      data: registro.DataInicio3 || '', horaInicio: registro.InicioHora3 || '',
-      horaFim: registro.FinaHora3 || '', kmTotal: registro.InicioKm3 || '',
-    })
-  }
+  const dias = diasDoRegistro(registro)
   if (dias.length === 0) dias.push({ data: '', horaInicio: '', horaFim: '', kmTotal: '' })
 
   const downloadFoto = async (url: string): Promise<string | null> => {
     if (!url) return null
-    const match = url.match(/\/object\/public\/requisicoes\/(.+?)(\?|$)/)
+    const match = url.match(/\/(?:object|storage)\/(?:v1\/)?(?:public|sign)\/requisicoes\/(.+?)(\?|$)/)
     if (!match) return null
     const path = decodeURIComponent(match[1])
     const { data: blob, error } = await supabase.storage.from('requisicoes').download(path)
@@ -74,7 +123,10 @@ export async function gerarEAnexarRelatorio(osId: string): Promise<boolean> {
 
   let pecas: unknown[] = []
   if (registro.PecasInfo) {
-    try { pecas = JSON.parse(registro.PecasInfo) } catch { /* ignore */ }
+    try {
+      const p = JSON.parse(registro.PecasInfo)
+      if (Array.isArray(p)) pecas = p
+    } catch { /* ignore */ }
   }
 
   const pdfBlob = await gerarPdfRelatorio({
@@ -120,6 +172,8 @@ export async function gerarEAnexarRelatorio(osId: string): Promise<boolean> {
     fotoPecaNova2: registro.FotoPecaNova2 || '',
     fotoPecaInstalada1: registro.FotoPecaInstalada1 || '',
     fotoPecaInstalada2: registro.FotoPecaInstalada2 || '',
+    // antes ficavam de fora: OS enviada offline saía sem as fotos do serviço
+    fotosExtras: fotosExtrasDoRegistro(registro),
     assCliente: registro.AssCliente || '',
     assTecnico: registro.AssTecnico || '',
     nomResp: registro.NomResp || '',
@@ -134,24 +188,26 @@ export async function gerarEAnexarRelatorio(osId: string): Promise<boolean> {
 
   const pdfPath = `relatorios-os/${osId}/Relatorio_${osId}_${Date.now()}.pdf`
   const pdfFile = new File([pdfBlob as BlobPart], `Relatorio_${osId}.pdf`, { type: 'application/pdf' })
-  const { error: upErr } = await supabase.storage.from('requisicoes').upload(pdfPath, pdfFile)
+  const { error: upErr } = await comTimeout(supabase.storage.from('requisicoes').upload(pdfPath, pdfFile), 120000)
   if (upErr) return false
 
   const { data: urlData } = supabase.storage.from('requisicoes').getPublicUrl(pdfPath)
   const pdfUrl = urlData.publicUrl
 
-  await Promise.all([
+  const [osUpd, tecUpd] = await comTimeout(Promise.all([
     supabase.from('Ordem_Servico').update({ ID_Relatorio_Final: pdfUrl }).eq('Id_Ordem', osId),
     supabase.from('Ordem_Servico_Tecnicos').update({ pdf_criado: true }).eq('Ordem_Servico', osId),
-  ])
+  ]))
+  // Sem gravar o link na OS o portal não enxerga o PDF — tenta de novo depois
+  if (osUpd.error || tecUpd.error) return false
 
   // Atualiza pedidos vinculados ao PPV (mesmo comportamento do envio online)
   const ppvStr = osInfo?.ID_PPV
   if (ppvStr) {
     const ppvIds = String(ppvStr).split(',').map((s: string) => s.trim()).filter(Boolean)
     if (ppvIds.length > 0) {
-      await supabase.from('pedidos').update({ status: 'Aguardando Para Faturar' })
-        .in('id_pedido', ppvIds).not('status', 'in', '("Fechado","Cancelado")')
+      await comTimeout(supabase.from('pedidos').update({ status: 'Aguardando Para Faturar' })
+        .in('id_pedido', ppvIds).not('status', 'in', '("Fechado","Cancelado")'))
     }
   }
 

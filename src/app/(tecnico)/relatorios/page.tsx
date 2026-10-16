@@ -15,9 +15,10 @@ import {
 } from '@/lib/relatorios'
 import { getLabelTipo } from '@/lib/alertas'
 import type { RelatorioMes } from '@/lib/types'
+import { dataLocalISO } from '@/lib/tecnico-utils'
 
 export default function RelatoriosPage() {
-  const { user } = useCurrentUser()
+  const { user, loading: userLoading } = useCurrentUser()
   const [mes, setMes] = useState<string>(mesAtual())
   const [open, setOpen] = useState<Record<'os' | 'pv' | 'req' | 'comb' | 'int' | 'inf' | 'oc', boolean>>({ os: false, pv: false, req: false, comb: false, int: false, inf: false, oc: false })
 
@@ -44,8 +45,8 @@ export default function RelatoriosPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: spacing.lg }}>
       {/* Cabeçalho */}
       <div style={{ display: 'flex', alignItems: 'center', gap: spacing.md }}>
-        <Link href="/" style={{
-          width: 38, height: 38, borderRadius: radius.md, flexShrink: 0,
+        <Link href="/" aria-label="Voltar" style={{
+          width: 44, height: 44, borderRadius: radius.md, flexShrink: 0,
           background: colors.surface, border: `1px solid ${colors.border}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           color: colors.textMuted,
@@ -58,8 +59,9 @@ export default function RelatoriosPage() {
         <button
           onClick={refresh}
           disabled={refreshing}
+          aria-label="Atualizar relatório"
           style={{
-            width: 38, height: 38, borderRadius: radius.md, flexShrink: 0,
+            width: 44, height: 44, borderRadius: radius.md, flexShrink: 0,
             background: colors.surface, border: `1px solid ${colors.border}`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             cursor: refreshing ? 'wait' : 'pointer',
@@ -81,11 +83,12 @@ export default function RelatoriosPage() {
           Período
         </span>
         <select
+          aria-label="Período do relatório"
           value={mes}
           onChange={(e) => setMes(e.target.value)}
           style={{
-            flex: 1, border: 'none', outline: 'none', background: 'transparent',
-            fontSize: 15, fontWeight: 700, color: colors.text, cursor: 'pointer',
+            flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent',
+            fontSize: 16, fontWeight: 700, color: colors.text, cursor: 'pointer', minHeight: 36,
             appearance: 'none',
             paddingRight: 28,
             backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236B7280' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E")`,
@@ -101,18 +104,36 @@ export default function RelatoriosPage() {
 
       {refreshing && <div className="refresh-bar" />}
 
-      {loading ? <PageSpinner /> : data ? (
+      {loading || (userLoading && !data) ? <PageSpinner /> : data ? (
         <>
           <SecaoOficina data={data} />
           <SecaoPessoal data={data} open={open} setOpen={setOpen} />
           <Rodape ultimoSync={data.ultimoSync} />
         </>
       ) : (
-        <EmptyState
-          icon={Info}
-          title="Sem dados"
-          subtitle="Não foi possível carregar o relatório deste mês."
-        />
+        <>
+          <EmptyState
+            icon={Info}
+            title="Sem dados"
+            subtitle={typeof navigator !== 'undefined' && !navigator.onLine
+              ? 'Você está sem internet e este mês ainda não foi salvo no aparelho.'
+              : 'Não foi possível carregar o relatório deste mês.'}
+          />
+          {user && (
+            <button
+              type="button"
+              onClick={refresh}
+              disabled={refreshing}
+              style={{
+                alignSelf: 'center', minHeight: 44, padding: '0 20px', borderRadius: radius.md,
+                background: colors.surface, border: `1px solid ${colors.borderStrong}`,
+                color: colors.text, fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+              }}
+            >
+              Tentar novamente
+            </button>
+          )}
+        </>
       )}
 
       <style jsx global>{`
@@ -128,7 +149,13 @@ export default function RelatoriosPage() {
 // =================================================================
 
 function SecaoOficina({ data }: { data: RelatorioMes }) {
-  const { oficina, ranking } = data
+  const oficina = {
+    receitaTotal: data.oficina?.receitaTotal ?? 0,
+    despesaTotal: data.oficina?.despesaTotal ?? 0,
+    qtdOS: data.oficina?.qtdOS ?? 0,
+    qtdPV: data.oficina?.qtdPV ?? 0,
+  }
+  const ranking = Array.isArray(data.ranking) ? data.ranking : []
   const max = Math.max(oficina.receitaTotal, oficina.despesaTotal, 1)
 
   return (
@@ -139,7 +166,7 @@ function SecaoOficina({ data }: { data: RelatorioMes }) {
       </div>
 
       {/* Cards receita x despesa */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: spacing.md }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: spacing.md }}>
         <CardBarra
           tone="success"
           icon={<TrendingUp size={18} color={colors.success} />}
@@ -281,14 +308,16 @@ function SecaoPessoal({
   // Normaliza pessoal — protege contra cache stale ou falha parcial do fetcher
   // (campos novos podem estar ausentes em payload antigo).
   const empty = { qtd: 0, valor: 0, lista: [] as never[] }
+  const comLista = <T extends { lista?: unknown }>(v: T | undefined, padrao: T): T =>
+    v ? ({ ...v, lista: Array.isArray(v.lista) ? v.lista : [] }) : padrao
   const pessoal = {
-    os: data.pessoal?.os ?? empty,
-    pv: data.pessoal?.pv ?? empty,
-    requisicoes: data.pessoal?.requisicoes ?? empty,
-    combustivel: data.pessoal?.combustivel ?? empty,
-    osInternas: data.pessoal?.osInternas ?? empty,
-    infracoes: data.pessoal?.infracoes ?? { qtd: 0, lista: [] as never[] },
-    ocorrencias: data.pessoal?.ocorrencias ?? { qtd: 0, pontos: 0, lista: [] as never[] },
+    os: comLista(data.pessoal?.os, empty),
+    pv: comLista(data.pessoal?.pv, empty),
+    requisicoes: comLista(data.pessoal?.requisicoes, empty),
+    combustivel: comLista(data.pessoal?.combustivel, empty),
+    osInternas: comLista(data.pessoal?.osInternas, empty),
+    infracoes: comLista(data.pessoal?.infracoes, { qtd: 0, lista: [] as never[] }),
+    ocorrencias: comLista(data.pessoal?.ocorrencias, { qtd: 0, pontos: 0, lista: [] as never[] }),
     custoRH: data.pessoal?.custoRH ?? null,
     custoRHCadastro: data.pessoal?.custoRHCadastro ?? null,
   } as RelatorioMes['pessoal']
@@ -311,7 +340,7 @@ function SecaoPessoal({
       </div>
 
       {/* Grid de números pessoais */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: spacing.md }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: spacing.md }}>
         <CardMetricaPessoal
           icon={<Wrench size={18} color={colors.primary} />}
           label="OS faturadas"
@@ -326,7 +355,7 @@ function SecaoPessoal({
         />
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: spacing.md }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: spacing.md }}>
         <CardMetricaPessoal
           icon={<ClipboardList size={18} color={colors.warning} />}
           label="Requisições no financeiro"
@@ -558,7 +587,8 @@ function CardOcorrencias({
     }}>
       <button onClick={onToggle} style={{
         width: '100%', padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 48,
+        fontFamily: 'inherit',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
           <Shield size={16} color={tomMain} />
@@ -606,7 +636,7 @@ function CardOcorrencias({
               Nenhuma ocorrência no período. Bom trabalho.
             </div>
           ) : (
-            ocorrencias.lista.map(oc => {
+            (ocorrencias.lista || []).map(oc => {
               const aberta = expandidos.has(oc.id)
               return (
                 <button
@@ -699,7 +729,8 @@ function CardInfracoes({
     }}>
       <button onClick={onToggle} style={{
         width: '100%', padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 48,
+        fontFamily: 'inherit',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
           <AlertTriangle size={16} color={tomMain} />
@@ -761,7 +792,7 @@ function CardInfracoes({
                   Clique em uma linha para ver no mapa.
                 </span>
               </div>
-              {infracoes.lista.map(inf => (
+              {(infracoes.lista || []).map(inf => (
                 <LinkInfracao key={inf.id} inf={inf} />
               ))}
             </>
@@ -773,9 +804,18 @@ function CardInfracoes({
 }
 
 function LinkInfracao({ inf }: { inf: RelatorioMes['pessoal']['infracoes']['lista'][number] }) {
-  // Data ISO YYYY-MM-DD pra query do mapa
-  const dataISO = inf.dtPosicao.split('T')[0]
-  const href = `/mapa?placa=${encodeURIComponent(inf.placa)}&data=${dataISO}&infracao=${inf.lat},${inf.lng}`
+  // Data YYYY-MM-DD (dia local) pra query do mapa.
+  // Se dtPosicao tem fuso (Z / ±hh:mm), `split('T')` pegaria o dia em UTC —
+  // errado no Brasil depois das 21h. Sem fuso, o texto já é horário local.
+  const raw = String(inf.dtPosicao || '')
+  const temFuso = /[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}(:?\d{2})?)$/i.test(raw)
+  // Normaliza p/ Safari: "YYYY-MM-DD HH:MM:SS-03" -> "YYYY-MM-DDTHH:MM:SS-03:00"
+  const dt = temFuso ? new Date(raw.replace(' ', 'T').replace(/([+-]\d{2})$/, '$1:00')) : null
+  const dtValida = !!dt && !Number.isNaN(dt.getTime())
+  const dataISO = dtValida ? dataLocalISO(dt!) : raw.slice(0, 10)
+  const dataLabel = dtValida ? dt!.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) : inf.data
+  const horaLabel = dtValida ? dt!.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : inf.hora
+  const href = `/mapa?placa=${encodeURIComponent(inf.placa || '')}&data=${dataISO}&infracao=${inf.lat},${inf.lng}`
 
   return (
     <Link href={href} style={{
@@ -809,10 +849,10 @@ function LinkInfracao({ inf }: { inf: RelatorioMes['pessoal']['infracoes']['list
       </div>
       <div style={{ textAlign: 'right', flexShrink: 0 }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: colors.textMuted }}>
-          {inf.data}
+          {dataLabel}
         </div>
         <div style={{ fontSize: 10, color: colors.textSubtle, display: 'flex', alignItems: 'center', gap: 3, justifyContent: 'flex-end', marginTop: 2 }}>
-          <MapPin size={9} /> {inf.hora}
+          <MapPin size={9} /> {horaLabel}
         </div>
       </div>
     </Link>
@@ -845,7 +885,7 @@ function CardMetricaPessoal({
         <span style={{ fontSize: 22, fontWeight: 800, color: colors.text, lineHeight: 1 }}>{qtd}</span>
         <span style={{ fontSize: 12, color: colors.textSubtle }}>{qtd === 1 ? 'item' : 'itens'}</span>
       </div>
-      <div style={{ fontSize: 14, fontWeight: 700, color: colors.textMuted, marginTop: 4 }}>
+      <div style={{ fontSize: 14, fontWeight: 700, color: colors.textMuted, marginTop: 4, overflowWrap: 'anywhere' }}>
         {fmtBRL(valor)}
       </div>
     </div>
@@ -854,10 +894,10 @@ function CardMetricaPessoal({
 
 function LinhaSaldo({ label, valor, positivo }: { label: string; valor: number; positivo?: boolean }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 0' }}>
-      <span style={{ fontSize: 13, color: colors.textMuted }}>{label}</span>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '4px 0' }}>
+      <span style={{ fontSize: 13, color: colors.textMuted, minWidth: 0 }}>{label}</span>
       <span style={{
-        fontSize: 14, fontWeight: 700,
+        fontSize: 14, fontWeight: 700, flexShrink: 0, whiteSpace: 'nowrap',
         color: positivo ? colors.text : colors.textMuted,
       }}>
         {fmtBRL(valor)}
@@ -885,14 +925,15 @@ function Expandable({
     }}>
       <button onClick={onToggle} style={{
         width: '100%', padding: '14px 16px', background: 'none', border: 'none', cursor: 'pointer',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minHeight: 48,
+        fontFamily: 'inherit',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
           {icon}
           <span style={{ fontSize: 13, fontWeight: 700, color: colors.text, textAlign: 'left' }}>{title}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, whiteSpace: 'nowrap' }}>
             {qtd} · {fmtBRLCompacto(valor)}
           </span>
           <ChevronDown size={18} color={colors.textSubtle} style={{
@@ -966,6 +1007,7 @@ function DrilldownVazio({ msg }: { msg: string }) {
 function Rodape({ ultimoSync }: { ultimoSync: string | null }) {
   if (!ultimoSync) return null
   const dt = new Date(ultimoSync)
+  if (Number.isNaN(dt.getTime())) return null
   const label = dt.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })
     + ' às ' + dt.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
   return (

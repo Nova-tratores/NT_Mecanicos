@@ -70,7 +70,9 @@ const inputStyle: React.CSSProperties = {
 }
 
 function hoje() {
-  return new Date().toISOString().split('T')[0]
+  // data local (toISOString é UTC: depois das 21h virava o dia seguinte)
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 export default function OSDetalhe({ params }: { params: Promise<{ id: string }> }) {
@@ -112,25 +114,68 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
   }, [loading, restoreBackup])
 
   useEffect(() => {
-    // Helper para carregar dados do cache offline (IndexedDB/prefetch)
-    const carregarDoCache = async () => {
-      const cachedOs = await getCachedOS(id)
-      const cachedTec = await getCachedOSTec(id)
-      if (cachedOs) {
-        setOs(cachedOs as unknown as OrdemServico)
-        if (cachedOs.Cnpj_Cliente) {
-          const cachedCli = await getCachedCliente(cachedOs.Cnpj_Cliente as string)
-          if (cachedCli?.cidade) setCidade(cachedCli.cidade)
+    // Aplica o registro técnico (banco ou cache). Antes o caminho offline não
+    // carregava os horários: a OS ficava travada em "Registre os horários
+    // primeiro" sem sinal, mesmo com horários já salvos.
+    const aplicarPreench = (preench: Record<string, unknown>) => {
+      const s = (v: unknown) => (v == null ? '' : String(v))
+      if (preench.IdOs) setExistingId(Number(preench.IdOs))
+      setJaPreenchida(true)
+      setStatusPreench(s(preench.Status))
+      if (preench.Data) setDataEnvio(s(preench.Data))
+
+      // Carregar dias já registrados
+      const diasLoaded: DiaVisita[] = []
+      if (preench.DataInicio) {
+        diasLoaded.push({
+          data: s(preench.DataInicio), horaChegada: s(preench.InicioHora),
+          horaSaida: s(preench.FinalHora), kmTotal: s(preench.InicioKm) || s(preench.TotalKm),
+        })
+      }
+      if (preench.AdicionarData2 && preench.DataInicio2) {
+        diasLoaded.push({
+          data: s(preench.DataInicio2), horaChegada: s(preench.InicioHora2),
+          horaSaida: s(preench.FinalHora2), kmTotal: s(preench.InicioKm2),
+        })
+      }
+      if (preench.AdicionarData3 && preench.DataInicio3) {
+        diasLoaded.push({
+          data: s(preench.DataInicio3), horaChegada: s(preench.InicioHora3),
+          horaSaida: s(preench.FinaHora3), kmTotal: s(preench.InicioKm3),
+        })
+      }
+      if (diasLoaded.length > 0) {
+        setDias(diasLoaded)
+        if (diasLoaded.some(d => d.horaChegada && d.horaSaida)) {
+          setHorariosRegistrados(true)
         }
       }
-      if (cachedTec) {
-        setExistingId(cachedTec.IdOs as number)
-        setJaPreenchida(true)
-        setStatusPreench((cachedTec.Status as string) || '')
-        if (cachedTec.Data) setDataEnvio(cachedTec.Data as string)
+      if (preench.JustificativaAtraso) {
+        setJustificativa(s(preench.JustificativaAtraso))
       }
-      setLoading(false)
     }
+
+    // Helper para carregar dados do cache offline (IndexedDB/prefetch)
+    const carregarDoCache = async () => {
+      try {
+        const cachedOs = await getCachedOS(id)
+        const cachedTec = await getCachedOSTec(id)
+        if (cachedOs) {
+          setOs(cachedOs as unknown as OrdemServico)
+          if (cachedOs.Cnpj_Cliente) {
+            const cachedCli = await getCachedCliente(cachedOs.Cnpj_Cliente as string)
+            if (cachedCli?.cidade) setCidade(cachedCli.cidade)
+          }
+        }
+        if (cachedTec) aplicarPreench(cachedTec)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    // Com sinal fraco a consulta podia ficar pendurada (spinner eterno)
+    const comTimeout = <T,>(p: PromiseLike<T>, ms = 8000): Promise<T> =>
+      Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))])
 
     const carregar = async () => {
       // Se offline, usar dados do prefetch direto
@@ -140,12 +185,13 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       }
 
       const [osRes, preenchRes] = await Promise.all([
-        supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
-        supabase.from('Ordem_Servico_Tecnicos').select('*').eq('Ordem_Servico', id).maybeSingle(),
+        comTimeout(supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single()),
+        comTimeout(supabase.from('Ordem_Servico_Tecnicos').select('*').eq('Ordem_Servico', id)
+          .order('IdOs', { ascending: false }).limit(1).maybeSingle()),
       ])
 
       // Se a query principal falhou (rede instável), fallback para cache
-      if (osRes.error && !osRes.data) {
+      if ((osRes.error && !osRes.data) || preenchRes.error) {
         console.warn('[os-detalhe] Query falhou, usando cache offline...')
         await carregarDoCache()
         return
@@ -160,51 +206,20 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
         // não a pegou (throttle, OS nova, etc.)
         offlineSet(`prefetch:os:${id}`, osData)
         if (osData.Cnpj_Cliente) {
-          const { data: cli } = await supabase
-            .from('Clientes')
-            .select('cidade')
-            .eq('cnpj_cpf', osData.Cnpj_Cliente)
-            .maybeSingle()
-          if (cli?.cidade) setCidade(cli.cidade)
-          offlineSet(`prefetch:cliente:${osData.Cnpj_Cliente}`, { cnpj_cpf: osData.Cnpj_Cliente, cidade: cli?.cidade || '' })
+          try {
+            const { data: cli } = await comTimeout(supabase
+              .from('Clientes')
+              .select('cidade')
+              .eq('cnpj_cpf', osData.Cnpj_Cliente)
+              .maybeSingle())
+            if (cli?.cidade) setCidade(cli.cidade)
+            offlineSet(`prefetch:cliente:${osData.Cnpj_Cliente}`, { cnpj_cpf: osData.Cnpj_Cliente, cidade: cli?.cidade || '' })
+          } catch { /* cidade é só informativa */ }
         }
       }
       if (preench) {
         offlineSet(`prefetch:os-tec:${id}`, preench)
-        setExistingId(preench.IdOs)
-        setJaPreenchida(true)
-        setStatusPreench(preench.Status)
-        if (preench.Data) setDataEnvio(preench.Data)
-
-        // Carregar dias já registrados
-        const diasLoaded: DiaVisita[] = []
-        if (preench.DataInicio) {
-          diasLoaded.push({
-            data: preench.DataInicio, horaChegada: preench.InicioHora || '',
-            horaSaida: preench.FinalHora || '', kmTotal: preench.InicioKm || preench.TotalKm || '',
-          })
-        }
-        if (preench.AdicionarData2 && preench.DataInicio2) {
-          diasLoaded.push({
-            data: preench.DataInicio2, horaChegada: preench.InicioHora2 || '',
-            horaSaida: preench.FinalHora2 || '', kmTotal: preench.InicioKm2 || '',
-          })
-        }
-        if (preench.AdicionarData3 && preench.DataInicio3) {
-          diasLoaded.push({
-            data: preench.DataInicio3, horaChegada: preench.InicioHora3 || '',
-            horaSaida: preench.FinalHora3 || '', kmTotal: preench.InicioKm3 || '',
-          })
-        }
-        if (diasLoaded.length > 0) {
-          setDias(diasLoaded)
-          if (diasLoaded.some(d => d.horaChegada && d.horaSaida)) {
-            setHorariosRegistrados(true)
-          }
-        }
-        if (preench.JustificativaAtraso) {
-          setJustificativa(preench.JustificativaAtraso)
-        }
+        aplicarPreench(preench as Record<string, unknown>)
       }
       setLoading(false)
     }
@@ -268,7 +283,11 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
   }
 
   const salvarHorarios = async () => {
-    if (!user) return
+    if (salvando) return
+    if (!user) {
+      alert('Não foi possível identificar o técnico logado. Abra o app novamente e tente salvar.')
+      return
+    }
 
     // Validar que pelo menos o primeiro dia tem chegada e saída
     if (!dias[0].horaChegada || !dias[0].horaSaida) {
@@ -323,34 +342,56 @@ export default function OSDetalhe({ params }: { params: Promise<{ id: string }> 
       JustificativaAtraso: precisaJustificar ? justificativa.trim() : null,
     }
 
-    if (existingId) {
-      const res = await offlineWrite({
-        table: 'Ordem_Servico_Tecnicos', action: 'update',
-        data: payload, match: { IdOs: existingId },
-      })
-      if (!res.ok) { setSalvando(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
-    } else {
-      if (navigator.onLine) {
-        const { data } = await supabase.from('Ordem_Servico_Tecnicos').insert(payload).select('IdOs').single()
-        if (data) {
-          setExistingId(data.IdOs)
-          setJaPreenchida(true)
-          setStatusPreench('rascunho')
-        }
+    try {
+      if (existingId) {
+        const res = await offlineWrite({
+          table: 'Ordem_Servico_Tecnicos', action: 'update',
+          data: payload, match: { IdOs: existingId },
+        })
+        if (!res.ok) { alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
       } else {
-        const res = await offlineWrite({ table: 'Ordem_Servico_Tecnicos', action: 'insert', data: payload })
-        if (!res.ok) { setSalvando(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
+        let gravou = false
+        if (navigator.onLine) {
+          // Antes: erro/timeout aqui era ignorado — a tela dizia "Salvo",
+          // limpava o backup e os horários se perdiam. Agora, se a rede falhar,
+          // cai na fila offline (o sync evita linha duplicada).
+          try {
+            const { data, error } = await Promise.race([
+              supabase.from('Ordem_Servico_Tecnicos').insert(payload).select('IdOs').single(),
+              new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 10000)),
+            ])
+            if (error && !/fetch|network|timeout|load failed/i.test(error.message || '')) {
+              alert('Erro ao salvar: ' + error.message)
+              return
+            }
+            if (data) {
+              gravou = true
+              setExistingId(data.IdOs)
+              payload.IdOs = data.IdOs
+              setJaPreenchida(true)
+              setStatusPreench('rascunho')
+            }
+          } catch { /* rede: enfileira abaixo */ }
+        }
+        if (!gravou) {
+          const res = await offlineWrite({ table: 'Ordem_Servico_Tecnicos', action: 'insert', data: payload })
+          if (!res.ok) { alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
+        }
       }
+
+      // Atualiza o cache de leitura para a tela de preencher enxergar os horários
+      // salvos (importante offline, quando o registro ainda está só na fila).
+      const cachedTec = (await getCachedOSTec(id)) || {}
+      await offlineSet(`prefetch:os-tec:${id}`, { ...cachedTec, ...payload })
+
+      setHorariosRegistrados(true)
+      clearBackup()
+    } catch (err) {
+      console.error('[horarios] Erro ao salvar:', err)
+      alert('Erro ao salvar os horários. Tente novamente.')
+    } finally {
+      setSalvando(false)
     }
-
-    // Atualiza o cache de leitura para a tela de preencher enxergar os horários
-    // salvos (importante offline, quando o registro ainda está só na fila).
-    const cachedTec = (await getCachedOSTec(id)) || {}
-    offlineSet(`prefetch:os-tec:${id}`, { ...cachedTec, ...payload })
-
-    setHorariosRegistrados(true)
-    setSalvando(false)
-    clearBackup()
   }
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>

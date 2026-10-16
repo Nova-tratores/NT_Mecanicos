@@ -22,7 +22,7 @@ export function PageHeader({
         <h1 style={text.h1}>{title}</h1>
         {subtitle && <div style={{ ...text.small, marginTop: 2 }}>{subtitle}</div>}
       </div>
-      {action}
+      {action && <div style={{ flexShrink: 0 }}>{action}</div>}
     </div>
   )
 }
@@ -441,7 +441,8 @@ const fieldInputStyle: CSSProperties = {
   padding: '13px 14px',
   borderRadius: radius.md,
   border: `1.5px solid ${colors.borderStrong}`,
-  fontSize: 15,
+  // >= 16px: abaixo disso o iOS dá zoom automático ao focar o campo
+  fontSize: 16,
   outline: 'none',
   background: colors.surfaceAlt,
   boxSizing: 'border-box',
@@ -512,9 +513,10 @@ export function BottomSheet({
           borderRadius: '24px 24px 0 0',
           width: '100%',
           maxWidth: 480,
-          padding: '14px 20px 32px',
+          padding: '14px 20px calc(32px + env(safe-area-inset-bottom, 0px))',
           maxHeight: '88vh',
           overflowY: 'auto',
+          overscrollBehavior: 'contain',
           animation: 'slideUp 0.22s ease',
         }}
       >
@@ -531,8 +533,8 @@ export function BottomSheet({
             <h2 style={text.h2}>{title}</h2>
             {subtitle && <div style={{ ...text.small, marginTop: 2 }}>{subtitle}</div>}
           </div>
-          <button type="button" onClick={onClose} style={{
-            width: 34, height: 34, borderRadius: radius.md, border: 'none',
+          <button type="button" onClick={onClose} aria-label="Fechar" style={{
+            width: 40, height: 40, borderRadius: radius.md, border: 'none',
             background: colors.border, cursor: 'pointer', flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
@@ -582,7 +584,7 @@ export function SearchInput({
         onKeyDown={(e) => { if (e.key === 'Enter' && onSubmit) onSubmit() }}
         placeholder={placeholder}
         style={{
-          flex: 1, border: 'none', outline: 'none', fontSize: 15,
+          flex: 1, minWidth: 0, border: 'none', outline: 'none', fontSize: 16,
           padding: '13px 0', background: 'transparent', color: colors.text,
         }}
       />
@@ -590,7 +592,8 @@ export function SearchInput({
         <button
           type="button"
           onClick={() => onChange('')}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+          aria-label="Limpar busca"
+          style={{ background: 'none', border: 'none', cursor: 'pointer', width: 36, height: 36, marginRight: -8, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
         >
           <X size={16} color={colors.textSubtle} />
         </button>
@@ -604,7 +607,7 @@ export function SearchInput({
  * ═══════════════════════════════════════════════════════════ */
 export function PageSpinner() {
   return (
-    <div style={{ textAlign: 'center', padding: 40 }}>
+    <div role="status" aria-label="Carregando" style={{ textAlign: 'center', padding: 40 }}>
       <div className="spinner" style={{ margin: '0 auto' }} />
     </div>
   )

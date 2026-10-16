@@ -1,9 +1,11 @@
 'use client'
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
 import { supabase } from '@/lib/supabase'
+import { offlineWrite } from '@/lib/offlineWrite'
 import { cacheInvalidate } from '@/lib/cache'
+import { fmtData } from '@/lib/garantias/format'
 import { ChevronRight, ClipboardList, XCircle } from 'lucide-react'
 import Link from 'next/link'
 
@@ -25,12 +27,14 @@ const statusConfig: Record<string, { label: string; bg: string; color: string }>
 }
 
 async function fetchReqEnviadas(nome: string, tecnicoNome: string): Promise<Requisicao[]> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('Requisicao')
     .select('*')
     .or(`solicitante.ilike.%${nome}%,solicitante.eq.${tecnicoNome}`)
     .eq('status', 'pedido')
     .order('data', { ascending: false })
+  // Lança em falha de rede: o useCached cai no cache em vez de gravar lista vazia
+  if (error) throw new Error(error.message)
   return (data || []) as Requisicao[]
 }
 
@@ -46,24 +50,35 @@ export default function RequisicoesEnviadas() {
   )
 
   const [cancelando, setCancelando] = useState<number | null>(null)
+  const cancelandoRef = useRef(false)
 
   const solicitarCancelamento = async (id: number) => {
-    const confirmar = window.confirm('Tem certeza que deseja solicitar o cancelamento desta requisicao?')
+    // Guarda síncrona contra toque duplo (o disabled só vale após o re-render)
+    if (cancelandoRef.current) return
+    const confirmar = window.confirm('Tem certeza que deseja solicitar o cancelamento desta requisição?')
     if (!confirmar) return
 
+    cancelandoRef.current = true
     setCancelando(id)
-    const { error } = await supabase
-      .from('Requisicao')
-      .update({ status: 'cancelar' })
-      .eq('id', id)
-
-    if (error) {
-      alert('Erro ao solicitar cancelamento. Tente novamente.')
-    } else {
-      cacheInvalidate(cacheKey)
-      refresh()
+    try {
+      // offlineWrite: sem sinal, enfileira e envia quando a conexão voltar
+      const res = await offlineWrite({
+        table: 'Requisicao', action: 'update', data: { status: 'cancelar' }, match: { id },
+      })
+      if (!res.ok) {
+        alert('Erro ao solicitar cancelamento. Tente novamente.')
+      } else {
+        if (res.queued) alert('Sem sinal agora — o pedido de cancelamento será enviado assim que a conexão voltar.')
+        cacheInvalidate(cacheKey)
+        refresh()
+      }
+    } catch (err) {
+      console.error('[req-enviadas] cancelar:', err)
+      alert('Erro ao solicitar cancelamento. Verifique o sinal e tente novamente.')
+    } finally {
+      cancelandoRef.current = false
+      setCancelando(null)
     }
-    setCancelando(null)
   }
 
   const getStatus = (status: string) => {
@@ -75,11 +90,11 @@ export default function RequisicoesEnviadas() {
       {refreshing && <div className="refresh-bar" />}
 
       <h1 style={{ fontSize: 22, fontWeight: 700, color: '#C41E2A', margin: '0 0 20px' }}>
-        Requisicoes Enviadas
+        Requisições Enviadas
       </h1>
 
       <div style={{ fontSize: 16, fontWeight: 700, color: '#1F2937', marginBottom: 12 }}>
-        Minhas Requisicoes ({requisicoes?.length || 0})
+        Minhas Requisições ({requisicoes?.length || 0})
       </div>
 
       {loading ? (
@@ -99,10 +114,10 @@ export default function RequisicoesEnviadas() {
             <ClipboardList size={36} color="#D1D5DB" />
           </div>
           <div style={{ fontSize: 16, fontWeight: 600, color: '#6B7280', marginBottom: 6 }}>
-            Nenhuma requisicao enviada
+            Nenhuma requisição enviada
           </div>
           <div style={{ fontSize: 14, color: '#9CA3AF' }}>
-            Suas requisicoes aparecerao aqui
+            Suas requisições aparecerão aqui
           </div>
         </div>
       ) : (
@@ -122,7 +137,7 @@ export default function RequisicoesEnviadas() {
                   display: 'flex', alignItems: 'center', gap: 14,
                 }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
                       <span style={{ fontSize: 16, fontWeight: 700, color: '#C41E2A' }}>
                         #{req.id}
                       </span>
@@ -137,10 +152,10 @@ export default function RequisicoesEnviadas() {
                       {req.titulo}
                     </div>
                     <div style={{ fontSize: 13, color: '#6B7280', marginTop: 4 }}>
-                      {req.tipo} {req.data ? ` - ${new Date(req.data).toLocaleDateString('pt-BR')}` : ''}
+                      {req.tipo} {req.data ? ` - ${fmtData(req.data)}` : ''}
                     </div>
                     {req.obs && (
-                      <div style={{ fontSize: 12, color: '#9CA3AF', marginTop: 4 }}>
+                      <div style={{ fontSize: 12, color: '#9CA3AF', marginTop: 4, overflowWrap: 'anywhere' }}>
                         {req.obs}
                       </div>
                     )}
@@ -153,7 +168,7 @@ export default function RequisicoesEnviadas() {
                     onClick={() => solicitarCancelamento(req.id)}
                     disabled={cancelando === req.id}
                     style={{
-                      marginTop: 12, width: '100%', padding: '10px 0',
+                      marginTop: 12, width: '100%', padding: '10px 0', minHeight: 44,
                       borderRadius: 10, border: '1.5px solid #DC2626',
                       background: cancelando === req.id ? '#FEE2E2' : '#fff',
                       color: '#DC2626', fontSize: 14, fontWeight: 700,

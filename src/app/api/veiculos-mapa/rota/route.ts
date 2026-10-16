@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { hojeBR } from '../../_lib/date'
+import { requireUser } from '../../_lib/auth'
 
 const API_URL = process.env.ROTAEXATA_API_URL || 'https://api.rotaexata.com.br'
 const EMAIL = process.env.ROTAEXATA_EMAIL || ''
@@ -23,6 +25,9 @@ async function getToken(): Promise<string> {
 }
 
 export async function GET(request: NextRequest) {
+  const auth = await requireUser(request)
+  if (auth instanceof NextResponse) return auth
+
   const adesaoId = request.nextUrl.searchParams.get('adesaoId')
   if (!adesaoId) {
     return NextResponse.json({ error: 'adesaoId obrigatorio' }, { status: 400 })
@@ -30,7 +35,7 @@ export async function GET(request: NextRequest) {
 
   try {
     const token = await getToken()
-    const hoje = new Date().toISOString().split('T')[0]
+    const hoje = hojeBR() // fuso de Brasília (UTC virava o dia seguinte após 21h)
 
     const where = encodeURIComponent(JSON.stringify({
       adesao_id: adesaoId,

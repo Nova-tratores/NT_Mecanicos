@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { requireUser } from '@/app/api/_lib/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
@@ -84,20 +85,34 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
   return null
 }
 
-export async function POST(req: NextRequest) {
-  try {
-    const body = await req.json()
-    const { placa, tecnico_nome, user_id } = body
-    let { cpf } = body
+const pal = (s: string): string[] =>
+  String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').match(/[A-Z0-9]+/g) || []
 
-    if (!cpf && user_id) {
-      const { data: usu } = await supabase
-        .from('financeiro_usu')
-        .select('cpf')
-        .eq('id', user_id)
-        .maybeSingle()
-      if (usu?.cpf) cpf = usu.cpf
-    }
+function mesmoNome(a: string, b: string) {
+  const pa = pal(a), pb = pal(b)
+  return pa.length > 0 && pb.length > 0 && (pa.every((w) => pb.includes(w)) || pb.every((w) => pa.includes(w)))
+}
+
+export async function POST(req: NextRequest) {
+  // Exige login: a resposta tem a senha do cartão Veloe
+  const auth = await requireUser(req)
+  if (auth instanceof NextResponse) return auth
+
+  try {
+    const body = await req.json().catch(() => ({}))
+    const { placa } = body
+
+    // CPF e nomes vêm SEMPRE do usuário logado — nunca do corpo do pedido
+    const [{ data: usu }, { data: perm }, { data: legado }] = await Promise.all([
+      supabase.from('financeiro_usu').select('cpf, nome').eq('id', auth.user.id).maybeSingle(),
+      supabase.from('portal_permissoes').select('mecanico_tecnico_nome').eq('user_id', auth.user.id).maybeSingle(),
+      supabase.from('mecanico_usuarios').select('tecnico_nome, nome_pos').eq('id', auth.user.id).maybeSingle(),
+    ])
+    const cpf: string | undefined = usu?.cpf || undefined
+    const meusNomes = [usu?.nome, perm?.mecanico_tecnico_nome, legado?.tecnico_nome, legado?.nome_pos]
+      .filter((n): n is string => !!n?.trim())
+    // O nome pedido só vale se for um dos nomes do próprio usuário
+    const tecnico_nome = meusNomes.find((n) => mesmoNome(n, String(body.tecnico_nome || ''))) || meusNomes[0]
 
     const achado = await findFrotaVeiculo(placa, tecnico_nome, cpf)
     if (!achado) return NextResponse.json({ error: 'Veículo não encontrado' }, { status: 404 })
@@ -138,13 +153,7 @@ export async function POST(req: NextRequest) {
     // Senha do cartão Veloe: SÓ pro responsável do carro (o app pede pelo
     // próprio técnico via cpf/nome; na busca por placa exige o nome casar
     // com o responsável atual — não vaza senha de carro alheio)
-    const pal = (s: string): string[] =>
-      String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').match(/[A-Z0-9]+/g) || []
-    const reqPal = pal(String(tecnico_nome || ''))
-    const respPal = pal(String(responsavelAtual?.motorista_nome || ''))
-    const nomesCasam =
-      reqPal.length > 0 && respPal.length > 0 &&
-      (reqPal.every((w) => respPal.includes(w)) || respPal.every((w) => reqPal.includes(w)))
+    const nomesCasam = meusNomes.some((n) => mesmoNome(n, String(responsavelAtual?.motorista_nome || '')))
     const ehResponsavel = via !== 'placa' || nomesCasam
 
     const custosPorTipo: Record<string, number> = {}
@@ -233,6 +242,7 @@ export async function POST(req: NextRequest) {
       documentos,
     })
   } catch (e: unknown) {
-    return NextResponse.json({ error: (e as Error).message }, { status: 500 })
+    console.error('[veiculo-info]', e)
+    return NextResponse.json({ error: 'Erro ao carregar o veículo' }, { status: 500 })
   }
 }

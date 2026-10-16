@@ -41,18 +41,33 @@ export default function FotosPage() {
 
   const pesquisar = async () => {
     const termo = busca.trim()
-    if (!termo) return
+    if (!termo || buscando) return
     setBuscando(true)
     setFotos([])
     setOsInfo(null)
     setBuscaFeita(false)
 
-    const { data } = await supabase
+    try {
+    const campos = FOTO_CAMPOS.join(', ') + ', TecResp1, Data, Ordem_Servico'
+    // 1º tenta a OS exata; o ilike sozinho com limit(1) podia trazer outra OS
+    // (ex.: buscar 'OS-23' e abrir a 'OS-0234')
+    let { data } = await supabase
       .from('Ordem_Servico_Tecnicos')
-      .select(FOTO_CAMPOS.join(', ') + ', TecResp1, Data, Ordem_Servico')
-      .ilike('Ordem_Servico', `%${termo}%`)
+      .select(campos)
+      .eq('Ordem_Servico', termo)
       .limit(1)
       .maybeSingle()
+    if (!data) {
+      const termoLike = termo.replace(/[%_\\]/g, '\\$&')
+      const r = await supabase
+        .from('Ordem_Servico_Tecnicos')
+        .select(campos)
+        .ilike('Ordem_Servico', `%${termoLike}%`)
+        .order('Ordem_Servico')
+        .limit(1)
+        .maybeSingle()
+      data = r.data
+    }
 
     if (data) {
       const encontradas: FotoItem[] = []
@@ -79,9 +94,12 @@ export default function FotosPage() {
         data: (rec.Data as string) || '-',
       })
     }
-
-    setBuscaFeita(true)
-    setBuscando(false)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setBuscaFeita(true)
+      setBuscando(false)
+    }
   }
 
   const baixarFoto = async (foto: FotoItem) => {
@@ -94,7 +112,8 @@ export default function FotosPage() {
       a.href = URL.createObjectURL(blob)
       a.download = `${busca.trim()}_${foto.campo}.${ext}`
       a.click()
-      URL.revokeObjectURL(a.href)
+      // Revogar na hora pode cancelar o download em alguns navegadores
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000)
     } catch {
       alert('Erro ao baixar foto')
     }
@@ -109,7 +128,9 @@ export default function FotosPage() {
 
   const formatarData = (d: string) => {
     if (!d) return '-'
-    const [y, m, day] = d.split('-')
+    // Pode vir como timestamp ('YYYY-MM-DDTHH:mm...')
+    const [y, m, day] = d.slice(0, 10).split('-')
+    if (!day) return d
     return `${day}/${m}/${y}`
   }
 

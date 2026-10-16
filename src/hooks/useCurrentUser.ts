@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { removerInscricaoPush } from '@/lib/push'
 import type { MecanicoProfile } from '@/lib/types'
 
 const PROFILE_KEY = 'nt-mecanicos-profile'
@@ -38,7 +39,7 @@ export function useCurrentUser() {
   const [loading, setLoading] = useState(() => !getCachedProfile())
   const router = useRouter()
   const routerRef = useRef(router)
-  routerRef.current = router
+  useEffect(() => { routerRef.current = router }, [router])
 
   const [refreshKey, setRefreshKey] = useState(0)
 
@@ -204,6 +205,8 @@ export function useCurrentUser() {
   }, [refreshKey])
 
   const logout = async () => {
+    // Este celular para de receber as notificações do usuário que saiu
+    await removerInscricaoPush()
     clearCachedProfile()
     await supabase.auth.signOut()
     routerRef.current.replace('/login')

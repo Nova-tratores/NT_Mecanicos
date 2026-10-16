@@ -49,6 +49,9 @@ async function fetchOsData(nome: string): Promise<OsData> {
   ])
 
   if (osAtivasRes.error) throw new Error(osAtivasRes.error.message)
+  // Sem a lista global as "enviadas" somem e OS já enviadas voltam pra
+  // "Preencher" — melhor manter o cache anterior (useCached cai no IndexedDB)
+  if (osTodasRes.error) throw new Error(osTodasRes.error.message)
 
   const todas = (osAtivasRes.data || []) as OrdemServico[]
   const todasGlobal = (osTodasRes.data || []) as { Id_Ordem: string; Status: string }[]
@@ -92,6 +95,8 @@ async function fetchOsData(nome: string): Promise<OsData> {
           .eq('Status', 'enviado')
         : Promise.resolve({ data: null }),
     ])
+    if (preenchRes.error) throw new Error(preenchRes.error.message)
+    if ('error' in enviadasAllRes && enviadasAllRes.error) throw new Error(enviadasAllRes.error.message)
     if (preenchRes.data) {
       preenchidas = new Set(preenchRes.data.map((p: { Ordem_Servico: string }) => String(p.Ordem_Servico)))
     }
@@ -121,7 +126,9 @@ async function fetchOsData(nome: string): Promise<OsData> {
 
 /* ═══ Helpers ═══ */
 function getHoje() {
-  return new Date().toISOString().split('T')[0]
+  // data local (toISOString é UTC: depois das 21h virava o dia seguinte)
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 function formatarData(d: string) {
@@ -348,29 +355,60 @@ export default function OrdensHub() {
     }
     let cancelled = false
     setBuscando(true)
+    const termo = buscaDebounced.trim()
+    // Sem sinal: busca nas OS já carregadas (antes ficava "Nenhuma OS
+    // encontrada" ou com spinner eterno no campo)
+    const buscaLocal = () => {
+      const t = termo.toLowerCase()
+      return ordensRaw.filter(o =>
+        String(o.Id_Ordem || '').toLowerCase().includes(t) ||
+        String(o.Os_Cliente || '').toLowerCase().includes(t) ||
+        String(o.ID_PPV || '').toLowerCase().includes(t),
+      ).slice(0, 10)
+    }
     ;(async () => {
-      const { data: searchData } = await supabase
-        .from('Ordem_Servico')
-        .select('*')
-        .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
-        .or(`Id_Ordem.ilike.%${buscaDebounced.trim()}%,Os_Cliente.ilike.%${buscaDebounced.trim()}%,ID_PPV.ilike.%${buscaDebounced.trim()}%`)
-        .limit(10)
-      if (cancelled) return
-      const resultado = (searchData || []) as OrdemServico[]
-      setResultadoBusca(resultado)
-      const cnpjs = [...new Set(resultado.map(o => o.Cnpj_Cliente).filter(Boolean))]
-      if (cnpjs.length > 0) {
-        const { data: cliData } = await supabase.from('Clientes').select('cnpj_cpf, cidade').in('cnpj_cpf', cnpjs)
+      try {
+        if (!navigator.onLine) {
+          setResultadoBusca(buscaLocal())
+          setBuscaCidadeMap(cidadeMap)
+          return
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), 8000) })
+        const { data: searchData, error } = await Promise.race([
+          supabase
+            .from('Ordem_Servico')
+            .select('*')
+            .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
+            .or(`Id_Ordem.ilike.%${termo}%,Os_Cliente.ilike.%${termo}%,ID_PPV.ilike.%${termo}%`)
+            .limit(10),
+          timeout,
+        ]).finally(() => clearTimeout(timer))
         if (cancelled) return
-        const mapa: Record<string, string> = {}
-        cliData?.forEach((c: { cnpj_cpf: string; cidade: string | null }) => {
-          if (c.cidade) mapa[c.cnpj_cpf] = c.cidade
-        })
-        setBuscaCidadeMap(mapa)
+        if (error) throw error
+        const resultado = (searchData || []) as OrdemServico[]
+        setResultadoBusca(resultado)
+        const cnpjs = [...new Set(resultado.map(o => o.Cnpj_Cliente).filter(Boolean))]
+        if (cnpjs.length > 0) {
+          const { data: cliData } = await supabase.from('Clientes').select('cnpj_cpf, cidade').in('cnpj_cpf', cnpjs)
+          if (cancelled) return
+          const mapa: Record<string, string> = {}
+          cliData?.forEach((c: { cnpj_cpf: string; cidade: string | null }) => {
+            if (c.cidade) mapa[c.cnpj_cpf] = c.cidade
+          })
+          setBuscaCidadeMap(mapa)
+        }
+      } catch {
+        if (cancelled) return
+        setResultadoBusca(buscaLocal())
+        setBuscaCidadeMap(cidadeMap)
+      } finally {
+        if (!cancelled) setBuscando(false)
       }
-      setBuscando(false)
     })()
     return () => { cancelled = true }
+  // ordensRaw/cidadeMap só servem de fallback offline — não refazem a busca
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [buscaDebounced])
 
   return (
@@ -474,7 +512,7 @@ const FOTO_KEYS_ENV = Object.keys(FOTO_CAMPOS_ENV)
 function OsEnviadasTab({ nome }: { nome: string }) {
   const [busca, setBusca] = useState('')
   const [expandido, setExpandido] = useState<string | null>(null)
-  const [fotosPorOs, setFotosPorOs] = useState<Record<string, { label: string; url: string }[] | 'loading'>>({})
+  const [fotosPorOs, setFotosPorOs] = useState<Record<string, { label: string; url: string }[] | 'loading' | 'erro'>>({})
 
   const { data: ordens, loading } = useCached(
     `os-enviadas:v6:${nome}`,
@@ -508,8 +546,9 @@ function OsEnviadasTab({ nome }: { nome: string }) {
         .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
         .limit(1000)
       if (osErr) {
-        console.warn('[os-enviadas] erro na query de OS:', osErr.message)
-        return [] as RegTec[]
+        // lança (em vez de devolver []) para o useCached manter a lista em
+        // cache — com sinal fraco a aba "Enviadas" era sobrescrita por vazio
+        throw new Error(osErr.message)
       }
       const osArr = (osList || []) as OS[]
       if (osArr.length === 0) return [] as RegTec[]
@@ -517,11 +556,14 @@ function OsEnviadasTab({ nome }: { nome: string }) {
       const ids = osArr.map(o => String(o.Id_Ordem))
       const { data: regsData, error: regsErr } = await supabase
         .from('Ordem_Servico_Tecnicos')
-        .select('id, Ordem_Servico, TecResp1, TecResp2, Data, TipoServico, Status, pdf_criado')
+        .select('IdOs, Ordem_Servico, TecResp1, TecResp2, Data, TipoServico, Status, pdf_criado')
         .in('Ordem_Servico', ids)
         .order('Data', { ascending: false })
-      if (regsErr) console.warn('[os-enviadas] erro na query de registros:', regsErr.message)
-      const todosRegs = (regsData || []) as RegTec[]
+      // A PK da tabela é IdOs — pedir "id" fazia a query falhar calada e a aba
+      // só mostrava as OS que o portal já tinha finalizado.
+      if (regsErr) throw new Error(regsErr.message)
+      const todosRegs = ((regsData || []) as unknown as (Omit<RegTec, 'id'> & { IdOs: number })[])
+        .map(r => ({ ...r, id: r.IdOs }))
 
       // Agrupa registros por Ordem_Servico
       const regsPorOs = new Map<string, RegTec[]>()
@@ -561,12 +603,27 @@ function OsEnviadasTab({ nome }: { nome: string }) {
   const toggle = async (idOs: string) => {
     if (expandido === idOs) { setExpandido(null); return }
     setExpandido(idOs)
-    if (!fotosPorOs[idOs]) {
+    if (!fotosPorOs[idOs] || fotosPorOs[idOs] === 'erro') {
       setFotosPorOs(p => ({ ...p, [idOs]: 'loading' }))
-      const { data } = await supabase
-        .from('Ordem_Servico_Tecnicos')
-        .select(FOTO_KEYS_ENV.join(','))
-        .eq('Ordem_Servico', idOs)
+      let data: unknown[] | null = null
+      try {
+        if (!navigator.onLine) throw new Error('offline')
+        let timer: ReturnType<typeof setTimeout> | undefined
+        const res = await Promise.race([
+          supabase
+            .from('Ordem_Servico_Tecnicos')
+            .select(FOTO_KEYS_ENV.join(','))
+            .eq('Ordem_Servico', idOs),
+          new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), 10000) }),
+        ]).finally(() => clearTimeout(timer))
+        if (res.error) throw res.error
+        data = res.data
+      } catch {
+        // sem sinal: mostra aviso e deixa tentar de novo (antes ficava
+        // "Carregando fotos..." pra sempre ou "Nenhuma foto" falso)
+        setFotosPorOs(p => ({ ...p, [idOs]: 'erro' }))
+        return
+      }
       const vistos = new Set<string>()
       const urls: { label: string; url: string }[] = []
       for (const row of (data || []) as unknown as Record<string, unknown>[]) {
@@ -634,6 +691,8 @@ function OsEnviadasTab({ nome }: { nome: string }) {
                   <div style={{ padding: '0 16px 16px' }}>
                     {fotos === 'loading' || fotos === undefined ? (
                       <div style={{ fontSize: 13, color: colors.textMuted, padding: '8px 0' }}>Carregando fotos...</div>
+                    ) : fotos === 'erro' ? (
+                      <div style={{ fontSize: 13, color: colors.textMuted, padding: '8px 0' }}>Sem conexão para carregar as fotos. Feche e abra de novo para tentar.</div>
                     ) : fotos.length === 0 ? (
                       <div style={{ fontSize: 13, color: colors.textMuted, padding: '8px 0' }}>Nenhuma foto anexada.</div>
                     ) : (

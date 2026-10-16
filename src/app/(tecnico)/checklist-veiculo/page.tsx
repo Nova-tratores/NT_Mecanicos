@@ -13,6 +13,10 @@ import { PageSpinner } from '@/components/ui'
 interface CheckItem {
   key: string; cat: string; titulo: string; desc: string
 }
+interface HistoricoItem {
+  id: string; status: string; mes_referencia: string | null; share_token: string | null
+  score_confianca: number | null; titulo: string | null; km: number | null
+}
 interface SavedItem {
   item_key: string; resposta: string; observacao: string; foto_url: string | null
 }
@@ -100,8 +104,73 @@ const MOLDES: Record<string, { svg: string; dica: string }> = {
   },
 }
 
+const TIMEOUT_MS = 15000
+
+function withTimeout<T>(p: Promise<T>, ms = TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('timeout')), ms)
+    p.then(
+      v => { clearTimeout(t); resolve(v) },
+      e => { clearTimeout(t); reject(e) },
+    )
+  })
+}
+
+async function obterLocalizacao(): Promise<{ lat: number; lng: number } | null> {
+  if (typeof navigator === 'undefined' || !navigator.geolocation) return null
+  try {
+    const pos = await withTimeout(
+      new Promise<GeolocationPosition>((res, rej) =>
+        navigator.geolocation.getCurrentPosition(res, rej, { timeout: 5000, maximumAge: 60000 }),
+      ),
+      7000,
+    )
+    return { lat: pos.coords.latitude, lng: pos.coords.longitude }
+  } catch {
+    return null
+  }
+}
+
+const LIMITE_UPLOAD = 3.5 * 1024 * 1024
+
+/** Reduz para JPEG ~1920px só quando a foto passa do limite seguro de upload. */
+async function reduzirFotoGrande(file: File): Promise<File> {
+  if (file.size <= LIMITE_UPLOAD || !file.type.startsWith('image/')) return file
+  const url = URL.createObjectURL(file)
+  try {
+    const img = await new Promise<HTMLImageElement>((res, rej) => {
+      const i = new Image()
+      i.onload = () => res(i)
+      i.onerror = rej
+      i.src = url
+    })
+    const escala = Math.min(1, 1920 / Math.max(img.naturalWidth, img.naturalHeight))
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(img.naturalWidth * escala))
+    canvas.height = Math.max(1, Math.round(img.naturalHeight * escala))
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return file
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.85))
+    return blob ? new File([blob], `checklist-${Date.now()}.jpg`, { type: 'image/jpeg' }) : file
+  } catch {
+    return file
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+async function lerJson(res: Response): Promise<Record<string, unknown>> {
+  try {
+    const j = await res.json()
+    return j && typeof j === 'object' ? j : {}
+  } catch {
+    return {}
+  }
+}
+
 export default function ChecklistVeiculoPage() {
-  const { user } = useCurrentUser()
+  const { user, loading: userLoading } = useCurrentUser()
   const nome = user?.nome_pos || user?.tecnico_nome || ''
 
   const [veiculo, setVeiculo] = useState<{ placa: string } | null>(null)
@@ -111,10 +180,14 @@ export default function ChecklistVeiculoPage() {
   const [step, setStep] = useState(-1) // -1 = intro, 0..N = items, N+1 = resumo
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [resultado, setResultado] = useState<{ status: string; score: number; alertas: string[]; shareToken?: string; titulo?: string } | null>(null)
+  const [resultado, setResultado] = useState<{ status: string; score: number; alertas: string[]; duracao: number; shareToken?: string; titulo?: string } | null>(null)
 
   const [km, setKm] = useState('')
-  const [historico, setHistorico] = useState<any[]>([])
+  const [historico, setHistorico] = useState<HistoricoItem[]>([])
+  const [erroCarga, setErroCarga] = useState('')
+  const [tentativa, setTentativa] = useState(0)
+  // Trava síncrona contra toque duplo (o `disabled` só vale após o re-render)
+  const enviandoRef = useRef(false)
 
   // Item state
   const [foto, setFoto] = useState<File | null>(null)
@@ -128,60 +201,116 @@ export default function ChecklistVeiculoPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
 
+  // Revoga object URLs de prévia ao trocar/desmontar (evita vazar memória com 20 fotos)
+  useEffect(() => {
+    if (!fotoPreview || !fotoPreview.startsWith('blob:')) return
+    return () => URL.revokeObjectURL(fotoPreview)
+  }, [fotoPreview])
+
+  // Desliga a câmera se o usuário sair da página com o visor aberto
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+  }, [])
+
+  // Conecta o stream ao <video> depois que o visor é renderizado
+  useEffect(() => {
+    if (!cameraAberta) return
+    const video = videoRef.current
+    const stream = streamRef.current
+    if (!video || !stream) return
+    video.srcObject = stream
+    video.play().catch(() => { /* autoplay bloqueado: o atributo autoPlay tenta de novo */ })
+  }, [cameraAberta])
+
   // Load vehicle + existing checklist + history
   useEffect(() => {
-    if (!nome) return
+    if (!nome) {
+      // Perfil carregado mas sem nome: não deixar a tela presa no spinner
+      if (!userLoading) setLoading(false)
+      return
+    }
+    let cancelado = false
+    const cacheKey = `nt-checklist-veiculo:${nome}`
     ;(async () => {
-      const { data: v } = await supabase
-        .from('tecnico_veiculos')
-        .select('placa')
-        .eq('tecnico_nome', nome)
-        .maybeSingle()
-      if (v) setVeiculo(v)
-
-      // Carregar histórico
       try {
-        const res = await fetch('/api/checklist-veiculo', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'listar', tecnico_nome: nome }),
-        })
-        if (res.ok) {
-          const lista = await res.json()
-          setHistorico(lista)
+        try {
+          const { data: v, error } = await withTimeout(
+            Promise.resolve(supabase
+              .from('tecnico_veiculos')
+              .select('placa')
+              .eq('tecnico_nome', nome)
+              .maybeSingle()),
+          )
+          if (error) throw error
+          if (cancelado) return
+          setVeiculo(v && v.placa ? v : null)
+          try {
+            if (v && v.placa) localStorage.setItem(cacheKey, JSON.stringify(v))
+            else localStorage.removeItem(cacheKey)
+          } catch { /* storage indisponível */ }
+        } catch {
+          // Sem sinal: usa o último veículo conhecido em vez de dizer "sem veículo"
+          if (cancelado) return
+          let cache: { placa: string } | null = null
+          try { cache = JSON.parse(localStorage.getItem(cacheKey) || 'null') } catch { /* ignore */ }
+          if (cache?.placa) setVeiculo(cache)
+          else setErroCarga('Sem conexão. Não foi possível carregar o seu veículo. Tente novamente quando tiver sinal.')
         }
-      } catch {}
 
-      setLoading(false)
+        // Carregar histórico
+        try {
+          const res = await withTimeout(fetch('/api/checklist-veiculo', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'listar', tecnico_nome: nome }),
+          }))
+          if (res.ok) {
+            const lista = await res.json()
+            if (!cancelado && Array.isArray(lista)) setHistorico(lista)
+          }
+        } catch { /* histórico é opcional */ }
+      } finally {
+        if (!cancelado) setLoading(false)
+      }
     })()
-  }, [nome])
+    return () => { cancelado = true }
+  }, [nome, userLoading, tentativa])
 
   const iniciar = useCallback(async () => {
-    if (!veiculo || !nome) return
+    if (!veiculo || !nome || enviandoRef.current) return
+    enviandoRef.current = true
     setLoading(true)
-    let loc: { lat: number; lng: number } | null = null
     try {
-      const pos = await new Promise<GeolocationPosition>((res, rej) =>
-        navigator.geolocation.getCurrentPosition(res, rej, { timeout: 5000 }),
-      )
-      loc = { lat: pos.coords.latitude, lng: pos.coords.longitude }
-    } catch {}
+      const loc = await obterLocalizacao()
 
-    const res = await fetch('/api/checklist-veiculo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'iniciar', tecnico_nome: nome, placa: veiculo.placa, loc, km: km || null }),
-    })
-    const data = await res.json()
-    setChecklistId(data.id)
-    setItems(data.items || [])
-    const map = new Map<string, SavedItem>()
-    for (const it of data.itens || []) map.set(it.item_key, it)
-    setSavedItems(map)
-    // Resume from first unanswered item
-    const firstUnanswered = (data.items || []).findIndex((i: CheckItem) => !map.has(i.key))
-    setStep(firstUnanswered >= 0 ? firstUnanswered : 0)
-    setLoading(false)
+      const res = await withTimeout(fetch('/api/checklist-veiculo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'iniciar', tecnico_nome: nome, placa: veiculo.placa, loc, km: km || null }),
+      }))
+      const data = await lerJson(res)
+      const lista = Array.isArray(data.items) ? (data.items as CheckItem[]) : []
+      if (!res.ok || !data.id || lista.length === 0) {
+        alert(typeof data.error === 'string' && res.status < 500
+          ? data.error
+          : 'Não foi possível iniciar o checklist. Tente novamente.')
+        return
+      }
+      setChecklistId(String(data.id))
+      setItems(lista)
+      const map = new Map<string, SavedItem>()
+      for (const it of (Array.isArray(data.itens) ? data.itens : []) as SavedItem[]) map.set(it.item_key, it)
+      setSavedItems(map)
+      // Resume from first unanswered item
+      const firstUnanswered = lista.findIndex(i => !map.has(i.key))
+      setStep(firstUnanswered >= 0 ? firstUnanswered : lista.length)
+    } catch {
+      alert('Sem conexão para iniciar o checklist. Verifique sua internet e tente novamente.')
+    } finally {
+      enviandoRef.current = false
+      setLoading(false)
+    }
   }, [nome, veiculo, km])
 
   const salvarItem = useCallback(async () => {
@@ -189,6 +318,8 @@ export default function ChecklistVeiculoPage() {
     const item = items[step]
     if (!foto && !savedItems.get(item.key)?.foto_url) return
     if (!resposta) return
+    if (enviandoRef.current) return
+    enviandoRef.current = true
     setSaving(true)
 
     const fd = new FormData()
@@ -202,12 +333,14 @@ export default function ChecklistVeiculoPage() {
     if (foto) fd.append('foto', foto)
 
     try {
-      const res = await fetch('/api/checklist-veiculo', { method: 'POST', body: fd })
-      const json = await res.json()
+      // Upload em sinal fraco pode demorar; sem limite o botão ficaria "Salvando..." para sempre
+      const res = await withTimeout(fetch('/api/checklist-veiculo', { method: 'POST', body: fd }), 90000)
+      const json = await lerJson(res)
 
       if (!res.ok) {
-        setSaving(false)
-        alert(`Erro ao salvar item: ${json.error || 'Tente novamente'}`)
+        alert(res.status === 413
+          ? 'A foto é muito grande para enviar. Tire a foto novamente.'
+          : 'Não foi possível salvar este item. Verifique sua internet e tente novamente.')
         return
       }
 
@@ -215,7 +348,7 @@ export default function ChecklistVeiculoPage() {
         const next = new Map(prev)
         next.set(item.key, {
           item_key: item.key, resposta, observacao: obs,
-          foto_url: json.foto_url || prev.get(item.key)?.foto_url || null,
+          foto_url: (typeof json.foto_url === 'string' ? json.foto_url : null) || prev.get(item.key)?.foto_url || null,
         })
         return next
       })
@@ -230,49 +363,60 @@ export default function ChecklistVeiculoPage() {
       } else {
         setStep(items.length) // summary
       }
-    } catch (err) {
+    } catch {
       alert('Erro de conexão ao salvar. Verifique sua internet e tente novamente.')
+    } finally {
+      enviandoRef.current = false
+      setSaving(false)
     }
-    setSaving(false)
   }, [checklistId, step, items, foto, resposta, obs, savedItems])
 
   const concluir = useCallback(async () => {
-    if (!checklistId) return
+    if (!checklistId || enviandoRef.current) return
+    enviandoRef.current = true
     setSaving(true)
-    let loc: { lat: number; lng: number } | null = null
     try {
-      const pos = await new Promise<GeolocationPosition>((res, rej) =>
-        navigator.geolocation.getCurrentPosition(res, rej, { timeout: 5000 }),
-      )
-      loc = { lat: pos.coords.latitude, lng: pos.coords.longitude }
-    } catch {}
+      const loc = await obterLocalizacao()
 
-    try {
-      const res = await fetch('/api/checklist-veiculo', {
+      const res = await withTimeout(fetch('/api/checklist-veiculo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action: 'concluir', checklist_id: checklistId, loc }),
-      })
-      const data = await res.json()
+      }))
+      const data = await lerJson(res)
 
       if (!res.ok) {
-        setSaving(false)
-        alert(data.error || 'Erro ao concluir checklist')
+        alert(typeof data.error === 'string' && res.status < 500
+          ? data.error
+          : 'Não foi possível concluir o checklist. Tente novamente.')
         return
       }
 
-      // Get share token
-      const { data: cl } = await supabase
-        .from('veiculo_checklist')
-        .select('share_token')
-        .eq('id', checklistId)
-        .single()
+      // Get share token (opcional — sem ele só não aparece o botão de compartilhar)
+      let shareToken: string | undefined
+      try {
+        const { data: cl } = await withTimeout(Promise.resolve(supabase
+          .from('veiculo_checklist')
+          .select('share_token')
+          .eq('id', checklistId)
+          .maybeSingle()), 8000)
+        shareToken = cl?.share_token || undefined
+      } catch { /* ignore */ }
 
-      setResultado({ ...data, shareToken: cl?.share_token, titulo: data.titulo })
+      setResultado({
+        status: typeof data.status === 'string' ? data.status : 'completo',
+        score: typeof data.score === 'number' ? data.score : 0,
+        alertas: Array.isArray(data.alertas) ? (data.alertas as string[]) : [],
+        duracao: typeof data.duracao === 'number' ? data.duracao : 0,
+        titulo: typeof data.titulo === 'string' ? data.titulo : undefined,
+        shareToken,
+      })
     } catch {
       alert('Erro de conexão. Verifique sua internet e tente novamente.')
+    } finally {
+      enviandoRef.current = false
+      setSaving(false)
     }
-    setSaving(false)
   }, [checklistId])
 
   // Load saved data when step changes
@@ -292,27 +436,24 @@ export default function ChecklistVeiculoPage() {
     setFoto(null)
   }, [step, items, savedItems])
 
-  const handleFoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file) return
-    setFoto(file)
-    setFotoPreview(URL.createObjectURL(file))
     e.target.value = ''
+    if (!file) return
+    // Foto da câmera nativa pode passar de 4 MB e ser recusada no upload (limite do servidor)
+    const final = await reduzirFotoGrande(file)
+    setFoto(final)
+    setFotoPreview(URL.createObjectURL(final))
   }
 
   const abrirCamera = async () => {
     try {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error('sem getUserMedia')
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } },
       })
       streamRef.current = stream
-      setCameraAberta(true)
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-          videoRef.current.play()
-        }
-      }, 50)
+      setCameraAberta(true) // o stream é ligado ao <video> no efeito de `cameraAberta`
     } catch {
       fotoRef.current?.click()
     }
@@ -327,6 +468,8 @@ export default function ChecklistVeiculoPage() {
   const capturarFoto = () => {
     const video = videoRef.current
     if (!video) return
+    // Câmera ainda iniciando: sem dimensões o toBlob devolve null e nada acontece
+    if (!video.videoWidth || !video.videoHeight) return
     const canvas = document.createElement('canvas')
     canvas.width = video.videoWidth
     canvas.height = video.videoHeight
@@ -343,13 +486,20 @@ export default function ChecklistVeiculoPage() {
   }
 
   const compartilhar = () => {
-    if (!resultado?.shareToken) return
+    if (!resultado?.shareToken) {
+      alert('Link de compartilhamento indisponível no momento. Tente pelo histórico mais tarde.')
+      return
+    }
     const url = `${window.location.origin}/checklist-veiculo/ver?token=${resultado.shareToken}`
     if (navigator.share) {
-      navigator.share({ title: 'Checklist do Veículo', url })
-    } else {
+      // Cancelar o menu de compartilhar rejeita a promise (AbortError)
+      navigator.share({ title: 'Checklist do Veículo', url }).catch(() => {})
+    } else if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(url)
-      alert('Link copiado!')
+        .then(() => alert('Link copiado!'))
+        .catch(() => window.prompt('Copie o link:', url))
+    } else {
+      window.prompt('Copie o link:', url)
     }
   }
 
@@ -359,10 +509,23 @@ export default function ChecklistVeiculoPage() {
     return (
       <div style={{ padding: 20, textAlign: 'center' }}>
         <Car size={48} color={colors.textMuted} style={{ margin: '40px auto 16px' }} />
-        <div style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>Sem veículo atribuído</div>
-        <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 6 }}>
-          Você precisa ter um veículo atribuído para realizar o checklist
+        <div style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>
+          {erroCarga ? 'Sem conexão' : 'Sem veículo atribuído'}
         </div>
+        <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 6 }}>
+          {erroCarga || 'Você precisa ter um veículo atribuído para realizar o checklist'}
+        </div>
+        {erroCarga && (
+          <button
+            type="button"
+            onClick={() => { setErroCarga(''); setLoading(true); setTentativa(t => t + 1) }}
+            style={{
+              display: 'inline-block', marginTop: 20, marginRight: 8, padding: '10px 20px', borderRadius: 12,
+              background: colors.surface, color: colors.text, border: `1px solid ${colors.borderStrong}`,
+              fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >Tentar novamente</button>
+        )}
         <Link href="/" style={{
           display: 'inline-block', marginTop: 20, padding: '10px 20px', borderRadius: 12,
           background: colors.primary, color: '#fff', textDecoration: 'none', fontSize: 14, fontWeight: 600,
@@ -389,7 +552,7 @@ export default function ChecklistVeiculoPage() {
             <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, marginTop: 6 }}>{resultado.titulo}</div>
           )}
           <div style={{ fontSize: 14, color: colors.textMuted, marginTop: 4 }}>
-            {Math.floor((resultado as any).duracao / 60)}min {(resultado as any).duracao % 60}s de duração
+            {Math.floor(resultado.duracao / 60)}min {resultado.duracao % 60}s de duração
           </div>
         </div>
 
@@ -409,13 +572,13 @@ export default function ChecklistVeiculoPage() {
           }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: colors.warning, marginBottom: 6 }}>Observações da análise</div>
             {resultado.alertas.map((a, i) => (
-              <div key={i} style={{ fontSize: 11, color: colors.text, padding: '3px 0' }}>• {a}</div>
+              <div key={i} style={{ fontSize: 12, color: colors.text, padding: '3px 0' }}>• {a}</div>
             ))}
           </div>
         )}
 
         <div style={{ display: 'flex', gap: 10 }}>
-          <button onClick={compartilhar} style={{
+          <button type="button" onClick={compartilhar} style={{
             flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             padding: '12px 16px', borderRadius: 14, border: `1px solid ${colors.border}`,
             background: colors.surface, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: colors.text,
@@ -436,14 +599,14 @@ export default function ChecklistVeiculoPage() {
 
   // Intro screen
   if (step === -1) {
-    const partes = veiculo.placa.split(' - ')
+    const partes = (veiculo.placa || '').split(' - ')
     const modelo = partes.length > 1 ? partes.slice(0, -1).join(' - ') : ''
     const placaNum = partes[partes.length - 1]
     const hoje = new Date()
     const mesLabel = hoje.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })
     return (
       <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <Link href="/" style={{ color: colors.textMuted, textDecoration: 'none', fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
+        <Link href="/" style={{ color: colors.textMuted, textDecoration: 'none', fontSize: 13, display: 'flex', alignItems: 'center', gap: 4, minHeight: 40, alignSelf: 'flex-start' }}>
           <ChevronLeft size={16} /> Voltar
         </Link>
 
@@ -462,9 +625,9 @@ export default function ChecklistVeiculoPage() {
           background: colors.surfaceAlt, borderRadius: 16, padding: 16,
           border: `1px solid ${colors.border}`, display: 'flex', alignItems: 'center', gap: 12,
         }}>
-          <Car size={24} color={colors.primary} />
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>{modelo || veiculo.placa}</div>
+          <Car size={24} color={colors.primary} style={{ flexShrink: 0 }} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: colors.text, overflowWrap: 'anywhere' }}>{modelo || veiculo.placa}</div>
             <div style={{ fontSize: 12, color: colors.textMuted }}>{placaNum}</div>
           </div>
         </div>
@@ -507,7 +670,7 @@ export default function ChecklistVeiculoPage() {
           </div>
         </div>
 
-        <button onClick={iniciar} disabled={loading || !km} style={{
+        <button type="button" onClick={iniciar} disabled={loading || !km} style={{
           width: '100%', padding: '14px 20px', borderRadius: 14,
           background: km ? colors.primary : colors.border, color: km ? '#fff' : colors.textMuted, border: 'none',
           fontSize: 16, fontWeight: 700, cursor: km ? 'pointer' : 'default',
@@ -547,7 +710,7 @@ export default function ChecklistVeiculoPage() {
                       <span style={{ fontSize: 13, fontWeight: 800, color: '#fff' }}>{h.score_confianca ?? '—'}</span>
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {h.titulo || `Checklist de ${mesNome}`}
                       </div>
                       <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
@@ -600,10 +763,10 @@ export default function ChecklistVeiculoPage() {
                 key={item.key}
                 onClick={() => setStep(i)}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', minHeight: 48,
                   borderRadius: 10, border: `1px solid ${colors.border}`,
                   background: saved ? colors.surface : colors.warningBg,
-                  cursor: 'pointer', textAlign: 'left', width: '100%',
+                  cursor: 'pointer', textAlign: 'left', width: '100%', fontFamily: 'inherit',
                 }}
               >
                 <div style={{
@@ -621,7 +784,7 @@ export default function ChecklistVeiculoPage() {
                     <span style={{ fontSize: 11, fontWeight: 700, color: colors.warning }}>{i + 1}</span>
                   )}
                 </div>
-                <span style={{ fontSize: 12, color: colors.text, flex: 1 }}>{item.titulo}</span>
+                <span style={{ fontSize: 13, color: colors.text, flex: 1, minWidth: 0 }}>{item.titulo}</span>
                 <ChevronRight size={14} color={colors.textSubtle} />
               </button>
             )
@@ -636,7 +799,7 @@ export default function ChecklistVeiculoPage() {
             Faltam {faltam} {faltam === 1 ? 'item' : 'itens'} para concluir
           </div>
         ) : (
-          <button onClick={concluir} disabled={saving} style={{
+          <button type="button" onClick={concluir} disabled={saving} style={{
             width: '100%', padding: '14px 20px', borderRadius: 14,
             background: colors.success, color: '#fff', border: 'none',
             fontSize: 16, fontWeight: 700, cursor: 'pointer',
@@ -666,16 +829,16 @@ export default function ChecklistVeiculoPage() {
       {/* Header */}
       <div style={{ padding: '12px 16px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-          <button onClick={() => step > 0 ? setStep(step - 1) : setStep(-1)} style={{
-            background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', gap: 4,
-            fontSize: 13, color: colors.textMuted,
+          <button type="button" disabled={saving} onClick={() => step > 0 ? setStep(step - 1) : setStep(-1)} style={{
+            background: 'none', border: 'none', cursor: 'pointer', padding: '0 8px 0 0', minHeight: 44, display: 'flex', alignItems: 'center', gap: 4,
+            fontSize: 14, color: colors.textMuted,
           }}>
             <ChevronLeft size={16} /> {step > 0 ? 'Anterior' : 'Voltar'}
           </button>
           <span style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle }}>{step + 1} / {items.length}</span>
-          <button onClick={() => setStep(items.length)} style={{
-            background: 'none', border: 'none', cursor: 'pointer', padding: 4,
-            fontSize: 13, color: colors.primary, fontWeight: 600,
+          <button type="button" disabled={saving} onClick={() => setStep(items.length)} style={{
+            background: 'none', border: 'none', cursor: 'pointer', padding: '0 0 0 8px', minHeight: 44,
+            fontSize: 14, color: colors.primary, fontWeight: 600,
           }}>
             Resumo
           </button>
@@ -705,19 +868,19 @@ export default function ChecklistVeiculoPage() {
         <input ref={fotoRef} type="file" accept="image/*" capture="environment" onChange={handleFoto} style={{ display: 'none' }} />
         {fotoPreview ? (
           <div style={{ position: 'relative' }}>
-            <img src={fotoPreview} alt="" style={{
-              width: '100%', borderRadius: 16, maxHeight: 260, objectFit: 'cover',
+            <img src={fotoPreview} alt={item.titulo} style={{
+              width: '100%', borderRadius: 16, maxHeight: 260, objectFit: 'cover', display: 'block',
               border: `2px solid ${colors.border}`,
             }} />
             <button
               onClick={abrirCamera}
               style={{
                 position: 'absolute', bottom: 10, right: 10, background: 'rgba(0,0,0,0.6)',
-                color: '#fff', border: 'none', borderRadius: 10, padding: '6px 12px',
-                fontSize: 11, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+                color: '#fff', border: 'none', borderRadius: 10, padding: '0 14px', minHeight: 40,
+                fontSize: 13, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
               }}
             >
-              <Camera size={12} /> Refazer
+              <Camera size={14} /> Refazer
             </button>
           </div>
         ) : (
@@ -744,7 +907,7 @@ export default function ChecklistVeiculoPage() {
             position: 'fixed', inset: 0, zIndex: 9999, background: '#000',
             display: 'flex', flexDirection: 'column',
           }}>
-            <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+            <div style={{ flex: 1, position: 'relative', overflow: 'hidden', paddingTop: 'env(safe-area-inset-top, 0px)' }}>
               <video
                 ref={videoRef}
                 playsInline muted autoPlay
@@ -773,17 +936,20 @@ export default function ChecklistVeiculoPage() {
             </div>
             <div style={{
               padding: '16px 20px', background: 'rgba(0,0,0,0.85)',
+              paddingBottom: 'calc(16px + env(safe-area-inset-bottom, 0px))',
+              paddingLeft: 'calc(20px + env(safe-area-inset-left, 0px))',
+              paddingRight: 'calc(20px + env(safe-area-inset-right, 0px))',
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               flexShrink: 0,
             }}>
-              <button onClick={fecharCamera} style={{
+              <button type="button" onClick={fecharCamera} style={{
                 background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
                 borderRadius: 12, padding: '10px 18px', color: '#fff', fontSize: 14, fontWeight: 700,
                 cursor: 'pointer',
               }}>
                 Cancelar
               </button>
-              <button onClick={capturarFoto} style={{
+              <button type="button" onClick={capturarFoto} aria-label="Capturar foto" style={{
                 width: 68, height: 68, borderRadius: '50%',
                 background: '#fff', border: '4px solid rgba(255,255,255,0.4)',
                 cursor: 'pointer', boxShadow: '0 2px 12px rgba(0,0,0,0.3)',
@@ -830,8 +996,8 @@ export default function ChecklistVeiculoPage() {
             rows={3}
             style={{
               width: '100%', padding: 12, borderRadius: 12, border: `1px solid ${colors.border}`,
-              background: colors.surfaceAlt, fontSize: 13, color: colors.text, resize: 'none',
-              fontFamily: 'inherit',
+              background: colors.surfaceAlt, fontSize: 16, color: colors.text, resize: 'none',
+              fontFamily: 'inherit', boxSizing: 'border-box',
             }}
           />
         </div>
@@ -840,6 +1006,7 @@ export default function ChecklistVeiculoPage() {
       {/* Footer */}
       <div style={{ padding: '12px 16px', borderTop: `1px solid ${colors.border}`, flexShrink: 0 }}>
         <button
+          type="button"
           onClick={salvarItem}
           disabled={!podeAvancar || saving}
           style={{

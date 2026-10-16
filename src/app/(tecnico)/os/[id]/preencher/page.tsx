@@ -6,7 +6,7 @@ import { useFormBackup } from '@/hooks/useFormBackup'
 import { supabase } from '@/lib/supabase'
 import { offlineWrite } from '@/lib/offlineWrite'
 import type { OrdemServico } from '@/lib/types'
-import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV } from '@/lib/prefetch'
+import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV, getCachedCliente } from '@/lib/prefetch'
 import { offlineSet, addPendingPdf } from '@/lib/offlineCache'
 import FotoUpload from '@/components/FotoUpload'
 import SignaturePad from '@/components/SignaturePad'
@@ -27,6 +27,13 @@ function isVideo(url: string): boolean {
   return VIDEO_EXTS.test(url)
 }
 const MAX_VIDEO_MB = 50
+
+// Data de hoje no fuso do aparelho (toISOString é UTC: depois das 21h no Brasil
+// gravava a data de amanhã e bagunçava o prazo de 48h para editar)
+function hojeLocal() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
 
 const TIPOS_SERVICO_GRUPOS = [
   {
@@ -90,6 +97,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [sucesso, setSucesso] = useState(false)
+  const [enviadoOffline, setEnviadoOffline] = useState(false)
   const [os, setOs] = useState<OrdemServico | null>(null)
   const [tecnicos, setTecnicos] = useState<string[]>([])
   const [veiculos, setVeiculos] = useState<{ IdPlaca: number; NumPlaca: string }[]>([])
@@ -169,12 +177,17 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [assTecnico, setAssTecnico] = useState('')
   const [erroValidacao, setErroValidacao] = useState('')
 
-  const carregarProdutosPPV = async (idPPV: string, pecasAtuais?: PecaInfo[]) => {
-    setLoadingPPV(true)
+  // pecasAtuais: lista base (carga inicial). Sem ela, mescla com o estado ATUAL
+  // no momento em que a resposta chega — o polling antes mesclava com a lista
+  // de quando a consulta saiu e apagava o que o técnico marcou nesse meio tempo.
+  // silencioso: polling não troca a seção por spinner a cada 30s.
+  const carregarProdutosPPV = async (idPPV: string, pecasAtuais?: PecaInfo[], silencioso = false) => {
+    if (!silencioso) setLoadingPPV(true)
     let movs: MovimentacaoPPV[] | null = null
     const ppvTimeout = <T,>(p: PromiseLike<T>): Promise<T> =>
       Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))])
     try {
+      if (!navigator.onLine) throw new Error('offline') // direto pro cache
       const res = await ppvTimeout(supabase
         .from('movimentacoes')
         .select('*')
@@ -190,71 +203,227 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       const cached = await getCachedPPV(idPPV)
       movs = cached as MovimentacaoPPV[] | null
     }
-    const existentes = pecasAtuais || []
-    const manuais = existentes.filter(p => p.origem === 'manual')
-
-    if (movs && movs.length > 0) {
-      // Agregar movimentações por CodProduto — soma quantidades, evita duplicatas
-      const agrupado = new Map<string, { descricao: string; codigo: string; qtdTotal: number }>()
-      for (const m of movs) {
-        const cod = (m.CodProduto || '').trim()
-        if (!cod) continue
-        const existing = agrupado.get(cod)
-        const q = parseFloat(String(m.Qtde ?? '').replace(',', '.')) || 0
-        const qty = /devolu/i.test(m.TipoMovimento || '') ? -q : q
-        if (existing) {
-          existing.qtdTotal += qty
-          if (m.Descricao) existing.descricao = m.Descricao
-        } else {
-          agrupado.set(cod, {
-            descricao: m.Descricao || cod,
-            codigo: cod,
-            qtdTotal: qty,
-          })
-        }
-      }
-
-      // só o que ainda está separado no PPV (item todo devolvido some da lista)
-      const pecasPPV = Array.from(agrupado.values()).filter(a => a.qtdTotal > 0).map(a => ({
-        descricao: a.descricao,
-        codigo: a.codigo,
-        qtdOriginal: String(Math.round(a.qtdTotal * 1000) / 1000),
-      }))
-
-      // Map de peças já preenchidas pelo técnico (por código)
-      const ppvExistentes = new Map<string, PecaInfo>()
-      for (const p of existentes.filter(p => p.origem === 'ppv')) {
-        ppvExistentes.set(p.codigo, p)
-      }
-
-      // PPV é a fonte de verdade: só aparecem peças que existem no PPV atual
-      const merged: PecaInfo[] = pecasPPV.map((ppv) => {
-        const jaExiste = ppvExistentes.get(ppv.codigo)
-        if (jaExiste) {
-          // Atualiza descrição e quantidade do PPV, preserva revisão do técnico
-          // quantidade usada nunca passa do que está separado
-          const usada = parseFloat(String(jaExiste.qtdUsada || '').replace(',', '.'))
-          const max = parseFloat(ppv.qtdOriginal)
-          return { ...jaExiste, descricao: ppv.descricao, qtdOriginal: ppv.qtdOriginal, qtdUsada: usada > max ? ppv.qtdOriginal : jaExiste.qtdUsada }
-        }
-        return {
-          descricao: ppv.descricao,
-          codigo: ppv.codigo,
-          qtdUsada: ppv.qtdOriginal,
-          devolvida: false,
-          qtdDevolvida: '',
-          origem: 'ppv' as const,
-          qtdOriginal: ppv.qtdOriginal,
-          naoUsada: false,
-          revisado: false,
-        }
-      })
-
-      setPecas([...merged, ...manuais])
-    } else {
-      setPecas(manuais)
+    // Sem rede E sem cache: mantém as peças como estão (antes zerava a revisão
+    // do PPV inteira a cada polling sem sinal)
+    if (!movs) {
+      if (pecasAtuais) setPecas(pecasAtuais)
+      if (!silencioso) setLoadingPPV(false)
+      return
     }
-    setLoadingPPV(false)
+    const lista = movs
+
+    const mesclar = (existentes: PecaInfo[]): PecaInfo[] => {
+      const manuais = existentes.filter(p => p.origem === 'manual')
+
+      if (lista.length > 0) {
+        // Agregar movimentações por CodProduto — soma quantidades, evita duplicatas
+        const agrupado = new Map<string, { descricao: string; codigo: string; qtdTotal: number }>()
+        for (const m of lista) {
+          const cod = (m.CodProduto || '').trim()
+          if (!cod) continue
+          const existing = agrupado.get(cod)
+          const q = parseFloat(String(m.Qtde ?? '').replace(',', '.')) || 0
+          const qty = /devolu/i.test(m.TipoMovimento || '') ? -q : q
+          if (existing) {
+            existing.qtdTotal += qty
+            if (m.Descricao) existing.descricao = m.Descricao
+          } else {
+            agrupado.set(cod, {
+              descricao: m.Descricao || cod,
+              codigo: cod,
+              qtdTotal: qty,
+            })
+          }
+        }
+
+        // só o que ainda está separado no PPV (item todo devolvido some da lista)
+        const pecasPPV = Array.from(agrupado.values()).filter(a => a.qtdTotal > 0).map(a => ({
+          descricao: a.descricao,
+          codigo: a.codigo,
+          qtdOriginal: String(Math.round(a.qtdTotal * 1000) / 1000),
+        }))
+
+        // Map de peças já preenchidas pelo técnico (por código)
+        const ppvExistentes = new Map<string, PecaInfo>()
+        for (const p of existentes.filter(p => p.origem === 'ppv')) {
+          ppvExistentes.set(p.codigo, p)
+        }
+
+        // PPV é a fonte de verdade: só aparecem peças que existem no PPV atual
+        const merged: PecaInfo[] = pecasPPV.map((ppv) => {
+          const jaExiste = ppvExistentes.get(ppv.codigo)
+          if (jaExiste) {
+            // Atualiza descrição e quantidade do PPV, preserva revisão do técnico
+            // quantidade usada nunca passa do que está separado
+            const usada = parseFloat(String(jaExiste.qtdUsada || '').replace(',', '.'))
+            const max = parseFloat(ppv.qtdOriginal)
+            return { ...jaExiste, descricao: ppv.descricao, qtdOriginal: ppv.qtdOriginal, qtdUsada: usada > max ? ppv.qtdOriginal : jaExiste.qtdUsada }
+          }
+          return {
+            descricao: ppv.descricao,
+            codigo: ppv.codigo,
+            qtdUsada: ppv.qtdOriginal,
+            devolvida: false,
+            qtdDevolvida: '',
+            origem: 'ppv' as const,
+            qtdOriginal: ppv.qtdOriginal,
+            naoUsada: false,
+            revisado: false,
+          }
+        })
+
+        return [...merged, ...manuais]
+      }
+      return manuais
+    }
+
+    if (pecasAtuais) setPecas(mesclar(pecasAtuais))
+    else setPecas(prev => mesclar(prev))
+    if (!silencioso) setLoadingPPV(false)
+  }
+
+  // Aplica no form um registro de Ordem_Servico_Tecnicos (do banco ou do cache
+  // offline). Antes o caminho offline só aplicava os textos: fotos, dias,
+  // assinaturas, almoços e peças ficavam vazios e, ao reenviar, o update
+  // apagava tudo isso no banco. Devolve as peças salvas (ou null).
+  const aplicarRegistro = (reg: Record<string, unknown>, osData: Record<string, unknown> | null): PecaInfo[] | null => {
+    const s = (v: unknown) => (v == null ? '' : String(v))
+    if (reg.IdOs) setExistingId(Number(reg.IdOs))
+    setTecResp1(s(reg.TecResp1) || user?.tecnico_nome || '')
+    setTemTec2(!!reg.TemTec)
+    setTecResp2(s(reg.TecResp2))
+    setDiagnostico(s(reg.Motivo))
+    setServicoRealizado(s(reg.ServicoRealizado))
+    setTipoServico(s(reg.TipoServico) || s(osData?.Tipo_Servico))
+    // relatório já preenchido antes = "É garantia?" já foi respondida
+    if (reg.TipoServico) setEhGarantia(s(reg.TipoServico).includes('Garantia') ? 'sim' : 'nao')
+    setTipoRev(s(reg.TipoRev))
+    setProjeto(s(reg.Projeto) || s(osData?.Projeto))
+    setChassis(s(reg.Chassis))
+    setMarca(s(reg.Marca))
+    setModelo(s(reg.Modelo))
+    setHorimetro(s(reg.Horimetro))
+    setNumPlaca(s(reg.NumPlaca))
+    setNomResp(s(reg.NomResp))
+    setFazenda(reg.Fazenda === 'Oficina' ? '' : s(reg.Fazenda))
+    setCidadeLocal(reg.Cidade === 'Oficina' ? '' : s(reg.Cidade))
+    setNaOficina(reg.Fazenda === 'Oficina' && reg.Cidade === 'Oficina')
+    setFotoHorimetro(s(reg.FotoHorimetro))
+    setFotoChassis(s(reg.FotoChassis))
+    setFotoFrente(s(reg.FotoFrente))
+    setFotoDireita(s(reg.FotoDireita))
+    setFotoEsquerda(s(reg.FotoEsquerda))
+    setFotoTraseira(s(reg.FotoTraseira))
+    setFotoVolante(s(reg.FotoVolante))
+    setFotoFalha1(s(reg.FotoFalha1))
+    setFotoFalha2(s(reg.FotoFalha2))
+    setFotoFalha3(s(reg.FotoFalha3))
+    setFotoFalha4(s(reg.FotoFalha4))
+    setFotoPecaNova1(s(reg.FotoPecaNova1))
+    setFotoPecaNova2(s(reg.FotoPecaNova2))
+    setFotoPecaInstalada1(s(reg.FotoPecaInstalada1))
+    setFotoPecaInstalada2(s(reg.FotoPecaInstalada2))
+    const extrasJson = reg.FotosExtras
+    if (Array.isArray(extrasJson) && extrasJson.length > 0) {
+      setFotosExtras(extrasJson.filter(Boolean) as string[])
+    } else {
+      setFotosExtras([reg.FotoExtra1, reg.FotoExtra2, reg.FotoExtra3, reg.FotoExtra4, reg.FotoExtra5].filter(Boolean) as string[])
+    }
+    setAssCliente(s(reg.AssCliente))
+    setAssTecnico(s(reg.AssTecnico))
+    setJustificativaPecaExtra(s(reg.JustificativaPecaExtra))
+    // Fotos de almoço já enviadas (coluna AlmocosFotos = [{data, foto}]).
+    const _fa: Record<string, string> = {}
+    try {
+      const _raw = reg.AlmocosFotos
+      const _arr = Array.isArray(_raw) ? _raw : (typeof _raw === 'string' ? JSON.parse(_raw) : [])
+      for (const _x of (Array.isArray(_arr) ? _arr : [])) {
+        const _o = (_x || {}) as Record<string, unknown>
+        if (_o.data && _o.foto) _fa[String(_o.data).slice(0, 10)] = String(_o.foto)
+      }
+    } catch {}
+    // Compat com o almoço único antigo: mapeia FotoAlmoco pro 1º dia de almoço da OS.
+    if (Object.keys(_fa).length === 0 && reg.FotoAlmoco) {
+      const _primeiro = parseAlmocosOS(osData?.Alimentacoes)[0]
+      if (_primeiro) _fa[_primeiro.data] = s(reg.FotoAlmoco)
+    }
+    setFotosAlmoco(_fa)
+
+    let diasLoaded: DiaForm[] = []
+    const diasJson = reg.DiasExecucao
+    if (Array.isArray(diasJson) && diasJson.length > 0) {
+      diasLoaded = diasJson.map((d: Record<string, string>) => ({
+        data: d?.data || '', horaInicio: d?.horaInicio || '',
+        horaFim: d?.horaFim || '', kmTotal: d?.kmTotal || '',
+      }))
+    } else {
+      if (reg.DataInicio) {
+        diasLoaded.push({
+          data: s(reg.DataInicio), horaInicio: s(reg.InicioHora),
+          horaFim: s(reg.FinalHora), kmTotal: s(reg.InicioKm) || s(reg.TotalKm),
+        })
+      }
+      if (reg.AdicionarData2 && reg.DataInicio2) {
+        diasLoaded.push({
+          data: s(reg.DataInicio2), horaInicio: s(reg.InicioHora2),
+          horaFim: s(reg.FinalHora2), kmTotal: s(reg.InicioKm2),
+        })
+      }
+      if (reg.AdicionarData3 && reg.DataInicio3) {
+        diasLoaded.push({
+          data: s(reg.DataInicio3), horaInicio: s(reg.InicioHora3),
+          horaFim: s(reg.FinaHora3), kmTotal: s(reg.InicioKm3),
+        })
+      }
+    }
+    if (diasLoaded.length > 0) {
+      setDias(diasLoaded)
+      diasFromDBRef.current = true
+    }
+
+    if (reg.PecasInfo) {
+      try {
+        const parsed = typeof reg.PecasInfo === 'string' ? JSON.parse(reg.PecasInfo) : reg.PecasInfo
+        if (Array.isArray(parsed)) {
+          return parsed.map((p: Partial<PecaInfo>) => ({
+            descricao: p.descricao || '', codigo: p.codigo || '', qtdUsada: p.qtdUsada || '',
+            devolvida: p.devolvida || false, qtdDevolvida: p.qtdDevolvida || '',
+            origem: p.origem || 'manual', qtdOriginal: p.qtdOriginal || '',
+            naoUsada: p.naoUsada || false, revisado: p.revisado !== undefined ? p.revisado : true,
+          }))
+        }
+      } catch { /* ignore */ }
+    }
+    return null
+  }
+
+  // Carga a partir do cache offline (prefetch / cache-on-read / envio offline)
+  const carregarDoCache = async () => {
+    const [cachedOs, cachedTec, cachedTecnicos, cachedVeiculos] = await Promise.all([
+      getCachedOS(id),
+      getCachedOSTec(id),
+      getCachedTecnicos(),
+      getCachedVeiculos(),
+    ])
+
+    if (cachedOs) {
+      setOs(cachedOs as unknown as OrdemServico)
+      if (cachedOs.Projeto) setProjeto(cachedOs.Projeto as string)
+      if (cachedOs.Tipo_Servico) setTipoServico(cachedOs.Tipo_Servico as string)
+      setAlmocosOS(parseAlmocosOS((cachedOs as Record<string, unknown>).Alimentacoes))
+    }
+    if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
+    if (cachedVeiculos) setVeiculos(cachedVeiculos)
+
+    const pecasLoaded = cachedTec ? aplicarRegistro(cachedTec, cachedOs) : null
+    if (!cachedTec && user) setTecResp1(user.tecnico_nome)
+
+    // PPV offline: mescla o saldo em cache com a revisão que o técnico já fez
+    if (cachedOs?.ID_PPV) {
+      await carregarProdutosPPV(cachedOs.ID_PPV as string, pecasLoaded || undefined)
+    } else if (pecasLoaded) {
+      setPecas(pecasLoaded)
+    }
   }
 
   useEffect(() => {
@@ -262,109 +431,33 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       try {
       // Se offline, carregar do cache prefetch + backup do form
       if (!navigator.onLine) {
-        const [cachedOs, cachedTec, cachedTecnicos, cachedVeiculos] = await Promise.all([
-          getCachedOS(id),
-          getCachedOSTec(id),
-          getCachedTecnicos(),
-          getCachedVeiculos(),
-        ])
-
-        if (cachedOs) {
-          setOs(cachedOs as unknown as OrdemServico)
-          if (cachedOs.Projeto) setProjeto(cachedOs.Projeto as string)
-          if (cachedOs.Tipo_Servico) setTipoServico(cachedOs.Tipo_Servico as string)
-          setAlmocosOS(parseAlmocosOS((cachedOs as Record<string, unknown>).Alimentacoes))
-        }
-        if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
-        if (cachedVeiculos) setVeiculos(cachedVeiculos)
-
-        if (cachedTec) {
-          setExistingId(cachedTec.IdOs as number)
-          setTecResp1((cachedTec.TecResp1 as string) || '')
-          setTemTec2((cachedTec.TemTec as boolean) || false)
-          setTecResp2((cachedTec.TecResp2 as string) || '')
-          setDiagnostico((cachedTec.Motivo as string) || '')
-          setServicoRealizado((cachedTec.ServicoRealizado as string) || '')
-          if (cachedTec.TipoServico) {
-            setTipoServico(cachedTec.TipoServico as string)
-            // OS já preenchida antes = a pergunta "É garantia?" já foi respondida
-            setEhGarantia((cachedTec.TipoServico as string).includes('Garantia') ? 'sim' : 'nao')
-          }
-          if (cachedTec.TipoRev) setTipoRev(cachedTec.TipoRev as string)
-          if (cachedTec.Projeto) setProjeto(cachedTec.Projeto as string)
-          setChassis((cachedTec.Chassis as string) || '')
-          setMarca((cachedTec.Marca as string) || '')
-          setModelo((cachedTec.Modelo as string) || '')
-          setHorimetro((cachedTec.Horimetro as string) || '')
-          setNumPlaca((cachedTec.NumPlaca as string) || '')
-          setNomResp((cachedTec.NomResp as string) || '')
-          setFazenda(cachedTec.Fazenda === 'Oficina' ? '' : ((cachedTec.Fazenda as string) || ''))
-          setCidadeLocal(cachedTec.Cidade === 'Oficina' ? '' : ((cachedTec.Cidade as string) || ''))
-          setNaOficina(cachedTec.Fazenda === 'Oficina' && cachedTec.Cidade === 'Oficina')
-        } else if (user) {
-          setTecResp1(user.tecnico_nome)
-        }
-
-        // PPV offline
-        if (cachedOs?.ID_PPV) {
-          const cachedMovs = await getCachedPPV(cachedOs.ID_PPV as string)
-          if (cachedMovs && cachedMovs.length > 0) {
-            const saldo = new Map<string, { descricao: string; qtd: number }>()
-            for (const m of cachedMovs as Record<string, unknown>[]) {
-              const cod = String(m.CodProduto || '').trim()
-              if (!cod) continue
-              const q = parseFloat(String(m.Qtde ?? '').replace(',', '.')) || 0
-              const atual = saldo.get(cod) || { descricao: String(m.Descricao || cod), qtd: 0 }
-              atual.qtd += /devolu/i.test(String(m.TipoMovimento || '')) ? -q : q
-              saldo.set(cod, atual)
-            }
-            const pecasPPV = Array.from(saldo.entries()).filter(([, v]) => v.qtd > 0).map(([codigo, v]) => ({
-              descricao: v.descricao,
-              codigo,
-              qtdUsada: String(Math.round(v.qtd * 1000) / 1000),
-              devolvida: false,
-              qtdDevolvida: '',
-              origem: 'ppv' as const,
-              qtdOriginal: String(Math.round(v.qtd * 1000) / 1000),
-              naoUsada: false,
-              revisado: false,
-            }))
-            setPecas(pecasPPV)
-          }
-        }
-
+        await carregarDoCache()
         return
       }
 
-      const timeoutMs = 5000
+      const timeoutMs = 8000
       const withTimeout = <T,>(p: PromiseLike<T>): Promise<T> =>
         Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs))])
 
-      const [osRes, { data: tecData }, { data: veicData }, { data: existing }] = await Promise.all([
+      const [osRes, { data: tecData }, { data: veicData }, existingRes] = await Promise.all([
         withTimeout(supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single()),
         withTimeout(supabase.from('Tecnicos_Appsheet').select('UsuNome').order('UsuNome')),
         withTimeout(supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca')),
-        withTimeout(supabase.from('Ordem_Servico_Tecnicos').select('*').eq('Ordem_Servico', id).maybeSingle()),
+        // order+limit: se houver linha duplicada, maybeSingle() sozinho dá erro,
+        // o form abria "vazio" e o envio criava mais uma linha
+        withTimeout(supabase.from('Ordem_Servico_Tecnicos').select('*').eq('Ordem_Servico', id)
+          .order('IdOs', { ascending: false }).limit(1).maybeSingle()),
       ])
 
-      // Se a query principal falhou (rede instável), fallback para cache offline
-      if (osRes.error && !osRes.data) {
+      // Se alguma query principal falhou (rede instável), fallback para cache offline
+      // (sem o registro técnico o envio sobrescreveria fotos/dias já salvos)
+      if ((osRes.error && !osRes.data) || existingRes.error) {
         console.warn('[preencher] Query falhou, usando cache offline...')
-        const [cachedOs, cachedTecnicos, cachedVeiculos] = await Promise.all([
-          getCachedOS(id), getCachedTecnicos(), getCachedVeiculos(),
-        ])
-        if (cachedOs) {
-          setOs(cachedOs as unknown as OrdemServico)
-          if (cachedOs.Projeto) setProjeto(cachedOs.Projeto as string)
-          if (cachedOs.Tipo_Servico) setTipoServico(cachedOs.Tipo_Servico as string)
-          setAlmocosOS(parseAlmocosOS((cachedOs as Record<string, unknown>).Alimentacoes))
-        }
-        if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
-        if (cachedVeiculos) setVeiculos(cachedVeiculos)
-        if (user) setTecResp1(user.tecnico_nome)
+        await carregarDoCache()
         return
       }
       const osData = osRes.data
+      const existing = existingRes.data
 
       if (osData) {
         setOs(osData as OrdemServico)
@@ -378,117 +471,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
       if (existing) {
         offlineSet(`prefetch:os-tec:${id}`, existing)
-        setExistingId(existing.IdOs)
-        setTecResp1(existing.TecResp1 || '')
-        setTemTec2(existing.TemTec || false)
-        setTecResp2(existing.TecResp2 || '')
-        setDiagnostico(existing.Motivo || '')
-        setServicoRealizado(existing.ServicoRealizado || '')
-        setTipoServico(existing.TipoServico || osData?.Tipo_Servico || '')
-        // relatório já preenchido antes = "É garantia?" já foi respondida
-        if (existing.TipoServico) setEhGarantia(String(existing.TipoServico).includes('Garantia') ? 'sim' : 'nao')
-        setTipoRev(existing.TipoRev || '')
-        setProjeto(existing.Projeto || osData?.Projeto || '')
-        setChassis(existing.Chassis || '')
-        setMarca(existing.Marca || '')
-        setModelo(existing.Modelo || '')
-        setHorimetro(existing.Horimetro || '')
-        setNumPlaca(existing.NumPlaca || '')
-        setNomResp(existing.NomResp || '')
-        setFazenda(existing.Fazenda === 'Oficina' ? '' : (existing.Fazenda || ''))
-        setCidadeLocal(existing.Cidade === 'Oficina' ? '' : (existing.Cidade || ''))
-        setNaOficina(existing.Fazenda === 'Oficina' && existing.Cidade === 'Oficina')
-        setFotoHorimetro(existing.FotoHorimetro || '')
-        setFotoChassis(existing.FotoChassis || '')
-        setFotoFrente(existing.FotoFrente || '')
-        setFotoDireita(existing.FotoDireita || '')
-        setFotoEsquerda(existing.FotoEsquerda || '')
-        setFotoTraseira(existing.FotoTraseira || '')
-        setFotoVolante(existing.FotoVolante || '')
-        setFotoFalha1(existing.FotoFalha1 || '')
-        setFotoFalha2(existing.FotoFalha2 || '')
-        setFotoFalha3(existing.FotoFalha3 || '')
-        setFotoFalha4(existing.FotoFalha4 || '')
-        setFotoPecaNova1(existing.FotoPecaNova1 || '')
-        setFotoPecaNova2(existing.FotoPecaNova2 || '')
-        setFotoPecaInstalada1(existing.FotoPecaInstalada1 || '')
-        setFotoPecaInstalada2(existing.FotoPecaInstalada2 || '')
-        const extrasJson = (existing as Record<string, unknown>).FotosExtras
-        if (Array.isArray(extrasJson) && extrasJson.length > 0) {
-          setFotosExtras(extrasJson.filter(Boolean) as string[])
-        } else {
-          const legacyExtras = [existing.FotoExtra1, existing.FotoExtra2, existing.FotoExtra3, existing.FotoExtra4, existing.FotoExtra5].filter(Boolean) as string[]
-          setFotosExtras(legacyExtras)
-        }
-        setAssCliente(existing.AssCliente || '')
-        setAssTecnico(existing.AssTecnico || '')
-        setJustificativaPecaExtra(existing.JustificativaPecaExtra || '')
-        // Fotos de almoço já enviadas (coluna AlmocosFotos = [{data, foto}]).
-        const _fa: Record<string, string> = {}
-        try {
-          const _raw = (existing as Record<string, unknown>).AlmocosFotos
-          const _arr = Array.isArray(_raw) ? _raw : (typeof _raw === 'string' ? JSON.parse(_raw) : [])
-          for (const _x of (_arr || [])) {
-            const _o = (_x || {}) as Record<string, unknown>
-            if (_o.data && _o.foto) _fa[String(_o.data).slice(0, 10)] = String(_o.foto)
-          }
-        } catch {}
-        // Compat com o almoço único antigo: mapeia FotoAlmoco pro 1º dia de almoço da OS.
-        if (Object.keys(_fa).length === 0 && existing.FotoAlmoco) {
-          const _primeiro = parseAlmocosOS((osData as Record<string, unknown> | null)?.Alimentacoes)[0]
-          if (_primeiro) _fa[_primeiro.data] = existing.FotoAlmoco
-        }
-        setFotosAlmoco(_fa)
-
-        let diasLoaded: DiaForm[] = []
-        const diasJson = (existing as Record<string, unknown>).DiasExecucao
-        if (Array.isArray(diasJson) && diasJson.length > 0) {
-          diasLoaded = diasJson.map((d: Record<string, string>) => ({
-            data: d.data || '', horaInicio: d.horaInicio || '',
-            horaFim: d.horaFim || '', kmTotal: d.kmTotal || '',
-          }))
-        } else {
-          if (existing.DataInicio) {
-            diasLoaded.push({
-              data: existing.DataInicio, horaInicio: existing.InicioHora || '',
-              horaFim: existing.FinalHora || '', kmTotal: existing.InicioKm || existing.TotalKm || '',
-            })
-          }
-          if (existing.AdicionarData2 && existing.DataInicio2) {
-            diasLoaded.push({
-              data: existing.DataInicio2, horaInicio: existing.InicioHora2 || '',
-              horaFim: existing.FinalHora2 || '', kmTotal: existing.InicioKm2 || '',
-            })
-          }
-          if (existing.AdicionarData3 && existing.DataInicio3) {
-            diasLoaded.push({
-              data: existing.DataInicio3, horaInicio: existing.InicioHora3 || '',
-              horaFim: existing.FinaHora3 || '', kmTotal: existing.InicioKm3 || '',
-            })
-          }
-        }
-        if (diasLoaded.length > 0) {
-          setDias(diasLoaded)
-          diasFromDBRef.current = true
-        }
-
-        if (existing.PecasInfo) {
-          try {
-            const parsed = JSON.parse(existing.PecasInfo)
-            const pecasLoaded: PecaInfo[] = parsed.map((p: Partial<PecaInfo>) => ({
-              descricao: p.descricao || '', codigo: p.codigo || '', qtdUsada: p.qtdUsada || '',
-              devolvida: p.devolvida || false, qtdDevolvida: p.qtdDevolvida || '',
-              origem: p.origem || 'manual', qtdOriginal: p.qtdOriginal || '',
-              naoUsada: p.naoUsada || false, revisado: p.revisado !== undefined ? p.revisado : true,
-            }))
-            if (osData?.ID_PPV) {
-              await carregarProdutosPPV(osData.ID_PPV, pecasLoaded)
-            } else {
-              setPecas(pecasLoaded)
-            }
-          } catch { /* ignore */ }
-        } else if (osData?.ID_PPV) {
-          await carregarProdutosPPV(osData.ID_PPV)
+        const pecasLoaded = aplicarRegistro(existing as Record<string, unknown>, (osData as Record<string, unknown>) || null)
+        if (osData?.ID_PPV) {
+          await carregarProdutosPPV(osData.ID_PPV, pecasLoaded || undefined)
+        } else if (pecasLoaded) {
+          setPecas(pecasLoaded)
         }
       } else {
         if (user) setTecResp1(user.tecnico_nome)
@@ -501,13 +488,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       // Rede falhou (onLine=true mas sem internet real) — fallback para cache
       console.warn('[preencher] Rede falhou, tentando cache offline...')
       try {
-        const [cachedOs, cachedTecnicos, cachedVeiculos] = await Promise.all([
-          getCachedOS(id), getCachedTecnicos(), getCachedVeiculos(),
-        ])
-        if (cachedOs) setOs(cachedOs as unknown as OrdemServico)
-        if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
-        if (cachedVeiculos) setVeiculos(cachedVeiculos)
-        if (user) setTecResp1(user.tecnico_nome)
+        await carregarDoCache()
       } catch (e) {
         console.error('[preencher] Fallback de cache falhou:', e)
       }
@@ -516,14 +497,24 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     }
     }
     carregar()
+  // Só [id]: antes dependia de user?.tecnico_nome — quando o usuário chegava
+  // depois da carga, tudo recarregava POR CIMA do backup já restaurado e as
+  // edições locais do técnico sumiam.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, user?.tecnico_nome])
+  }, [id])
 
-  // Polling automático do PPV (a cada 30s)
+  // Técnico principal padrão = usuário logado (quando o usuário chega depois)
+  useEffect(() => {
+    if (user?.tecnico_nome) setTecResp1(prev => prev || user.tecnico_nome)
+  }, [user?.tecnico_nome])
+
+  // Polling automático do PPV (a cada 30s) — silencioso e só com internet
   useEffect(() => {
     if (!os?.ID_PPV) return
+    const idPPV = os.ID_PPV
     const interval = setInterval(() => {
-      carregarProdutosPPV(os.ID_PPV, pecasRef.current)
+      if (!navigator.onLine || document.visibilityState !== 'visible') return
+      carregarProdutosPPV(idPPV, undefined, true).catch(() => {})
     }, 30000)
     return () => clearInterval(interval)
   }, [os?.ID_PPV])
@@ -590,13 +581,14 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (data.fotoPecaNova2 !== undefined) setFotoPecaNova2(data.fotoPecaNova2 as string)
     if (data.fotoPecaInstalada1 !== undefined) setFotoPecaInstalada1(data.fotoPecaInstalada1 as string)
     if (data.fotoPecaInstalada2 !== undefined) setFotoPecaInstalada2(data.fotoPecaInstalada2 as string)
-    if (data.fotosExtras !== undefined) setFotosExtras(data.fotosExtras as string[])
+    // vazios = previews (blob:) que não sobreviveram ao reload — some o quadro
+    if (Array.isArray(data.fotosExtras)) setFotosExtras((data.fotosExtras as string[]).filter(Boolean))
     if (data.fotosAlmoco !== undefined) setFotosAlmoco(data.fotosAlmoco as Record<string, string>)
     if (data.assCliente !== undefined) setAssCliente(data.assCliente as string)
     if (data.assTecnico !== undefined) setAssTecnico(data.assTecnico as string)
   }, [])
 
-  const { restore: restoreBackup, clear: clearBackup, saveNow } = useFormBackup(`os-preencher-${id}`, getFormData, setFormData)
+  const { restore: restoreBackup, clear: clearBackup } = useFormBackup(`os-preencher-${id}`, getFormData, setFormData)
 
   // Restaurar backup DEPOIS que os dados do Supabase carregaram
   // Isso garante que edições locais do técnico sobrescrevem dados do servidor
@@ -621,10 +613,25 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         else { w = Math.round(w * maxDim / h); h = maxDim }
       }
       canvas.width = w; canvas.height = h
-      const ctx = canvas.getContext('2d')!
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return file
       ctx.drawImage(bitmap, 0, 0, w, h)
-      return await new Promise<Blob>((resolve) => canvas.toBlob(b => resolve(b!), 'image/jpeg', 0.8))
+      bitmap.close?.()
+      // toBlob pode devolver null (memória baixa no celular) — usa o original
+      return await new Promise<Blob>((resolve) => canvas.toBlob(b => resolve(b || file), 'image/jpeg', 0.8))
     } catch { return file }
+  }
+
+  // Upload com timeout: com sinal fraco o upload ficava pendurado para sempre
+  // (spinner eterno na foto / "Enviando..." eterno no botão).
+  const UPLOAD_TIMEOUT_FOTO = 45_000
+  const UPLOAD_TIMEOUT_VIDEO = 180_000
+  const comTimeout = <T,>(p: PromiseLike<T>, ms: number): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    return Promise.race([
+      p,
+      new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), ms) }),
+    ]).finally(() => clearTimeout(timer))
   }
 
   const fileToBase64 = (blob: File | Blob): Promise<string> => {
@@ -637,19 +644,32 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   }
 
   const uploadFoto = async (file: File | Blob, campo: string): Promise<string> => {
+    // Sem internet nem tenta — cai direto no base64 local
+    if (!navigator.onLine) return ''
     const isVid = (file as File).type?.startsWith('video/')
-    const ext = (file instanceof File ? file.name.split('.').pop() : (isVid ? 'mp4' : 'jpg')) || 'jpg'
     const fileToUpload = await comprimirImagem(file)
+    // se comprimiu, virou JPEG (antes mantinha .heic/.png no nome)
+    const ext = (fileToUpload !== file ? 'jpg' : (file instanceof File ? file.name.split('.').pop() : (isVid ? 'mp4' : 'jpg'))) || 'jpg'
     const path = `os-tecnicos/${id}/${campo}_${Date.now()}.${ext}`
     // Tentar até 2 vezes
     for (let tentativa = 0; tentativa < 2; tentativa++) {
-      const { error } = await supabase.storage.from('requisicoes').upload(path, fileToUpload, { upsert: true })
-      if (!error) {
-        const { data } = supabase.storage.from('requisicoes').getPublicUrl(path)
-        return data.publicUrl
+      try {
+        const { error } = await comTimeout(
+          supabase.storage.from('requisicoes').upload(path, fileToUpload, { upsert: true }),
+          isVid ? UPLOAD_TIMEOUT_VIDEO : UPLOAD_TIMEOUT_FOTO,
+        )
+        if (!error) {
+          const { data } = supabase.storage.from('requisicoes').getPublicUrl(path)
+          return data.publicUrl
+        }
+        console.error(`[foto] Upload tentativa ${tentativa + 1} falhou para ${campo}:`, error.message)
+      } catch (err) {
+        console.error(`[foto] Upload tentativa ${tentativa + 1} falhou para ${campo}:`, err)
+        // timeout: não insiste (seria mais 45s+ de espera com sinal ruim)
+        break
       }
-      console.error(`[foto] Upload tentativa ${tentativa + 1} falhou para ${campo}:`, error.message)
       if (tentativa === 0) await new Promise(r => setTimeout(r, 1000))
+      if (!navigator.onLine) break
     }
     return ''
   }
@@ -680,26 +700,42 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
 
     const preview = URL.createObjectURL(file)
     setter(preview)
-    const compressed = await comprimirImagem(file)
-    const url = await uploadFoto(compressed, campo)
-    if (url) {
-      setter(url)
-      setErrosFoto(prev => prev.filter(e => e !== campo))
-    } else {
-      if (!isVid) {
-        const base64 = await fileToBase64(compressed)
-        if (base64) {
-          setter(base64)
-          setErrosFoto(prev => prev.filter(e => e !== campo))
-          console.log(`[foto] ${campo} salva localmente (offline)`)
-        } else {
-          setErrosFoto(prev => [...prev.filter(e => e !== campo), campo])
-          alert(`Erro ao salvar "${campo}".`)
-        }
+    // libera o arquivo da memória quando o preview é substituído
+    // (vídeo de até 50MB ficava preso enquanto a tela estivesse aberta)
+    const liberarPreview = () => setTimeout(() => URL.revokeObjectURL(preview), 1000)
+    try {
+      const compressed = await comprimirImagem(file)
+      const url = await uploadFoto(compressed, campo)
+      if (url) {
+        setter(url)
+        liberarPreview()
+        setErrosFoto(prev => prev.filter(e => e !== campo))
       } else {
-        setErrosFoto(prev => [...prev.filter(e => e !== campo), campo])
-        alert('Erro ao enviar vídeo. Verifique sua conexão.')
+        if (!isVid) {
+          const base64 = await fileToBase64(compressed)
+          if (base64) {
+            setter(base64)
+            liberarPreview()
+            setErrosFoto(prev => prev.filter(e => e !== campo))
+            console.log(`[foto] ${campo} salva localmente (offline)`)
+          } else {
+            setErrosFoto(prev => [...prev.filter(e => e !== campo), campo])
+            alert('Não foi possível salvar a foto. Tente tirar de novo.')
+          }
+        } else {
+          // Vídeo não cabe no armazenamento offline: tira o quadro (antes ficava
+          // com spinner eterno e o vídeo sumia no envio sem o técnico perceber)
+          setter('')
+          liberarPreview()
+          setVideoSlots(prev => { const n = new Set(prev); n.delete(campo); return n })
+          alert('Sem conexão boa: o vídeo não foi enviado. Anexe o vídeo de novo quando tiver sinal.')
+        }
       }
+    } catch (err) {
+      console.error(`[foto] Erro ao processar ${campo}:`, err)
+      setter('')
+      liberarPreview()
+      alert('Não foi possível anexar o arquivo. Tente novamente.')
     }
   }
 
@@ -787,8 +823,30 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     setTimeout(() => setErroValidacao(''), 4000)
   }
 
+  // Cidade do cliente para o PDF: cache offline primeiro, rede com timeout
+  // (antes a consulta sem timeout travava o "Baixar PDF" com sinal fraco)
+  const cidadeDoCliente = async (): Promise<string> => {
+    const cnpj = os?.Cnpj_Cliente
+    if (!cnpj) return ''
+    const cached = await getCachedCliente(cnpj)
+    if (cached?.cidade || !navigator.onLine) return cached?.cidade || ''
+    try {
+      const { data: cli } = await comTimeout(
+        supabase.from('Clientes').select('cidade').eq('cnpj_cpf', cnpj).maybeSingle(),
+        8_000,
+      )
+      return cli?.cidade || ''
+    } catch { return '' }
+  }
+
+  const savingRef = useRef(false)
   const enviar = async () => {
-    if (!user) return
+    // toque duplo rápido não pode gerar dois envios (duas linhas / dois PDFs)
+    if (savingRef.current) return
+    if (!user) {
+      alert('Não foi possível identificar o técnico logado. Abra o app novamente e tente enviar.')
+      return
+    }
 
     // Validar campos obrigatórios com scroll
     if (!tipoServico.trim()) {
@@ -878,6 +936,9 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     }
 
     setSaving(true)
+    savingRef.current = true
+    let salvo = false // relatório já gravado ou na fila
+    try {
 
     // Resolver fotos pendentes (base64 → upload para Supabase se online)
     const resolverFoto = async (valor: string, campo: string): Promise<string> => {
@@ -995,7 +1056,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       AssCliente: assCliente, AssTecnico: assTecnico,
       PecasInfo: JSON.stringify(pecas),
       JustificativaPecaExtra: justificativaPecaExtra || null,
-      Data: new Date().toISOString().split('T')[0],
+      Data: hojeLocal(),
       Status: 'enviado',
       pdf_criado: false,
     }
@@ -1013,11 +1074,28 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       const res = await offlineWrite({ table: 'Ordem_Servico_Tecnicos', action: 'insert', data: payload })
       if (!res.ok) { setSaving(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
       if (!res.queued) {
-        const { data } = await supabase.from('Ordem_Servico_Tecnicos').select('IdOs').eq('Ordem_Servico', id).order('IdOs', { ascending: false }).limit(1).single()
-        if (data) setExistingId(data.IdOs)
+        try {
+          const { data } = await comTimeout(
+            supabase.from('Ordem_Servico_Tecnicos').select('IdOs').eq('Ordem_Servico', id).order('IdOs', { ascending: false }).limit(1).maybeSingle(),
+            10_000,
+          )
+          if (data) { setExistingId(data.IdOs); payload.IdOs = data.IdOs }
+        } catch { /* só serve pra edições seguintes; o sync evita duplicar */ }
       }
       queued = res.queued
     }
+
+    salvo = true
+
+    // Cache local do relatório = o que acabou de ser enviado. Sem isso, reabrir
+    // a OS offline mostrava a versão antiga (ou nada) e um reenvio apagava o novo.
+    try {
+      const cachedTec = (await getCachedOSTec(id)) || {}
+      await offlineSet(`prefetch:os-tec:${id}`, {
+        ...cachedTec, ...payload,
+        ...(existingId ? { IdOs: existingId } : {}),
+      })
+    } catch { /* cache é best-effort */ }
 
     // Atualizar status da OS — SEMPRE, mesmo offline (será enfileirado).
     // Garantia marcada pelo técnico REFLETE na OS mãe: o POS, o módulo de
@@ -1044,11 +1122,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         let pecasParaGarantia: PecaOS[] = []
         if (pecasGarantia.size > 0) {
           // Busca os preços das peças via listarPecasOS (PPV/movimentacoes + PecasInfo)
-          const pecasComPreco = await listarPecasOS(id)
+          const pecasComPreco = await comTimeout(listarPecasOS(id), 20_000)
           const ppvIdsStr = String(os?.ID_PPV || '')
           const primeiroPPV = ppvIdsStr.split(',').map(s => s.trim()).filter(Boolean)[0] || null
 
-          pecasParaGarantia = [...pecasGarantia].map((i) => {
+          pecasParaGarantia = [...pecasGarantia].filter((i) => !!pecas[i]).map((i) => {
             const p = pecas[i]
             // Tenta cruzar pelo código de produto, com fallback por descrição
             const fonte = pecasComPreco.find(
@@ -1064,14 +1142,14 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             }
           })
         }
-        const res = await criarGarantia({
+        const res = await comTimeout(criarGarantia({
           id_ordem: id,
           tecnico_nome: user?.nome_pos || user?.tecnico_nome || tecResp1,
           tecnico_horas: calcTotalHoras(),
           tecnico_km: calcTotalKm(),
           tecnico_obs: garantiaObs || undefined,
           pecas: pecasParaGarantia,
-        })
+        }), 30_000)
         if (res.erro) console.warn('[garantia] criação falhou:', res.erro)
       } catch (err) {
         console.error('[garantia] erro ao criar requisição:', err)
@@ -1081,6 +1159,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (queued) {
       // Marca para gerar/anexar o PDF ao reconectar (offline não gera PDF aqui).
       await addPendingPdf(id)
+      setEnviadoOffline(true)
       setSaving(false)
       setSucesso(true)
       clearBackup()
@@ -1092,15 +1171,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     for (let tentativa = 1; tentativa <= 3 && !pdfOk; tentativa++) {
       try {
         if (tentativa === 1) {
-          let cidade = ''
-          if (os?.Cnpj_Cliente) {
-            const { data: cli } = await supabase
-              .from('Clientes')
-              .select('cidade')
-              .eq('cnpj_cpf', os.Cnpj_Cliente)
-              .maybeSingle()
-            cidade = cli?.cidade || ''
-          }
+          const cidade = await cidadeDoCliente()
 
           const downloadFoto = async (url: string): Promise<string | null> => {
             if (!url) return null
@@ -1173,7 +1244,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             fotosExtras,
             assCliente, assTecnico,
             nomResp, fazenda: naOficina ? 'Oficina' : fazenda, cidadeServico: naOficina ? 'Oficina' : cidadeLocal,
-            data: new Date().toISOString().split('T')[0],
+            data: hojeLocal(),
             apenasBlob: true,
             downloadFoto,
           })
@@ -1181,26 +1252,28 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           if (pdfBlob) {
             const pdfPath = `relatorios-os/${id}/Relatorio_${id}_${Date.now()}.pdf`
             const pdfFile = new File([pdfBlob], `Relatorio_${id}.pdf`, { type: 'application/pdf' })
-            const { error: upErr } = await supabase.storage.from('requisicoes').upload(pdfPath, pdfFile)
+            const { error: upErr } = await comTimeout(supabase.storage.from('requisicoes').upload(pdfPath, pdfFile), 120_000)
 
             if (!upErr) {
               const { data: urlData } = supabase.storage.from('requisicoes').getPublicUrl(pdfPath)
               const pdfUrl = urlData.publicUrl
 
-              await Promise.all([
+              const [osUpd, tecUpd] = await comTimeout(Promise.all([
                 supabase.from('Ordem_Servico').update({
                   ID_Relatorio_Final: pdfUrl,
                 }).eq('Id_Ordem', id),
                 supabase.from('Ordem_Servico_Tecnicos').update({ pdf_criado: true }).eq('Ordem_Servico', id),
-              ])
+              ]), 20_000)
+              // sem o link gravado o portal não vê o PDF — cai no retry/fila
+              if (osUpd.error || tecUpd.error) throw new Error((osUpd.error || tecUpd.error)?.message || 'falha ao vincular PDF')
 
-              const { data: osData } = await supabase.from('Ordem_Servico').select('ID_PPV').eq('Id_Ordem', id).limit(1)
+              const { data: osData } = await comTimeout(supabase.from('Ordem_Servico').select('ID_PPV').eq('Id_Ordem', id).limit(1), 10_000)
               const ppvStr = osData?.[0]?.ID_PPV
               if (ppvStr) {
                 const ppvIds = String(ppvStr).split(',').map(s => s.trim()).filter(Boolean)
                 if (ppvIds.length > 0) {
-                  await supabase.from('pedidos').update({ status: 'Aguardando Para Faturar' })
-                    .in('id_pedido', ppvIds).not('status', 'in', '("Fechado","Cancelado")')
+                  await comTimeout(supabase.from('pedidos').update({ status: 'Aguardando Para Faturar' })
+                    .in('id_pedido', ppvIds).not('status', 'in', '("Fechado","Cancelado")'), 10_000)
                 }
               }
 
@@ -1225,9 +1298,23 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       console.warn('PDF enfileirado para retry em background')
     }
 
-    setSaving(false)
     setSucesso(true)
     clearBackup()
+    } catch (err) {
+      console.error('[enviar] Erro:', err)
+      if (salvo) {
+        // O relatório já foi gravado/enfileirado: o que falhou foi uma etapa
+        // seguinte (PDF, status...). O PDF é refeito em background.
+        await addPendingPdf(id).catch(() => {})
+        setSucesso(true)
+        clearBackup()
+      } else {
+        alert('Erro ao enviar a OS. Seus dados continuam salvos no aparelho — tente novamente.')
+      }
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }
 
   const [gerandoPdf, setGerandoPdf] = useState(false)
@@ -1235,15 +1322,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const handleGerarPdf = async () => {
     setGerandoPdf(true)
     try {
-      let cidade = ''
-      if (os?.Cnpj_Cliente) {
-        const { data: cli } = await supabase
-          .from('Clientes')
-          .select('cidade')
-          .eq('cnpj_cpf', os.Cnpj_Cliente)
-          .maybeSingle()
-        cidade = cli?.cidade || ''
-      }
+      const cidade = await cidadeDoCliente()
 
       await gerarPdfRelatorio({
         ordemServico: id,
@@ -1280,7 +1359,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         fotosExtras,
         assCliente, assTecnico,
         nomResp, fazenda: naOficina ? 'Oficina' : fazenda, cidadeServico: naOficina ? 'Oficina' : cidadeLocal,
-        data: new Date().toISOString().split('T')[0],
+        data: hojeLocal(),
       })
     } catch (err) {
       console.error('Erro ao gerar PDF:', err)
@@ -1304,7 +1383,11 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           <CheckCircle size={48} color="#10B981" />
         </div>
         <h2 style={{ fontSize: 22, fontWeight: 700, color: '#1F2937', marginBottom: 8 }}>OS Enviada!</h2>
-        <p style={{ fontSize: 15, color: '#6B7280', marginBottom: 28 }}>Os dados foram salvos com sucesso.</p>
+        <p style={{ fontSize: 15, color: '#6B7280', marginBottom: 28 }}>
+          {enviadoOffline
+            ? 'Sem sinal agora: a OS ficou salva no aparelho e será enviada sozinha quando houver internet. Não apague os dados do app.'
+            : 'Os dados foram salvos com sucesso.'}
+        </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12, width: '100%', maxWidth: 300 }}>
           <button onClick={handleGerarPdf} disabled={gerandoPdf} style={{
             background: '#1E3A5F', color: '#fff', borderRadius: 14,

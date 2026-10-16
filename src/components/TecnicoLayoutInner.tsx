@@ -7,6 +7,7 @@ import HeaderMobile from '@/components/HeaderMobile'
 import PushPermissionBanner from '@/components/PushPermissionBanner'
 import OfflineSync from '@/components/OfflineSync'
 import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
+import { dataLocalISO } from '@/lib/tecnico-utils'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon, ChevronRight, Car, ClipboardCheck } from 'lucide-react'
@@ -25,7 +26,7 @@ function getOpaViewsLocal(): Set<string> {
 function addOpaViewLocal(id: string) {
   const set = getOpaViewsLocal()
   set.add(id)
-  localStorage.setItem(OPA_VIEWS_KEY, JSON.stringify([...set]))
+  try { localStorage.setItem(OPA_VIEWS_KEY, JSON.stringify([...set])) } catch {}
 }
 
 interface OpaPopup {
@@ -47,7 +48,7 @@ function getOcorrenciaViewsLocal(): Set<number> {
 function addOcorrenciaViewLocal(id: number) {
   const set = getOcorrenciaViewsLocal()
   set.add(id)
-  localStorage.setItem(OCORRENCIA_VIEWS_KEY, JSON.stringify([...set]))
+  try { localStorage.setItem(OCORRENCIA_VIEWS_KEY, JSON.stringify([...set])) } catch {}
 }
 
 function getAvisosConfirmadosLocal(): Set<number> {
@@ -60,10 +61,14 @@ function getAvisosConfirmadosLocal(): Set<number> {
 function addAvisoConfirmadoLocal(id: number) {
   const set = getAvisosConfirmadosLocal()
   set.add(id)
-  localStorage.setItem(AVISOS_CONFIRMADOS_KEY, JSON.stringify([...set]))
+  try { localStorage.setItem(AVISOS_CONFIRMADOS_KEY, JSON.stringify([...set])) } catch {}
 }
 
 const LAYOUT_TIMEOUT = 8000
+
+// Nome único por montagem: o supabase-js reaproveita um canal com o mesmo nome
+// enquanto o anterior ainda está sendo removido, e o subscribe() novo falha calado.
+const canal = (nome: string) => `${nome}_${Math.random().toString(36).slice(2, 8)}`
 function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
   return Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), LAYOUT_TIMEOUT))])
 }
@@ -112,7 +117,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     if (!user?.tecnico_nome) return
     if (!navigator.onLine) return
     try {
-    const hoje = new Date().toISOString().split('T')[0]
+    const hoje = dataLocalISO()
     const { data: avisos } = await withTimeout(supabase
       .from('avisos_gerais')
       .select('id, titulo, mensagem, prioridade')
@@ -206,7 +211,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
 
   useEffect(() => {
     carregarAvisosPendentes()
-    const ch = supabase.channel('aviso_popup_tec')
+    const ch = supabase.channel(canal('aviso_popup_tec'))
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'avisos_gerais' }, () => carregarAvisosPendentes())
       .subscribe()
     return () => { supabase.removeChannel(ch) }
@@ -214,7 +219,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
 
   useEffect(() => {
     carregarOpasPendentes()
-    const ch = supabase.channel('opa_popup_tec')
+    const ch = supabase.channel(canal('opa_popup_tec'))
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'portal_opas' }, () => carregarOpasPendentes())
       .subscribe()
     return () => { supabase.removeChannel(ch) }
@@ -261,10 +266,10 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   useEffect(() => {
     carregarOcDisciplinares()
     const chs = [
-      supabase.channel('oc_disc_banner')
+      supabase.channel(canal('oc_disc_banner'))
         .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_ocorrencias' }, () => carregarOcDisciplinares())
         .subscribe(),
-      supabase.channel('oc_disc_banner_just')
+      supabase.channel(canal('oc_disc_banner_just'))
         .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_justificativas' }, () => carregarOcDisciplinares())
         .subscribe(),
     ]
@@ -389,7 +394,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
         <Link href="/ocorrencias" style={{
           // top:64 = altura do HeaderMobile (também sticky) — top:0 cobriria
           // o header e o toque no sino cairia neste Link
-          position: 'sticky', top: 64, zIndex: 30,
+          position: 'sticky', top: 'calc(64px + env(safe-area-inset-top, 0px))', zIndex: 30,
           display: 'flex', alignItems: 'center', gap: 10,
           background: '#DC2626', color: '#fff', textDecoration: 'none',
           padding: '11px 16px', boxShadow: '0 2px 8px rgba(220,38,38,0.35)',

@@ -7,8 +7,12 @@ export async function GET(req: NextRequest) {
     const busca = sp.get('busca')
 
     // Search clients for SAT creation
+    // Remove caracteres de sintaxe do filtro PostgREST (vírgula, parênteses, aspas…):
+    // interpolados no .or() permitiam injetar condições extras no filtro
     if (busca && busca.length >= 2) {
-      const term = `%${busca}%`
+      const buscaSegura = busca.replace(/[%,()*"\\:]/g, ' ').trim()
+      if (!buscaSegura) return NextResponse.json([])
+      const term = `%${buscaSegura}%`
       const { data } = await supabase
         .from('portal_nt_clientes_PRINCIPAL')
         .select('id, nome_fantasia, razao_social, cnpj_cpf, cidade, estado, endereco, bairro')

@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'busca') {
-      const safe = String(busca || '').replace(/[%,()*]/g, ' ').trim()
+      const safe = String(busca || '').replace(/[%,()*"\\]/g, ' ').trim()
       const tokens = safe.toLowerCase().split(/\s+/).filter((t: string) => t.length >= 2)
       let query = supabase.from('catalogo_pecas').select('id, code, name, reference, qtd, figura_id').limit(60)
       if (tokens.length === 0) {

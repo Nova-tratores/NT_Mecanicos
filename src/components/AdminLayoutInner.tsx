@@ -1,18 +1,10 @@
 'use client'
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAdmin } from '@/hooks/useAdmin'
 import { supabase } from '@/lib/supabase'
 import HeaderAdmin from '@/components/HeaderAdmin'
+import PushPermissionBanner from '@/components/PushPermissionBanner'
 import { AlertCircle, Film, Image as ImageIcon } from 'lucide-react'
-
-const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || ''
-function urlBase64ToUint8Array(b64: string) {
-  const pad = '='.repeat((4 - (b64.length % 4)) % 4)
-  const raw = atob((b64 + pad).replace(/-/g, '+').replace(/_/g, '/'))
-  const arr = new Uint8Array(raw.length)
-  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i)
-  return arr
-}
 
 const OPA_VIEWS_KEY = 'nt-opa-views-admin'
 function getOpaViewsLocal(): Set<string> {
@@ -24,7 +16,7 @@ function getOpaViewsLocal(): Set<string> {
 function addOpaViewLocal(id: string) {
   const set = getOpaViewsLocal()
   set.add(id)
-  localStorage.setItem(OPA_VIEWS_KEY, JSON.stringify([...set]))
+  try { localStorage.setItem(OPA_VIEWS_KEY, JSON.stringify([...set])) } catch { /* storage indisponível */ }
 }
 
 interface OpaPopup {
@@ -41,70 +33,10 @@ export default function AdminLayoutInner({ children }: { children: React.ReactNo
   const { admin, loading, logout } = useAdmin()
   const [opasPendentes, setOpasPendentes] = useState<OpaPopup[]>([])
   const [opaConfirmando, setOpaConfirmando] = useState(false)
-  const osNotificadasRef = useRef<Set<number>>(new Set())
 
-  // ── Push subscription para admin ──
-  useEffect(() => {
-    if (!admin?.tecnico_nome || !VAPID_PUBLIC_KEY) return
-    if (!('serviceWorker' in navigator)) return
-    navigator.serviceWorker.ready.then(async (reg) => {
-      try {
-        const perm = await Notification.requestPermission()
-        if (perm !== 'granted') return
-        let sub = await reg.pushManager.getSubscription()
-        if (!sub) {
-          sub = await reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-          })
-        }
-        await fetch('/api/push/subscribe', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ tecnico_nome: admin.tecnico_nome, subscription: sub.toJSON() }),
-        })
-      } catch {}
-    })
-  }, [admin?.tecnico_nome])
+  // Notificação de OS nova: enviada pelo servidor do Portal ao criar/atribuir
+  // a OS. Antes cada aba aberta deste painel enviava de novo.
 
-  // ── Listener de novas OS → notifica técnico ──
-  useEffect(() => {
-    const ch = supabase.channel('os_nova_admin')
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'Ordem_Servico',
-      }, (payload) => {
-        const os = payload.new as any
-        if (!os?.Id_Ordem) return
-        if (osNotificadasRef.current.has(os.Id_Ordem)) return
-        osNotificadasRef.current.add(os.Id_Ordem)
-        const tecnicos = [os.Os_Tecnico, os.Os_Tecnico2].filter(Boolean)
-        const cliente = os.Os_Cliente || 'Cliente'
-        for (const tec of tecnicos) {
-          fetch('/api/push/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              tecnico_nome: tec,
-              titulo: `Nova OS #${os.Id_Ordem}`,
-              descricao: `Cliente: ${cliente}`,
-              link: `/os/${os.Id_Ordem}`,
-            }),
-          }).catch(() => {})
-          supabase.from('mecanico_notificacoes').insert({
-            tecnico_nome: tec,
-            tipo: 'nova_os',
-            titulo: `Nova OS #${os.Id_Ordem}`,
-            descricao: `Cliente: ${cliente}`,
-            link: `/os/${os.Id_Ordem}`,
-            lida: false,
-          }).then(() => {})
-        }
-      })
-      .subscribe()
-    return () => { supabase.removeChannel(ch) }
-  }, [])
 
   const carregarOpasPendentes = useCallback(async () => {
     if (!admin?.id) return
@@ -184,6 +116,7 @@ export default function AdminLayoutInner({ children }: { children: React.ReactNo
   return (
     <div style={{ minHeight: '100vh' }}>
       <HeaderAdmin adminNome={admin.tecnico_nome} onLogout={logout} />
+      <PushPermissionBanner tecnicoNome={admin.tecnico_nome} />
       <main style={{ padding: 16 }}>
         {children}
       </main>

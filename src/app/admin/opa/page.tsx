@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAdmin } from '@/hooks/useAdmin'
-import { supabase } from '@/lib/supabase'
+import { supabase, fetchAll, authHeaders } from '@/lib/supabase'
 import { colors, shadow } from '@/lib/ui'
 import {
   AlertCircle, Plus, X, Check, CheckCircle2, Camera, Clock,
@@ -57,14 +57,18 @@ export default function AdminOpaPage() {
   }, [showModal])
 
   const carregar = useCallback(async () => {
+   try {
     const { data: lista } = await supabase.from('portal_opas').select('*').order('created_at', { ascending: false })
     if (!lista) { setLoading(false); return }
 
     const ids = lista.map(o => o.id)
-    const [{ data: anexosData }, { data: viewsData }] = await Promise.all([
-      ids.length ? supabase.from('portal_opas_anexos').select('*').in('opa_id', ids) : { data: [] },
-      ids.length ? supabase.from('portal_opas_views').select('opa_id, user_nome, visto_at').in('opa_id', ids) : { data: [] },
-    ])
+    // Sem .in(ids) (URL gigante com muitos Opas) e paginado (limite de 1000 linhas)
+    const [anexosData, viewsData] = ids.length
+      ? await Promise.all([
+        fetchAll<OpaAnexo>('portal_opas_anexos', { select: '*' }),
+        fetchAll<{ opa_id: string; user_nome: string | null; visto_at: string }>('portal_opas_views', { select: 'opa_id, user_nome, visto_at' }),
+      ])
+      : [[], []]
 
     const anexosMap: Record<string, OpaAnexo[]> = {}
     ;(anexosData || []).forEach((a: any) => { (anexosMap[a.opa_id] ||= []).push(a) })
@@ -76,7 +80,11 @@ export default function AdminOpaPage() {
       anexos: anexosMap[o.id] || [],
       views: (viewsMap[o.id] || []).sort((a, b) => new Date(a.quando).getTime() - new Date(b.quando).getTime()),
     })))
+   } catch (e) {
+    console.error('[opa]', e)
+   } finally {
     setLoading(false)
+   }
   }, [])
 
   useEffect(() => { carregar() }, [carregar])
@@ -104,20 +112,25 @@ export default function AdminOpaPage() {
   }
 
   const criarOpa = async () => {
-    if (!titulo.trim() || !admin) return
+    if (!titulo.trim() || !admin || enviando) return
     setEnviando(true)
+    try {
     const { data: opa, error } = await supabase.from('portal_opas').insert({
       titulo: titulo.trim(), descricao: descricao.trim() || null,
       criado_por: admin.id, criado_por_nome: nome || 'Admin', origem: 'portal',
     }).select().single()
 
-    if (error || !opa) { setEnviando(false); return }
+    if (error || !opa) { alert('Erro ao registrar o Opa. Tente novamente.'); return }
 
+    const falhas: string[] = []
     for (const file of arquivos) {
       const ext = file.name.split('.').pop()
-      const path = `opas/${opa.id}/${Date.now()}_${file.name}`
+      // Nome com acento/espaço/símbolo é rejeitado pelo Storage (anexo sumia sem aviso)
+      const nomeSeguro = file.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9._-]/g, '_')
+      const path = `opas/${opa.id}/${Date.now()}_${nomeSeguro}`
       const { error: upErr } = await supabase.storage.from('anexos').upload(path, file)
-      if (!upErr) {
+      if (upErr) falhas.push(file.name)
+      else {
         const { data: urlData } = supabase.storage.from('anexos').getPublicUrl(path)
         await supabase.from('portal_opas_anexos').insert({
           opa_id: opa.id, nome_arquivo: file.name, url: urlData.publicUrl,
@@ -128,7 +141,7 @@ export default function AdminOpaPage() {
 
     fetch('/api/push/send-all', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
       body: JSON.stringify({
         titulo: `Opa: ${titulo.trim()}`,
         descricao: descricao.trim() || 'Novo Opa registrado',
@@ -136,9 +149,12 @@ export default function AdminOpaPage() {
       }),
     }).catch(() => {})
 
-    supabase.from('mecanico_usuarios').select('tecnico_nome').eq('ativo', true).then(({ data: tecs }) => {
+    // O insert precisa ser aguardado/then: builders do supabase-js são lazy —
+    // sem isso a notificação dos mecânicos NUNCA era gravada
+    const { data: tecs } = await supabase.from('mecanico_usuarios').select('tecnico_nome').eq('ativo', true)
+    {
       if (tecs?.length) {
-        supabase.from('mecanico_notificacoes').insert(
+        await supabase.from('mecanico_notificacoes').insert(
           tecs.map(t => ({
             tecnico_nome: t.tecnico_nome,
             tipo: 'opa',
@@ -149,25 +165,35 @@ export default function AdminOpaPage() {
           }))
         )
       }
-    })
+    }
 
-    setTitulo(''); setDescricao(''); setArquivos([]); setShowModal(false); setEnviando(false)
+    setTitulo(''); setDescricao(''); setArquivos([]); setShowModal(false)
+    if (falhas.length) alert(`Opa registrado, mas estes anexos falharam: ${falhas.join(', ')}`)
     carregar()
+    } catch (e) {
+      console.error('[opa] criar', e)
+      alert('Erro de conexão ao registrar o Opa.')
+    } finally {
+      setEnviando(false)
+    }
   }
 
   const resolver = async (opa: Opa) => {
     if (!admin) return
+    if (resolvendo) return
     setResolvendo(opa.id)
-    await supabase.rpc('resolver_opa', {
+    const { error } = await supabase.rpc('resolver_opa', {
       p_opa_id: opa.id, p_user_id: admin.id, p_user_nome: nome || 'Admin', p_user_tipo: 'portal',
     })
     setResolvendo(null)
+    if (error) alert('Erro ao resolver o Opa.')
     carregar()
   }
 
   const excluirOpa = async (id: string) => {
     if (!confirm('Excluir este Opa?')) return
-    await supabase.from('portal_opas').delete().eq('id', id)
+    const { error } = await supabase.from('portal_opas').delete().eq('id', id)
+    if (error) alert('Erro ao excluir o Opa.')
     carregar()
   }
 

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { enviarPushParaTodos } from '@/lib/push-server'
 import { createClient } from '@supabase/supabase-js'
+import { hojeBR } from '../../_lib/date'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
@@ -49,7 +51,7 @@ export async function POST(req: NextRequest) {
           tipo,
           descricao: `OPA "${opa.titulo}" não resolvida há ${dia} dia(s).\n${opa.descricao || ''}`.trim(),
           pontos: dia === 1 ? -3 : -5,
-          data_referencia: new Date().toISOString().slice(0, 10),
+          data_referencia: hojeBR(),
           id_ordem: opa.id,
           admin_nome: 'Sistema',
         }))
@@ -69,15 +71,10 @@ export async function POST(req: NextRequest) {
             }))
           )
 
-          const baseUrl = new URL(req.url).origin
-          fetch(`${baseUrl}/api/push/send-all`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              titulo: `Ocorrência: OPA não resolvida`,
-              descricao: `"${opa.titulo}" - ${dia} dia(s) sem resolução`,
-              link: '/opa',
-            }),
+          await enviarPushParaTodos({
+            titulo: `Ocorrência: OPA não resolvida`,
+            descricao: `"${opa.titulo}" - ${dia} dia(s) sem resolução`,
+            link: '/opa',
           }).catch(() => {})
         }
       }

@@ -1,9 +1,10 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabase, authHeaders } from '@/lib/supabase'
 import { Car, MapPin, Navigation, Loader2, Clock, Route, Wrench, LogOut } from 'lucide-react'
 import { colors } from '@/lib/ui'
 import { offlineWrite } from '@/lib/offlineWrite'
+import { dataLocalISO } from '@/lib/tecnico-utils'
 
 const OFICINA_LAT = parseFloat(process.env.NEXT_PUBLIC_OFICINA_LAT || '-23.6533')
 const OFICINA_LNG = parseFloat(process.env.NEXT_PUBLIC_OFICINA_LNG || '-49.3836')
@@ -46,6 +47,7 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
   // Carregar veiculos e ordens
   useEffect(() => {
     async function load() {
+      try {
       const [veicRes, osRes] = await Promise.all([
         supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca'),
         supabase
@@ -88,7 +90,12 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
         )
       }
 
-      setLoading(false)
+      } catch (err) {
+        // Offline / sinal fraco: deixa escolher "Oficina" em vez de travar no spinner
+        console.error('[checkin] erro ao carregar:', err)
+      } finally {
+        setLoading(false)
+      }
     }
     load()
   }, [nomeBusca])
@@ -174,8 +181,9 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
 
     if (!rota) return
 
+    let cancelado = false
     import('leaflet').then((L) => {
-      if (!mapRef.current) return
+      if (cancelado || !mapRef.current) return
 
       const map = L.map(mapRef.current, { zoomControl: false }).fitBounds(
         L.latLngBounds(rota.coordinates.map(([lat, lng]) => L.latLng(lat, lng))),
@@ -213,8 +221,15 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
       L.control.zoom({ position: 'bottomright' }).addTo(map)
 
       mapInstanceRef.current = map
-      setTimeout(() => map.invalidateSize(), 100)
-    })
+      setTimeout(() => { if (mapInstanceRef.current === map) map.invalidateSize() }, 100)
+    }).catch(() => {})
+    return () => {
+      cancelado = true
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove()
+        mapInstanceRef.current = null
+      }
+    }
   }, [rota, ordemId, ordens])
 
   // Veiculo "OFICINA" = fica na oficina (sem deslocamento). Nesse caso o destino
@@ -230,11 +245,13 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
   }, [ficaNaOficina])
 
   const confirmar = async () => {
+    if (saving) return
     setSaving(true)
     const isOficina = ordemId === 'OFICINA' || ficaNaOficina
     const ordem = isOficina ? null : ordens.find((o) => o.Id_Ordem === ordemId)
-    const hoje = new Date().toISOString().split('T')[0]
+    const hoje = dataLocalISO()
 
+    try {
     await offlineWrite({
       table: 'checkin_diario',
       action: 'insert',
@@ -251,14 +268,20 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
         tempo_estimado_min: isOficina ? 0 : (rota?.tempo_min || null),
       },
     })
+    } catch (err) {
+      console.error('[checkin] erro ao salvar:', err)
+      alert('Não foi possível registrar a jornada. Tente novamente.')
+      setSaving(false)
+      return
+    }
 
     // Sincronizar veiculo com Rota Exata (so quando ha placa real e online)
     if (placa && !ficaNaOficina && navigator.onLine) {
-      fetch('/api/sync-veiculo', {
+      authHeaders().then((h) => fetch('/api/sync-veiculo', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...h },
         body: JSON.stringify({ tecnico_nome: tecnicoNome, placa }),
-      }).catch(() => {})
+      })).catch(() => {})
     }
 
     setSaving(false)
@@ -287,14 +310,15 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
     }}>
       {/* Header */}
       <div style={{
-        background: 'linear-gradient(135deg, #C41E2A, #9B1520)', color: '#fff', padding: '20px 16px',
+        background: 'linear-gradient(135deg, #C41E2A, #9B1520)', color: '#fff',
+        padding: 'calc(20px + env(safe-area-inset-top, 0px)) 16px 20px',
         textAlign: 'center', flexShrink: 0, position: 'relative',
       }}>
         {onLogout && (
           <button
             onClick={onLogout}
             style={{
-              position: 'absolute', top: 14, right: 12,
+              position: 'absolute', top: 'calc(14px + env(safe-area-inset-top, 0px))', right: 12,
               display: 'inline-flex', alignItems: 'center', gap: 5,
               background: 'rgba(255,255,255,0.16)', color: '#fff', border: 'none',
               borderRadius: 999, padding: '7px 12px', fontSize: 12, fontWeight: 600, cursor: 'pointer',
@@ -323,7 +347,7 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
             style={{
               width: '100%', padding: '13px 14px', borderRadius: 12,
               border: `2px solid ${placa ? colors.primary : colors.border}`,
-              fontSize: 15, fontWeight: 600, background: '#FAFAFA',
+              fontSize: 16, fontWeight: 600, background: '#FAFAFA',
               outline: 'none', appearance: 'none',
               color: placa ? colors.text : '#9CA3AF',
             }}
@@ -348,7 +372,7 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
             style={{
               width: '100%', padding: '13px 14px', borderRadius: 12,
               border: `2px solid ${ordemId ? colors.primary : colors.border}`,
-              fontSize: 14, fontWeight: 600, background: '#FAFAFA',
+              fontSize: 16, fontWeight: 600, background: '#FAFAFA',
               outline: 'none', appearance: 'none',
               color: ordemId ? colors.text : '#9CA3AF',
             }}
@@ -462,7 +486,7 @@ export default function CheckinDiario({ tecnicoNome, nomeBusca, onComplete, onLo
       </div>
 
       {/* Botao confirmar */}
-      <div style={{ padding: '12px 16px 24px', flexShrink: 0 }}>
+      <div style={{ padding: '12px 16px calc(24px + env(safe-area-inset-bottom, 0px))', flexShrink: 0 }}>
         <button
           onClick={confirmar}
           disabled={!podeSalvar || saving}

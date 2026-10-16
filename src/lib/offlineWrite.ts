@@ -16,11 +16,14 @@ interface WriteOptions {
   match?: Record<string, unknown>
 }
 
+type WriteResult = { ok: boolean; queued: boolean; error?: string }
+
 function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
   return Promise.race([
     p,
-    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), WRITE_TIMEOUT)),
-  ])
+    new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), WRITE_TIMEOUT) }),
+  ]).finally(() => clearTimeout(timer))
 }
 
 function isNetworkError(err: unknown): boolean {
@@ -34,17 +37,33 @@ function isNetworkError(err: unknown): boolean {
     msg.includes('dns') ||
     msg.includes('econnrefused') ||
     msg.includes('enotfound') ||
-    msg.includes('aborted')
+    msg.includes('aborted') ||
+    msg.includes('socket')
   )
 }
 
-export async function offlineWrite(opts: WriteOptions): Promise<{ ok: boolean; queued: boolean; error?: string }> {
+/** Enfileira no IndexedDB. Se nem isso der (armazenamento cheio/bloqueado),
+ *  devolve erro em vez de estourar exceção — quem chama mostra o alerta e o
+ *  formulário continua na tela (antes o botão ficava travado em "Enviando..."). */
+async function enfileirar(item: Omit<WriteOptions, 'match'> & { match?: Record<string, unknown> }): Promise<WriteResult> {
+  try {
+    await queueSync(item)
+    return { ok: true, queued: true }
+  } catch (err) {
+    console.error('[offlineWrite] Falha ao enfileirar:', err)
+    return {
+      ok: false, queued: false,
+      error: 'Sem conexão e não foi possível salvar no aparelho (armazenamento cheio?). Libere espaço e tente de novo.',
+    }
+  }
+}
+
+export async function offlineWrite(opts: WriteOptions): Promise<WriteResult> {
   const queueItem = { table: opts.table, action: opts.action, data: opts.data, match: opts.match }
 
   // Se offline, vai direto pra fila (queueSync agora aguarda a transação)
   if (!navigator.onLine) {
-    await queueSync(queueItem)
-    return { ok: true, queued: true }
+    return enfileirar(queueItem)
   }
 
   // Tenta online
@@ -72,16 +91,14 @@ export async function offlineWrite(opts: WriteOptions): Promise<{ ok: boolean; q
     if (result?.error) {
       // Se é erro de rede, enfileira
       if (isNetworkError(result.error)) {
-        await queueSync(queueItem)
-        return { ok: true, queued: true }
+        return enfileirar(queueItem)
       }
       return { ok: false, queued: false, error: result.error.message }
     }
 
     return { ok: true, queued: false }
-  } catch (err) {
+  } catch {
     // Erro de rede, enfileira
-    await queueSync(queueItem)
-    return { ok: true, queued: true }
+    return enfileirar(queueItem)
   }
 }

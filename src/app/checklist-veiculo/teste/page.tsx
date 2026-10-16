@@ -30,6 +30,9 @@ const ITEMS = [
   { key: 'macaco_chave', cat: 'Segurança', titulo: 'Macaco e chave de roda', desc: 'Fotografe o macaco e a chave de roda' },
 ]
 
+// Datas fixas: Date.now() no módulo difere entre servidor e cliente (erro de hidratação)
+const MOCK_FIM_MS = Date.parse('2026-07-15T14:22:00-03:00')
+
 const MOCK_ITENS = ITEMS.map((item, i) => ({
   item_key: item.key,
   categoria: item.cat,
@@ -37,7 +40,7 @@ const MOCK_ITENS = ITEMS.map((item, i) => ({
   resposta: i === 3 || i === 9 ? 'problema' : 'ok',
   observacao: i === 3 ? 'Amassado no para-lama traseiro esquerdo' : i === 9 ? 'Estepe careca, precisa trocar' : '',
   foto_url: null as string | null,
-  respondido_em: new Date(Date.now() - (ITEMS.length - i) * 45000).toISOString(),
+  respondido_em: new Date(MOCK_FIM_MS - (ITEMS.length - i) * 45000).toISOString(),
 }))
 
 const MOCK_CHECKLIST = {
@@ -46,8 +49,8 @@ const MOCK_CHECKLIST = {
   placa: 'VW SAVEIRO ROBUST - TKY6E68',
   mes_referencia: '2026-07',
   status: 'completo',
-  inicio_em: new Date(Date.now() - 22 * 60000).toISOString(),
-  fim_em: new Date().toISOString(),
+  inicio_em: new Date(MOCK_FIM_MS - 22 * 60000).toISOString(),
+  fim_em: new Date(MOCK_FIM_MS).toISOString(),
   duracao_total_seg: 22 * 60,
   score_confianca: 72,
   alertas: [
@@ -180,7 +183,7 @@ export default function ChecklistTestePage() {
                       <span style={{ fontSize: 11, fontWeight: 700, color: colors.warning }}>{i + 1}</span>
                     )}
                   </div>
-                  <span style={{ fontSize: 12, color: colors.text, flex: 1 }}>{item.titulo}</span>
+                  <span style={{ fontSize: 13, color: colors.text, flex: 1, minWidth: 0 }}>{item.titulo}</span>
                   <ChevronRight size={14} color={colors.textSubtle} />
                 </button>
               )
@@ -207,14 +210,14 @@ export default function ChecklistTestePage() {
         <div style={{ padding: '12px 16px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
             <button onClick={() => wizardStep > 0 ? setWizardStep(wizardStep - 1) : setWizardStep(-1)} style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', gap: 4,
+              background: 'none', border: 'none', cursor: 'pointer', padding: '0 8px 0 0', minHeight: 44, display: 'flex', alignItems: 'center', gap: 4,
               fontSize: 13, color: colors.textMuted,
             }}>
               ← {wizardStep > 0 ? 'Anterior' : 'Voltar'}
             </button>
             <span style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle }}>{wizardStep + 1} / {ITEMS.length}</span>
             <button onClick={() => setWizardStep(ITEMS.length)} style={{
-              background: 'none', border: 'none', cursor: 'pointer', padding: 4,
+              background: 'none', border: 'none', cursor: 'pointer', padding: '0 0 0 8px', minHeight: 44,
               fontSize: 13, color: colors.primary, fontWeight: 600,
             }}>
               Resumo
@@ -297,8 +300,8 @@ export default function ChecklistTestePage() {
               rows={3}
               style={{
                 width: '100%', padding: 12, borderRadius: 12, border: `1px solid ${colors.border}`,
-                background: colors.surfaceAlt, fontSize: 13, color: colors.text, resize: 'none',
-                fontFamily: 'inherit',
+                background: colors.surfaceAlt, fontSize: 16, color: colors.text, resize: 'none',
+                fontFamily: 'inherit', boxSizing: 'border-box',
               }}
             />
           </div>
@@ -371,7 +374,7 @@ export default function ChecklistTestePage() {
                         }}>
                           {isOk ? <Check size={14} color={colors.success} /> : isProblema ? <AlertCircle size={14} color={colors.danger} /> : null}
                         </div>
-                        <span style={{ fontSize: 13, fontWeight: 600, color: colors.text, flex: 1 }}>{item.titulo}</span>
+                        <span style={{ fontSize: 13, fontWeight: 600, color: colors.text, flex: 1, minWidth: 0 }}>{item.titulo}</span>
                         <span style={{
                           fontSize: 10, fontWeight: 700, color: isOk ? colors.success : colors.danger,
                           padding: '2px 6px', borderRadius: 4,
@@ -407,8 +410,8 @@ export default function ChecklistTestePage() {
         padding: '16px 20px', background: colors.primary, color: '#fff',
         display: 'flex', alignItems: 'center', gap: 12,
       }}>
-        <Shield size={24} />
-        <div style={{ flex: 1 }}>
+        <Shield size={24} style={{ flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 16, fontWeight: 800 }}>Checklist do Veículo</div>
           <div style={{ fontSize: 12, opacity: 0.8 }}>Julho 2026</div>
         </div>
@@ -422,7 +425,7 @@ export default function ChecklistTestePage() {
 
       <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Info cards */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 10 }}>
           <div style={{
             background: colors.surfaceAlt, borderRadius: 12, padding: 14,
             border: `1px solid ${colors.border}`,
@@ -431,7 +434,7 @@ export default function ChecklistTestePage() {
               <Car size={14} color={colors.primary} />
               <span style={{ fontSize: 11, color: colors.textMuted, fontWeight: 600 }}>VEÍCULO</span>
             </div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{checklist.placa}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: colors.text, overflowWrap: 'anywhere' }}>{checklist.placa}</div>
           </div>
           <div style={{
             background: colors.surfaceAlt, borderRadius: 12, padding: 14,
@@ -459,7 +462,7 @@ export default function ChecklistTestePage() {
           <div>
             <div style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{checklist.tecnico_nome}</div>
             <div style={{ fontSize: 11, color: colors.textMuted }}>
-              {new Date(checklist.fim_em).toLocaleString('pt-BR')}
+              {new Date(checklist.fim_em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
             </div>
           </div>
         </div>
@@ -517,7 +520,7 @@ export default function ChecklistTestePage() {
           <div style={{ fontSize: 11, fontWeight: 700, color: colors.textSubtle, marginBottom: 8, letterSpacing: 0.5 }}>
             LOCALIZAÇÃO
           </div>
-          <div style={{ display: 'flex', gap: 16, fontSize: 11, color: colors.textMuted }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 16px', fontSize: 11, color: colors.textMuted }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
               <MapPin size={12} color={colors.success} />
               Início: {checklist.loc_inicio.lat.toFixed(4)}, {checklist.loc_inicio.lng.toFixed(4)}

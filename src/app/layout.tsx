@@ -14,6 +14,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   maximumScale: 1,
   userScalable: false,
+  viewportFit: "cover",
   themeColor: "#C41E2A",
 };
 
@@ -21,10 +22,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="pt-BR">
       <head>
-        <link rel="apple-touch-icon" href="/Logo_Nova.png" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+        {/* Trava de emergencia: subir SW_VERSION apaga os caches e o service worker
+            de todos os celulares na proxima abertura com internet (dados offline do
+            IndexedDB NAO sao apagados). Atualizacao normal nao precisa disso: o
+            /sw.js muda sozinho a cada deploy. */}
         <script dangerouslySetInnerHTML={{ __html: `
           (function(){
-            var SW_VERSION = 'v27';
+            var SW_VERSION = 'v28';
             var key = 'sw_ver';
             try {
               var stored = localStorage.getItem(key);

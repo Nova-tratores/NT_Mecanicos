@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { hojeBR } from '../_lib/date'
 import { createClient } from '@supabase/supabase-js'
 
 const RAILWAY_API = 'https://mapa-geral-production.up.railway.app'
@@ -10,7 +11,7 @@ const supabase = createClient(
 
 export async function GET() {
   try {
-    const hoje = new Date().toISOString().split('T')[0]
+    const hoje = hojeBR() // fuso de Brasília (UTC virava o dia seguinte após 21h)
 
     // Buscar veiculos do Railway (mesma API do portal, posicao em tempo real)
     const [veiculosRes, { data: checkins }] = await Promise.all([

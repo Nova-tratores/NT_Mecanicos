@@ -12,6 +12,20 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
 })
 
 /**
+ * Headers com o JWT da sessão atual, para chamar rotas /api que exigem login.
+ * Uso: fetch(url, { headers: { ...(await authHeaders()), 'Content-Type': 'application/json' } })
+ */
+export async function authHeaders(): Promise<Record<string, string>> {
+  try {
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
  * Busca todos os registros de uma tabela, paginando automaticamente
  * para contornar o limite padrão de 1000 linhas do Supabase.
  */
@@ -35,7 +49,12 @@ export async function fetchAll<T = Record<string, unknown>>(
     q = q.range(from, from + PAGE_SIZE - 1)
 
     const { data, error } = await q
-    if (error || !data) break
+    if (error) {
+      // Antes falhava em silêncio (retornava lista parcial/vazia como se fosse completa)
+      console.error(`[fetchAll] ${table}:`, error.message)
+      break
+    }
+    if (!data) break
 
     all.push(...(data as T[]))
     if (data.length < PAGE_SIZE) break

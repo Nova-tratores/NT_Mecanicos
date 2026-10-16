@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
+import { mesBR, horaBR } from '../_lib/date'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
@@ -115,7 +116,8 @@ function calcularScore(checklist: any, itens: any[]): { score: number; alertas: 
 
   // 10. Horário suspeito
   if (checklist.inicio_em) {
-    const hora = new Date(checklist.inicio_em).getHours()
+    // Hora de Brasília (getHours() no servidor UTC marcava 19h–21h como suspeito e liberava 3h–6h)
+    const hora = horaBR(new Date(checklist.inicio_em))
     if (hora < 6 || hora >= 22) {
       score -= 5; alertas.push('Checklist realizado fora do horário comercial')
     }
@@ -142,11 +144,17 @@ export async function POST(req: NextRequest) {
       const categoria = fd.get('categoria') as string
       const titulo = fd.get('titulo') as string
 
+      // checklist_id e item_key viram caminho no Storage (com service role):
+      // só aceita ids simples e chaves conhecidas — evita sobrescrever outros arquivos do bucket
+      if (!checklistId || !/^[A-Za-z0-9_-]+$/.test(checklistId) || !CHECKLIST_ITEMS.some(i => i.key === itemKey)) {
+        return NextResponse.json({ error: 'Dados inválidos' }, { status: 400 })
+      }
+
       let fotoUrl: string | null = null
       let fotoTamanho: number | null = null
 
       if (foto) {
-        const ext = foto.name.split('.').pop() || 'jpg'
+        const ext = ((foto.name || '').split('.').pop() || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5) || 'jpg'
         const path = `checklist/${checklistId}/${itemKey}.${ext}`
         const buffer = Buffer.from(await foto.arrayBuffer())
         fotoTamanho = buffer.length
@@ -168,18 +176,23 @@ export async function POST(req: NextRequest) {
         .eq('item_key', itemKey)
         .maybeSingle()
 
+      let saveErr: { message: string } | null = null
       if (existing) {
-        await supabase.from('veiculo_checklist_itens').update({
-          resposta, observacao, foto_url: fotoUrl, foto_tamanho: fotoTamanho,
-          respondido_em: new Date().toISOString(),
-        }).eq('id', existing.id)
+        // Sem foto nova, mantém a foto já salva (antes era sobrescrita com null)
+        const upd: Record<string, unknown> = { resposta, observacao, respondido_em: new Date().toISOString() }
+        if (foto) { upd.foto_url = fotoUrl; upd.foto_tamanho = fotoTamanho }
+        const { error } = await supabase.from('veiculo_checklist_itens').update(upd).eq('id', existing.id)
+        saveErr = error
       } else {
-        await supabase.from('veiculo_checklist_itens').insert({
+        const { error } = await supabase.from('veiculo_checklist_itens').insert({
           checklist_id: checklistId, item_key: itemKey, categoria, titulo,
           resposta, observacao, foto_url: fotoUrl, foto_tamanho: fotoTamanho,
           respondido_em: new Date().toISOString(),
         })
+        saveErr = error
       }
+      // Antes respondia ok:true mesmo se o item não fosse gravado
+      if (saveErr) return NextResponse.json({ error: `Falha ao salvar item: ${saveErr.message}` }, { status: 500 })
 
       // Update checklist status
       await supabase.from('veiculo_checklist')
@@ -199,8 +212,7 @@ export async function POST(req: NextRequest) {
       const { tecnico_nome } = body
       if (!tecnico_nome) return NextResponse.json({ pendente: false })
 
-      const hoje = new Date()
-      const mesRef = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`
+      const mesRef = mesBR()
 
       const { data } = await supabase
         .from('veiculo_checklist')
@@ -228,8 +240,7 @@ export async function POST(req: NextRequest) {
     // Iniciar checklist
     if (action === 'iniciar') {
       const { tecnico_nome, placa, km } = body
-      const hoje = new Date()
-      const mesRef = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`
+      const mesRef = mesBR()
       const token = randomUUID().replace(/-/g, '')
 
       // Verificar se já existe

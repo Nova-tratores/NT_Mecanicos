@@ -1,8 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { normName, cleanName, namesMatch, splitTecnicos, nomesBatem } from '@/lib/tecnico-utils'
+import { requireAdmin } from '../_lib/auth'
+import { hojeBR, mesBR } from '../_lib/date'
 
 export async function GET(req: NextRequest) {
+  const auth = await requireAdmin(req)
+  if (auth instanceof NextResponse) return auth
   const nome = req.nextUrl.searchParams.get('nome')
 
   try {
@@ -42,8 +46,10 @@ export async function GET(req: NextRequest) {
 
       const tecNome = found.tecnico_nome || found.nome
       const mesParam = req.nextUrl.searchParams.get('mes')
-      const now = new Date()
-      const mesAtual = mesParam || `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+      if (mesParam && !/^\d{4}-\d{2}$/.test(mesParam)) {
+        return NextResponse.json({ error: 'mes deve ser YYYY-MM' }, { status: 400 })
+      }
+      const mesAtual = mesParam || mesBR()
       const [anoMes, mesMes] = mesAtual.split('-').map(Number)
       const primeiro = `${mesAtual}-01`
       const ultimo = `${mesAtual}-${new Date(anoMes, mesMes, 0).getDate()}`
@@ -184,8 +190,7 @@ export async function GET(req: NextRequest) {
 
       // Alertas
       const alertasDetectados: any[] = []
-      const hoje = new Date()
-      hoje.setHours(0, 0, 0, 0)
+      const hoje = new Date(hojeBR() + 'T00:00:00')
       for (const o of ordensComPpv) {
         const codInt = String(o.cod_int)
         const rel = relatorioTecPorOs[codInt]
@@ -294,10 +299,10 @@ export async function GET(req: NextRequest) {
     }
 
     // Lista
-    const now = new Date()
-    const mesAtual = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+    const mesAtual = mesBR()
+    const [anoAtual, mesNumAtual] = mesAtual.split('-').map(Number)
     const primeiro = `${mesAtual}-01`
-    const ultimo = `${mesAtual}-${new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()}`
+    const ultimo = `${mesAtual}-${new Date(anoAtual, mesNumAtual, 0).getDate()}`
 
     const { data: ordens } = await supabase.from('Ordens_Omie').select('os_num, tecnicos, horas, km, valor, interno').neq('status', 'Cancelada').gte('data', primeiro).lte('data', ultimo).limit(5000)
 
@@ -331,6 +336,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireAdmin(req)
+  if (auth instanceof NextResponse) return auth
   try {
     const body = await req.json()
     const { acao } = body
@@ -339,7 +346,7 @@ export async function POST(req: NextRequest) {
       const { tecnico_nome, tipo, titulo, descricao, criado_por } = body
       if (!tecnico_nome || !tipo || !titulo) return NextResponse.json({ error: 'campos obrigatorios' }, { status: 400 })
       const textoDescricao = titulo + (descricao ? ` - ${descricao}` : '')
-      const { data, error } = await supabase.from('mecanico_ocorrencias').insert({ tecnico_nome, tipo, descricao: textoDescricao, data_referencia: new Date().toISOString().slice(0, 10), admin_nome: criado_por || 'admin' }).select().single()
+      const { data, error } = await supabase.from('mecanico_ocorrencias').insert({ tecnico_nome, tipo, descricao: textoDescricao, data_referencia: hojeBR(), admin_nome: criado_por || 'admin' }).select().single()
       if (error) throw error
       return NextResponse.json(data)
     }
@@ -370,8 +377,12 @@ export async function POST(req: NextRequest) {
       const { data: alerta, error: aErr } = await supabase.from('mecanico_alertas').select('*').eq('id', id).single()
       if (aErr || !alerta) return NextResponse.json({ error: 'alerta nao encontrado' }, { status: 404 })
       const tipoOc = alerta.tipo === 'atraso_relatorio' || alerta.tipo === 'atraso_entrega_relatorio' ? 'atraso' : 'observacao'
-      await supabase.from('mecanico_ocorrencias').insert({ tecnico_nome: alerta.tecnico_nome, tipo: tipoOc, descricao: alerta.descricao + (alerta.detalhes ? ` - ${alerta.detalhes}` : ''), data_referencia: alerta.data_referencia || new Date().toISOString().slice(0, 10), admin_nome: admin_nome || 'admin', id_alerta: String(alerta.id) })
-      await supabase.from('mecanico_alertas').update({ status: 'ocorrencia', admin_nome: admin_nome || 'admin', resolvido_em: new Date().toISOString() }).eq('id', id)
+      // Evita ocorrência duplicada (duplo clique / duas abas)
+      if (alerta.status === 'ocorrencia') return NextResponse.json({ ok: true })
+      const { error: ocErr } = await supabase.from('mecanico_ocorrencias').insert({ tecnico_nome: alerta.tecnico_nome, tipo: tipoOc, descricao: alerta.descricao + (alerta.detalhes ? ` - ${alerta.detalhes}` : ''), data_referencia: alerta.data_referencia || hojeBR(), admin_nome: admin_nome || 'admin', id_alerta: String(alerta.id) })
+      if (ocErr) throw ocErr
+      const { error: upErr } = await supabase.from('mecanico_alertas').update({ status: 'ocorrencia', admin_nome: admin_nome || 'admin', resolvido_em: new Date().toISOString() }).eq('id', id)
+      if (upErr) throw upErr
       return NextResponse.json({ ok: true })
     }
 

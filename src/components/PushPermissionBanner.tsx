@@ -1,107 +1,58 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Bell, X } from 'lucide-react'
+import { Bell, BellOff, Share, X } from 'lucide-react'
+import { garantirInscricaoPush, pushStatusInicial, type PushStatus } from '@/lib/push'
 
-const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || 'BMKJOMgDI2my4D-ZyeEYa4eUaAhXVh9wR0CvMqAnkivEojf4ychFmeH0nu_pWP4seKFTJUqSz35OEaguFU5Tcd0'
 const DISMISSED_KEY = 'nt-push-banner-dismissed'
 
-function urlBase64ToUint8Array(base64String: string) {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
-  const raw = atob(base64)
-  const arr = new Uint8Array(raw.length)
-  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i)
-  return arr
-}
-
-async function registrarSubscription(tecnicoNome: string) {
-  const reg = await navigator.serviceWorker.ready
-  let sub = await reg.pushManager.getSubscription()
-  if (!sub) {
-    sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-    })
+function dispensadoRecentemente() {
+  try {
+    const ts = Number(localStorage.getItem(DISMISSED_KEY) || 0)
+    return Date.now() - ts < 24 * 60 * 60 * 1000
+  } catch {
+    return false
   }
-  await fetch('/api/push/subscribe', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ tecnico_nome: tecnicoNome, subscription: sub.toJSON() }),
-  })
 }
 
 export default function PushPermissionBanner({ tecnicoNome }: { tecnicoNome: string }) {
+  const [status, setStatus] = useState<PushStatus>('indisponivel')
   const [show, setShow] = useState(false)
-  const [denied, setDenied] = useState(false)
   const [activating, setActivating] = useState(false)
   const [msg, setMsg] = useState('')
+  const [erro, setErro] = useState('')
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !('Notification' in window) || !('serviceWorker' in navigator)) return
-    if (!VAPID_PUBLIC_KEY) return
+    if (process.env.NODE_ENV !== 'production') return
+    const inicial = pushStatusInicial()
+    setStatus(inicial)
 
-    const check = async () => {
-      const perm = Notification.permission
-
-      if (perm === 'denied') {
-        setDenied(true)
-        setShow(true)
-        return
+    if (inicial === 'ativo') {
+      // Permissão já dada: confere a inscrição (chave certa, nome certo) sem incomodar
+      if (navigator.onLine) {
+        garantirInscricaoPush(tecnicoNome).catch((err) => console.warn('Push sync failed:', err))
       }
-
-      if (perm === 'granted') {
-        // Permissão dada mas pode não ter subscription registrada
-        try {
-          const reg = await navigator.serviceWorker.ready
-          const sub = await reg.pushManager.getSubscription()
-          if (!sub) {
-            // Tem permissão mas sem subscription — registra automaticamente
-            await registrarSubscription(tecnicoNome)
-            setMsg('Notificações ativadas!')
-            setShow(true)
-            setTimeout(() => setShow(false), 3000)
-            return
-          }
-          // Tem permissão E subscription — garante que está no banco
-          await fetch('/api/push/subscribe', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tecnico_nome: tecnicoNome, subscription: sub.toJSON() }),
-          })
-        } catch (err) {
-          console.warn('Push check failed:', err)
-        }
-        return
-      }
-
-      // permission === 'default' — nunca perguntou
-      try {
-        const dismissed = localStorage.getItem(DISMISSED_KEY)
-        if (dismissed) {
-          const ts = Number(dismissed)
-          if (Date.now() - ts < 24 * 60 * 60 * 1000) return
-        }
-      } catch {}
-      setShow(true)
+      return
     }
-
-    check()
+    if (inicial === 'indisponivel') return
+    if (!dispensadoRecentemente()) setShow(true)
   }, [tecnicoNome])
 
   const ativar = useCallback(async () => {
     setActivating(true)
+    setErro('')
     try {
-      const permission = await Notification.requestPermission()
-      if (permission === 'granted') {
-        await registrarSubscription(tecnicoNome)
+      const novo = await garantirInscricaoPush(tecnicoNome, { pedirPermissao: true })
+      setStatus(novo)
+      if (novo === 'ativo') {
         setMsg('Notificações ativadas!')
         setTimeout(() => setShow(false), 3000)
-      } else if (permission === 'denied') {
-        setDenied(true)
       }
     } catch (err) {
       console.warn('Push activation failed:', err)
+      setErro(navigator.onLine
+        ? 'Não foi possível ativar. Tente novamente.'
+        : 'Sem internet. Conecte-se para ativar as notificações.')
     } finally {
       setActivating(false)
     }
@@ -117,7 +68,7 @@ export default function PushPermissionBanner({ tecnicoNome }: { tecnicoNome: str
   if (msg) {
     return (
       <div style={{
-        position: 'sticky', top: 64, zIndex: 30,
+        position: 'sticky', top: 'calc(64px + env(safe-area-inset-top, 0px))', zIndex: 30,
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
         background: '#16A34A', color: '#fff',
         padding: '11px 16px', fontSize: 13, fontWeight: 600,
@@ -127,38 +78,44 @@ export default function PushPermissionBanner({ tecnicoNome }: { tecnicoNome: str
     )
   }
 
+  const bloqueado = status === 'bloqueado'
+  const instalar = status === 'precisa-instalar'
+  const texto = erro
+    || (bloqueado
+      ? 'Notificações bloqueadas. Toque no cadeado ao lado do endereço (ou em Configurações > Apps > Chrome > Notificações) e permita.'
+      : instalar
+        ? 'Para receber avisos de OS no iPhone, toque em Compartilhar e depois em "Adicionar à Tela de Início". Abra o app por lá.'
+        : 'Ative as notificações para receber as OS novas mesmo com o app fechado.')
+  const Icone = bloqueado ? BellOff : instalar ? Share : Bell
+
   return (
-    <div style={{
-      position: 'sticky', top: 64, zIndex: 30,
+    <div role="status" style={{
+      position: 'sticky', top: 'calc(64px + env(safe-area-inset-top, 0px))', zIndex: 30,
       display: 'flex', alignItems: 'center', gap: 10,
-      background: denied ? '#F59E0B' : '#2563EB', color: '#fff',
-      padding: '11px 16px', boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+      background: bloqueado || erro ? '#B45309' : '#2563EB', color: '#fff',
+      padding: '11px 12px 11px 16px', boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
     }}>
-      <Bell size={18} color="#fff" style={{ flexShrink: 0 }} />
-      <span style={{ flex: 1, fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>
-        {denied
-          ? 'Notificações bloqueadas. Vá em Configurações do navegador > Site > Notificações > Permitir.'
-          : 'Ative as notificações para receber alertas mesmo com o app fechado.'
-        }
-      </span>
-      {!denied && (
+      <Icone size={18} color="#fff" style={{ flexShrink: 0 }} />
+      <span style={{ flex: 1, fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>{texto}</span>
+      {status === 'pendente' && (
         <button
           onClick={ativar}
           disabled={activating}
           style={{
             flexShrink: 0, background: '#fff', color: '#2563EB',
-            border: 'none', borderRadius: 8, padding: '6px 14px',
-            fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            border: 'none', borderRadius: 10, padding: '0 16px', minHeight: 40,
+            fontSize: 13, fontWeight: 700, cursor: 'pointer', opacity: activating ? 0.7 : 1,
           }}
         >
           {activating ? 'Ativando...' : 'Ativar'}
         </button>
       )}
-      <button onClick={dismiss} style={{
+      <button onClick={dismiss} aria-label="Fechar aviso" style={{
         flexShrink: 0, background: 'none', border: 'none',
-        color: '#fff', cursor: 'pointer', padding: 4,
+        color: '#fff', cursor: 'pointer', width: 40, height: 40,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
       }}>
-        <X size={16} />
+        <X size={18} />
       </button>
     </div>
   )

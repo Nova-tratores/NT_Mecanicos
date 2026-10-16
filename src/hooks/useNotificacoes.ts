@@ -15,7 +15,8 @@ export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: strin
   const [notificacoes, setNotificacoes] = useState<MecanicoNotificacao[]>([])
   const [historico, setHistorico] = useState<MecanicoNotificacao[]>([])
   const [historicoAberto, setHistoricoAberto] = useState(false)
-  const [naoLidas, setNaoLidas] = useState(0)
+  // Derivado da lista: contador separado desincronizava com duplicatas do realtime
+  const naoLidas = useMemo(() => notificacoes.filter(n => !n.lida).length, [notificacoes])
   const limpaAtRef = useRef<string | null>(null)
 
   const nomes = useMemo(
@@ -46,20 +47,25 @@ export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: strin
       })
     }
 
+    let ativo = true
     const carregar = async () => {
-      const { data } = await supabase
-        .from('mecanico_notificacoes')
-        .select('*')
-        .or(nomes.map(n => `tecnico_nome.ilike.${n}`).join(','))
-        .order('created_at', { ascending: false })
-        .limit(50)
-      if (data) {
-        const vis = filtrar(data)
-        setNotificacoes(vis)
-        setNaoLidas(vis.filter((n) => !n.lida).length)
-      }
+      try {
+        const { data } = await supabase
+          .from('mecanico_notificacoes')
+          .select('*')
+          .or(nomes.map(n => `tecnico_nome.ilike.${n}`).join(','))
+          .order('created_at', { ascending: false })
+          .limit(50)
+        if (data && ativo) {
+          const vis = filtrar(data)
+          setNotificacoes(vis)
+        }
+      } catch { /* sem sinal: tenta de novo quando a rede voltar */ }
     }
     carregar()
+    // Abriu sem sinal → busca de novo ao reconectar (o realtime não traz o que perdeu)
+    const onOnline = () => { carregar() }
+    window.addEventListener('online', onOnline)
 
     const channel = supabase
       .channel('mec_notif_' + chaveNomes.replace(/[^a-z0-9|]/g, '_'))
@@ -71,21 +77,27 @@ export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: strin
         const nova = payload.new as MecanicoNotificacao
         if (!ehMinha(nova)) return
         const corte = limpaAtRef.current
-        if (corte && nova.created_at <= corte) return
-        setNotificacoes((prev) => [nova, ...prev].slice(0, 50))
-        setNaoLidas((n) => n + 1)
+        // Compara como data: o banco manda "+00:00" e o corte é "Z" (string não ordena igual)
+        if (corte && new Date(nova.created_at).getTime() <= new Date(corte).getTime()) return
+        // Evita duplicar se o carregar() (ex.: ao reconectar) já trouxe esta notificação
+        setNotificacoes((prev) => prev.some(p => p.id === nova.id) ? prev : [nova, ...prev].slice(0, 50))
       })
       .subscribe()
 
-    return () => { supabase.removeChannel(channel) }
+    return () => {
+      ativo = false
+      window.removeEventListener('online', onOnline)
+      supabase.removeChannel(channel)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chaveNomes])
 
   const marcarTodasComoLidas = useCallback(async () => {
     const ids = notificacoes.filter((n) => !n.lida).map((n) => n.id)
     setNotificacoes((prev) => prev.map((n) => ({ ...n, lida: true })))
-    setNaoLidas(0)
-    if (ids.length) await supabase.from('mecanico_notificacoes').update({ lida: true }).in('id', ids)
+    if (ids.length) {
+      try { await supabase.from('mecanico_notificacoes').update({ lida: true }).in('id', ids) } catch {}
+    }
   }, [notificacoes])
 
   const limparTodas = useCallback(() => {
@@ -93,19 +105,21 @@ export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: strin
     limpaAtRef.current = agora
     try { localStorage.setItem(LIMPAR_KEY, agora) } catch {}
     setNotificacoes([])
-    setNaoLidas(0)
   }, [])
 
   const carregarHistorico = useCallback(async () => {
     if (nomesRef.current.length === 0) return
-    const { data } = await supabase
-      .from('mecanico_notificacoes')
-      .select('*')
-      .or(nomesRef.current.map(n => `tecnico_nome.ilike.${n}`).join(','))
-      .order('created_at', { ascending: false })
-      .limit(100)
-    setHistorico(data || [])
     setHistoricoAberto(true)
+    try {
+      const { data, error } = await supabase
+        .from('mecanico_notificacoes')
+        .select('*')
+        .or(nomesRef.current.map(n => `tecnico_nome.ilike.${n}`).join(','))
+        .order('created_at', { ascending: false })
+        .limit(100)
+      // Sem sinal: mantém o histórico que já estava carregado
+      if (!error) setHistorico(data || [])
+    } catch {}
   }, [])
 
   const fecharHistorico = useCallback(() => {

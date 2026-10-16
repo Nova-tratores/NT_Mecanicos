@@ -6,6 +6,7 @@ import { supabase } from '@/lib/supabase'
 import { offlineWrite } from '@/lib/offlineWrite'
 import { getCachedOS, getCachedOSTec, getCachedCliente } from '@/lib/prefetch'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
+import { diasDoRegistro, fotosExtrasDoRegistro } from '@/lib/gerarEAnexarRelatorio'
 import { ArrowLeft, FileDown, Eye, Loader2, FileEdit, Send, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 
@@ -36,7 +37,6 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
   const [salvandoCarta, setSalvandoCarta] = useState(false)
 
   useEffect(() => {
-    if (!user) return
     const aplicar = (
       reg: Record<string, unknown> | null,
       osData: Record<string, unknown> | null,
@@ -68,33 +68,44 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
       aplicar(reg, osData, cidadeCli)
     }
 
+    // Com sinal fraco as consultas podiam ficar penduradas (spinner eterno)
+    const comTimeout = <T,>(p: PromiseLike<T>, ms = 8000): Promise<T> =>
+      Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))])
+
     const carregar = async () => {
+      // Sem internet usa o cache direto — antes a tela esperava o usuário
+      // carregar e, offline, podia ficar girando para sempre
       if (!navigator.onLine) { await carregarDoCache(); return }
+      if (!user) return
       try {
         // Buscar o registro técnico pela Ordem_Servico
-        const { data: reg } = await supabase
+        const { data: reg, error: regErr } = await comTimeout(supabase
           .from('Ordem_Servico_Tecnicos')
           .select('*')
           .eq('Ordem_Servico', id)
-          .maybeSingle()
+          .order('IdOs', { ascending: false })
+          .limit(1)
+          .maybeSingle())
 
-        if (!reg) { await carregarDoCache(); return }
+        if (regErr || !reg) { await carregarDoCache(); return }
 
         // Buscar dados da OS original
-        const { data: osData } = await supabase
+        const { data: osData } = await comTimeout(supabase
           .from('Ordem_Servico')
           .select('*')
           .eq('Id_Ordem', id)
-          .maybeSingle()
+          .maybeSingle())
 
         let cidadeCli = ''
         if (osData?.Cnpj_Cliente) {
-          const { data: cli } = await supabase
-            .from('Clientes')
-            .select('cidade')
-            .eq('cnpj_cpf', osData.Cnpj_Cliente)
-            .maybeSingle()
-          cidadeCli = cli?.cidade || ''
+          try {
+            const { data: cli } = await comTimeout(supabase
+              .from('Clientes')
+              .select('cidade')
+              .eq('cnpj_cpf', osData.Cnpj_Cliente)
+              .maybeSingle())
+            cidadeCli = cli?.cidade || ''
+          } catch { /* cidade é só informativa */ }
         }
         aplicar(reg, osData, cidadeCli)
       } catch {
@@ -109,46 +120,32 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
       alert('Escreva a carta de correção antes de enviar.')
       return
     }
+    if (salvandoCarta) return
     setSalvandoCarta(true)
-    await offlineWrite({
-      table: 'Ordem_Servico_Tecnicos',
-      action: 'update',
-      data: { CartaCorrecao: cartaCorrecao.trim() },
-      match: { Ordem_Servico: id },
-    })
-    setCartaSalva(cartaCorrecao.trim())
-    setSalvandoCarta(false)
+    try {
+      const res = await offlineWrite({
+        table: 'Ordem_Servico_Tecnicos',
+        action: 'update',
+        data: { CartaCorrecao: cartaCorrecao.trim() },
+        match: { Ordem_Servico: id },
+      })
+      // antes o resultado era ignorado: erro do banco aparecia como "enviada"
+      if (!res.ok) { alert('Erro ao enviar a carta: ' + (res.error || 'Erro desconhecido')); return }
+      setCartaSalva(cartaCorrecao.trim())
+      setMostrarCarta(false)
+      if (res.queued) alert('Sem conexão: a carta foi salva no aparelho e será enviada quando houver sinal.')
+    } finally {
+      setSalvandoCarta(false)
+    }
   }
 
   const handleGerarPdf = async () => {
     if (!registro) return
     setGerandoPdf(true)
 
-    const dias = []
-    if (registro.DataInicio) {
-      dias.push({
-        data: (registro.DataInicio as string) || '',
-        horaInicio: (registro.InicioHora as string) || '',
-        horaFim: (registro.FinalHora as string) || '',
-        kmTotal: (registro.InicioKm as string) || (registro.TotalKm as string) || '',
-      })
-    }
-    if (registro.AdicionarData2 && registro.DataInicio2) {
-      dias.push({
-        data: (registro.DataInicio2 as string) || '',
-        horaInicio: (registro.InicioHora2 as string) || '',
-        horaFim: (registro.FinalHora2 as string) || '',
-        kmTotal: (registro.InicioKm2 as string) || '',
-      })
-    }
-    if (registro.AdicionarData3 && registro.DataInicio3) {
-      dias.push({
-        data: (registro.DataInicio3 as string) || '',
-        horaInicio: (registro.InicioHora3 as string) || '',
-        horaFim: (registro.FinaHora3 as string) || '',
-        kmTotal: (registro.InicioKm3 as string) || '',
-      })
-    }
+    // DiasExecucao (sem limite) com fallback nas colunas legadas de 3 dias —
+    // antes OS com 4+ dias saía com dias faltando no PDF
+    const dias = diasDoRegistro(registro)
     if (dias.length === 0) {
       dias.push({ data: '', horaInicio: '', horaFim: '', kmTotal: '' })
     }
@@ -211,7 +208,7 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
         fotoPecaNova2: (registro.FotoPecaNova2 as string) || '',
         fotoPecaInstalada1: (registro.FotoPecaInstalada1 as string) || '',
         fotoPecaInstalada2: (registro.FotoPecaInstalada2 as string) || '',
-        fotosExtras: Array.isArray(registro.FotosExtras) ? (registro.FotosExtras as string[]).filter(Boolean) : [],
+        fotosExtras: fotosExtrasDoRegistro(registro),
         assCliente: (registro.AssCliente as string) || '',
         assTecnico: (registro.AssTecnico as string) || '',
         nomResp: (registro.NomResp as string) || '',
@@ -261,10 +258,7 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
   const fieldLabel: React.CSSProperties = { fontSize: 11, color: '#6B7280', marginBottom: 2 }
   const fieldValue: React.CSSProperties = { fontSize: 14, fontWeight: 600, color: '#1F2937', marginBottom: 10 }
 
-  const dias = []
-  if (registro.DataInicio) dias.push({ data: registro.DataInicio as string, hi: registro.InicioHora as string, hf: registro.FinalHora as string, kmTotal: (registro.InicioKm as string) || '' })
-  if (registro.AdicionarData2 && registro.DataInicio2) dias.push({ data: registro.DataInicio2 as string, hi: registro.InicioHora2 as string, hf: registro.FinalHora2 as string, kmTotal: (registro.InicioKm2 as string) || '' })
-  if (registro.AdicionarData3 && registro.DataInicio3) dias.push({ data: registro.DataInicio3 as string, hi: registro.InicioHora3 as string, hf: registro.FinaHora3 as string, kmTotal: (registro.InicioKm3 as string) || '' })
+  const dias = diasDoRegistro(registro).map(d => ({ data: d.data, hi: d.horaInicio, hf: d.horaFim, kmTotal: d.kmTotal }))
 
   const fotos = [
     { label: 'Horímetro', url: registro.FotoHorimetro as string },
@@ -282,6 +276,7 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
     { label: 'Peça Nova 2', url: registro.FotoPecaNova2 as string },
     { label: 'Peça Instalada 1', url: registro.FotoPecaInstalada1 as string },
     { label: 'Peça Instalada 2', url: registro.FotoPecaInstalada2 as string },
+    ...fotosExtrasDoRegistro(registro).map((url, i) => ({ label: `Serviço ${i + 1}`, url })),
     { label: 'Nota Alimentação', url: registro.FotoAlmoco as string },
   ].filter(f => f.url)
 
@@ -458,10 +453,17 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
             {fotos.map((f, i) => (
               <div key={i}>
                 <div style={{ fontSize: 10, color: '#6B7280', marginBottom: 4 }}>{f.label}</div>
-                <img src={f.url} alt={f.label} style={{
-                  width: '100%', borderRadius: 8, objectFit: 'cover',
-                  aspectRatio: '4/3', background: '#F3F4F6',
-                }} />
+                {/\.(mp4|mov|webm|avi|mkv|3gp)(\?|$)/i.test(f.url) ? (
+                  <video src={f.url} controls playsInline preload="metadata" style={{
+                    width: '100%', borderRadius: 8, objectFit: 'cover',
+                    aspectRatio: '4/3', background: '#F3F4F6',
+                  }} />
+                ) : (
+                  <img src={f.url} alt={f.label} style={{
+                    width: '100%', borderRadius: 8, objectFit: 'cover',
+                    aspectRatio: '4/3', background: '#F3F4F6',
+                  }} />
+                )}
               </div>
             ))}
           </div>

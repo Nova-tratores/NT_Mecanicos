@@ -27,18 +27,23 @@ const FASES_FINALIZADAS = [
 
 async function fetchOsEnviadas(nome: string): Promise<OsEnviada[]> {
   // Relatórios preenchidos pelo técnico (enviados ou não)
-  const { data: tecData } = await supabase
+  const { data: tecData, error: tecErr } = await supabase
     .from('Ordem_Servico_Tecnicos')
     .select('*')
     .or(`TecResp1.ilike.%${nome}%,TecResp2.ilike.%${nome}%`)
     .order('Data', { ascending: false })
 
   // OS em fases finais (portal avançou) que o técnico não tem relatório
-  const { data: osFinais } = await supabase
+  const { data: osFinais, error: osErr } = await supabase
     .from('Ordem_Servico')
     .select('Id_Ordem, Status, Os_Cliente, Previsao_Execucao')
     .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
     .in('Status', FASES_FINALIZADAS)
+
+  // Erro de rede: lança para o useCached manter a lista em cache (antes uma
+  // falha com sinal fraco gravava lista vazia por cima do cache offline)
+  if (tecErr) throw new Error(tecErr.message)
+  if (osErr) throw new Error(osErr.message)
 
   const idsComRelatorio = new Set((tecData || []).map(t => String(t.Ordem_Servico)))
   const extras: OsEnviada[] = (osFinais || [])

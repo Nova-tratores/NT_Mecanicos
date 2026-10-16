@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { supabase, fetchAll } from '@/lib/supabase'
+import { fetchAll } from '@/lib/supabase'
 import type { OrdemServico } from '@/lib/types'
 import { Search, Wrench, MapPin, User, Package, FileText } from 'lucide-react'
 import Link from 'next/link'
@@ -13,6 +13,12 @@ const STATUS_COLORS: Record<string, string> = {
   'Aguardando ordem Tecnico': '#0EA5E9',
   'Concluida': '#10B981',
   'Cancelada': '#EF4444',
+  // Grafias com acento (como em FASES_OS) — antes caíam no cinza padrão
+  'Orçamento': '#3B82F6',
+  'Execução': '#F59E0B',
+  'Execução Procurando peças': '#F97316',
+  'Aguardando ordem Técnico': '#0EA5E9',
+  'Concluída': '#10B981',
 }
 
 interface ReqResumo {
@@ -40,55 +46,60 @@ export default function OSListPage() {
 
   useEffect(() => {
     const carregar = async () => {
-      const [list, reqData, relData] = await Promise.all([
-        fetchAll<OrdemServico>('Ordem_Servico', {
-          order: { column: 'Id_Ordem', ascending: false },
-        }),
-        supabase
-          .from('Requisicao')
-          .select('id, titulo, valor_despeza, ordem_servico')
-          .not('ordem_servico', 'is', null),
-        supabase
-          .from('Ordem_Servico_Tecnicos')
-          .select('Ordem_Servico, Status, pdf_criado'),
-      ])
+      try {
+        // Paginado: Requisicao e Ordem_Servico_Tecnicos passam de 1000 linhas
+        // (o limite do PostgREST escondia badges de requisição/relatório)
+        const [list, reqData, relData] = await Promise.all([
+          fetchAll<OrdemServico>('Ordem_Servico', {
+            order: { column: 'Id_Ordem', ascending: false },
+          }),
+          fetchAll<ReqResumo>('Requisicao', {
+            select: 'id, titulo, valor_despeza, ordem_servico',
+            filters: (q) => q.not('ordem_servico', 'is', null),
+            order: { column: 'id' },
+          }),
+          fetchAll<RelatorioResumo>('Ordem_Servico_Tecnicos', {
+            select: 'Ordem_Servico, Status, pdf_criado',
+          }),
+        ])
 
-      setOrdens(list)
+        setOrdens(list)
 
-      // Mapear requisições por OS
-      const rmap: Record<string, ReqResumo[]> = {}
-      if (reqData.data) {
-        for (const r of reqData.data as ReqResumo[]) {
+        // Mapear requisições por OS
+        const rmap: Record<string, ReqResumo[]> = {}
+        for (const r of reqData) {
           if (r.ordem_servico) {
             if (!rmap[r.ordem_servico]) rmap[r.ordem_servico] = []
             rmap[r.ordem_servico].push(r)
           }
         }
-      }
-      setReqMap(rmap)
+        setReqMap(rmap)
 
-      // Mapear relatórios por OS
-      const rlmap: Record<string, RelatorioResumo> = {}
-      if (relData.data) {
-        for (const r of relData.data as RelatorioResumo[]) {
-          rlmap[r.Ordem_Servico] = r
+        // Mapear relatórios por OS (prioriza o enviado/com PDF quando há mais de um)
+        const rlmap: Record<string, RelatorioResumo> = {}
+        for (const r of relData) {
+          const atual = rlmap[r.Ordem_Servico]
+          if (!atual || r.Status === 'enviado' || r.pdf_criado) rlmap[r.Ordem_Servico] = r
         }
-      }
-      setRelMap(rlmap)
+        setRelMap(rlmap)
 
-      const nomes = [...new Set(list.flatMap((o) => [o.Os_Tecnico, o.Os_Tecnico2].filter(Boolean)))].sort()
-      setTecnicos(nomes)
-      setLoading(false)
+        const nomes = [...new Set(list.flatMap((o) => [o.Os_Tecnico, o.Os_Tecnico2].filter(Boolean)))].sort()
+        setTecnicos(nomes)
+      } catch (e) {
+        console.error('[admin/os]', e)
+      } finally {
+        setLoading(false)
+      }
     }
     carregar()
   }, [])
 
   const filtered = ordens.filter((o) => {
-    if (!mostrarConcluidas && (o.Status === 'Concluida' || o.Status === 'Cancelada')) return false
+    if (!mostrarConcluidas && ['Concluida', 'Concluída', 'Cancelada'].includes(o.Status)) return false
     if (tecnicoFiltro !== 'todos' && o.Os_Tecnico !== tecnicoFiltro && o.Os_Tecnico2 !== tecnicoFiltro) return false
     if (!filtro) return true
     const term = filtro.toLowerCase()
-    return o.Id_Ordem.toLowerCase().includes(term) ||
+    return String(o.Id_Ordem ?? '').toLowerCase().includes(term) ||
       o.Os_Cliente?.toLowerCase().includes(term) ||
       o.Projeto?.toLowerCase().includes(term) ||
       o.Os_Tecnico?.toLowerCase().includes(term)

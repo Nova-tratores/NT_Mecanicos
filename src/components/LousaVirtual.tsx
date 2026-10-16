@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabase, authHeaders } from '@/lib/supabase'
+import { dataLocalISO } from '@/lib/tecnico-utils'
 import {
   ChevronLeft, ChevronRight, CheckCircle, XCircle, Package, Calendar,
   Plus, X, Trash2, Search, Wrench, Ban, Sun, LogOut, Bell, User,
@@ -68,8 +69,24 @@ function getSegunda(d: Date): Date {
   return date
 }
 function addDays(d: Date, n: number): Date { const r = new Date(d); r.setDate(r.getDate() + n); return r }
-function fmtDate(d: Date): string { return d.toISOString().slice(0, 10) }
-function fmtDateBR(d: Date): string { return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) }
+// Data LOCAL (toISOString usa UTC e devolve o dia seguinte depois das 21h no Brasil)
+function fmtDate(d: Date): string { return dataLocalISO(d) }
+/** Formata data vinda do banco em pt-BR. 'YYYY-MM-DD' puro é tratado como data local (não UTC). */
+function fmtDataBancoBR(s: string | null | undefined): string {
+  if (!s) return ''
+  const d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(s + 'T00:00:00') : new Date(s)
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString('pt-BR')
+}
+/** Remove caracteres que quebram a sintaxe de filtros `.or()` do PostgREST. */
+function limparFiltro(q: string): string { return q.replace(/[,()*%\\]/g, ' ').trim() }
+/** Rejeita se a promise não resolver no tempo (sinal fraco no campo). */
+function comTimeout<T>(p: PromiseLike<T>, ms = 15000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('timeout')), ms)
+    Promise.resolve(p).then(v => { clearTimeout(t); resolve(v) }, e => { clearTimeout(t); reject(e) })
+  })
+}
+const MSG_CONEXAO = 'Não foi possível carregar. Verifique sua conexão e tente novamente.'
 
 // ── Props ───────────────────────────────────────────────────────────
 interface LousaVirtualProps {
@@ -107,6 +124,9 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
   const [osModalList, setOsModalList] = useState<OSAberta[]>([])
   const [osModalLoading, setOsModalLoading] = useState(false)
   const [osModalCliente, setOsModalCliente] = useState('')
+  // OS escolhida na lista inline do modal de edição (não sobrescreve osModalList)
+  const [osModalSel, setOsModalSel] = useState<OSAberta | null>(null)
+  const [erroCarga, setErroCarga] = useState('')
 
   // ── State: notificação config ──
   const [configOpen, setConfigOpen] = useState(false)
@@ -120,66 +140,92 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
   const swiping = useRef(false)
   const searchTimeout = useRef<ReturnType<typeof setTimeout>>(null)
   const dropdownRef = useRef<HTMLDivElement>(null)
+  const carregarSeq = useRef(0)
+  const clientesSeq = useRef(0)
+  const osSeq = useRef(0)
+  const salvandoRef = useRef(false)
 
   // ── Computed ──
-  const semana = useMemo(() => getSegunda(diaAtual), [diaAtual])
-  const sabado = useMemo(() => addDays(semana, 5), [semana])
+  // Chave em string: getSegunda() cria um Date novo a cada troca de dia, o que
+  // recriava `carregar` e refazia o fetch da semana inteira a cada swipe.
+  const semanaStr = fmtDate(getSegunda(diaAtual))
+  const semana = useMemo(() => new Date(semanaStr + 'T00:00:00'), [semanaStr])
   const hoje = fmtDate(new Date())
   const diaStr = fmtDate(diaAtual)
 
   // ── Carregar dados da semana ──
   const carregar = useCallback(async () => {
+    const seq = ++carregarSeq.current
     setLoading(true)
-    const inicio = fmtDate(semana)
-    const fim = fmtDate(sabado)
+    const inicio = semanaStr
+    const fim = fmtDate(addDays(new Date(semanaStr + 'T00:00:00'), 5))
 
-    const [{ data: rows }, { data: tecList }] = await Promise.all([
-      supabase.from('lousa_servicos').select('*').gte('data', inicio).lte('data', fim).order('created_at'),
-      supabase.from('portal_permissoes').select('user_id, mecanico_tecnico_nome, mecanico_role')
-        .eq('mecanico_role', 'tecnico').not('mecanico_tecnico_nome', 'is', null),
-    ])
+    try {
+      const [{ data: rows, error: errRows }, { data: tecList }] = await comTimeout(Promise.all([
+        supabase.from('lousa_servicos').select('*').gte('data', inicio).lte('data', fim).order('created_at'),
+        supabase.from('portal_permissoes').select('user_id, mecanico_tecnico_nome, mecanico_role')
+          .eq('mecanico_role', 'tecnico').not('mecanico_tecnico_nome', 'is', null),
+      ]))
+      if (errRows) throw errRows
 
-    const lista = rows || []
-    const cnpjs = [...new Set(lista.map(e => e.cliente_cnpj).filter(Boolean))] as string[]
-    let osMap: Record<string, { id_ordem: string; status: string }[]> = {}
-    let ppvMap: Record<string, boolean> = {}
+      const lista = (rows || []) as LousaEntry[]
+      const cnpjs = [...new Set(lista.map(e => e.cliente_cnpj).filter(Boolean))] as string[]
+      const osMap: Record<string, { id_ordem: string; status: string }[]> = {}
+      const ppvMap: Record<string, boolean> = {}
 
-    if (cnpjs.length > 0) {
-      const { data: ordens } = await supabase.from('Ordem_Servico')
-        .select('Id_Ordem, CNPJ_CPF_Cliente, Status').in('CNPJ_CPF_Cliente', cnpjs)
-        .not('Status', 'in', '("Concluída","Cancelada")')
-
-      const ordensList = ordens || []
-      for (const o of ordensList) {
-        if (!osMap[o.CNPJ_CPF_Cliente]) osMap[o.CNPJ_CPF_Cliente] = []
-        osMap[o.CNPJ_CPF_Cliente].push({ id_ordem: String(o.Id_Ordem), status: o.Status })
-      }
-
-      const osIds = ordensList.map(o => String(o.Id_Ordem))
-      if (osIds.length > 0) {
-        const { data: peds } = await supabase.from('pedidos').select('Id_Os').in('Id_Os', osIds)
-        const pedOsSet = new Set((peds || []).map(p => String(p.Id_Os)))
+      if (cnpjs.length > 0) {
+        // A coluna é `Cnpj_Cliente` (`CNPJ_CPF_Cliente` não existe: antes todo cartão saía "Sem OS")
+        let ordensList: { Id_Ordem: string | number; Status: string; cnpj: string }[] = []
+        for (const col of ['Cnpj_Cliente']) {
+          const { data: ordens, error: errOs } = await comTimeout(supabase.from('Ordem_Servico')
+            .select(`Id_Ordem, ${col}, Status`).in(col, cnpjs)
+            .not('Status', 'in', '("Concluída","Cancelada")'))
+          if (errOs) continue
+          ordensList = ((ordens || []) as unknown as Record<string, unknown>[]).map(o => ({
+            Id_Ordem: o.Id_Ordem as string | number, Status: o.Status as string, cnpj: String(o[col] ?? ''),
+          }))
+          break
+        }
         for (const o of ordensList) {
-          if (pedOsSet.has(String(o.Id_Ordem))) ppvMap[o.CNPJ_CPF_Cliente] = true
+          if (!osMap[o.cnpj]) osMap[o.cnpj] = []
+          osMap[o.cnpj].push({ id_ordem: String(o.Id_Ordem), status: o.Status })
+        }
+
+        const osIds = ordensList.map(o => String(o.Id_Ordem))
+        if (osIds.length > 0) {
+          const { data: peds } = await comTimeout(supabase.from('pedidos').select('Id_Os').in('Id_Os', osIds))
+          const pedOsSet = new Set((peds || []).map(p => String(p.Id_Os)))
+          for (const o of ordensList) {
+            if (pedOsSet.has(String(o.Id_Ordem))) ppvMap[o.cnpj] = true
+          }
         }
       }
-    }
 
-    setEntradas(lista.map(e => ({
-      ...e,
-      temOsAberta: e.cliente_cnpj ? (osMap[e.cliente_cnpj]?.length || 0) > 0 : false,
-      ordensAbertas: e.cliente_cnpj ? osMap[e.cliente_cnpj] || [] : [],
-      temPedidoPPV: e.cliente_cnpj ? !!ppvMap[e.cliente_cnpj] : false,
-    })))
-    setTecnicos(
-      ((tecList || []) as any[])
-        .map(t => ({ user_id: t.user_id, tecnico_nome: t.mecanico_tecnico_nome }))
-        .sort((a, b) => a.tecnico_nome.localeCompare(b.tecnico_nome))
-    )
-    setLoading(false)
-  }, [semana, sabado])
+      if (seq !== carregarSeq.current) return // resposta de uma semana antiga
+      setEntradas(lista.map(e => ({
+        ...e,
+        temOsAberta: e.cliente_cnpj ? (osMap[e.cliente_cnpj]?.length || 0) > 0 : false,
+        ordensAbertas: e.cliente_cnpj ? osMap[e.cliente_cnpj] || [] : [],
+        temPedidoPPV: e.cliente_cnpj ? !!ppvMap[e.cliente_cnpj] : false,
+      })))
+      setTecnicos(
+        ((tecList || []) as { user_id: string; mecanico_tecnico_nome: string | null }[])
+          .map(t => ({ user_id: t.user_id, tecnico_nome: t.mecanico_tecnico_nome || '' }))
+          .filter(t => t.tecnico_nome)
+          .sort((a, b) => a.tecnico_nome.localeCompare(b.tecnico_nome))
+      )
+      setErroCarga('')
+    } catch {
+      if (seq === carregarSeq.current) setErroCarga(MSG_CONEXAO)
+    } finally {
+      if (seq === carregarSeq.current) setLoading(false)
+    }
+  }, [semanaStr])
 
   useEffect(() => { carregar() }, [carregar])
+
+  // Limpa debounce da busca de clientes ao desmontar
+  useEffect(() => () => { if (searchTimeout.current) clearTimeout(searchTimeout.current) }, [])
 
   // Fechar dropdown ao clicar fora
   useEffect(() => {
@@ -193,36 +239,55 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
   // ── Busca de clientes ──
   const buscarClientes = useCallback((q: string) => {
     if (searchTimeout.current) clearTimeout(searchTimeout.current)
-    if (q.length < 2) { setClienteResults([]); return }
+    const termo = limparFiltro(q)
+    const seq = ++clientesSeq.current
+    if (termo.length < 2) { setClienteResults([]); setSearchingClientes(false); return }
     searchTimeout.current = setTimeout(async () => {
       setSearchingClientes(true)
-      const { data } = await supabase.from('portal_nt_clientes_PRINCIPAL')
-        .select('cnpj_cpf, nome_fantasia, razao_social, cidade')
-        .or(`nome_fantasia.ilike.%${q}%,razao_social.ilike.%${q}%,cnpj_cpf.ilike.%${q}%`)
-        .limit(20)
-      setClienteResults(data || [])
-      setSearchingClientes(false)
-      setShowClienteDropdown(true)
+      try {
+        const { data } = await comTimeout(supabase.from('portal_nt_clientes_PRINCIPAL')
+          .select('cnpj_cpf, nome_fantasia, razao_social, cidade')
+          .or(`nome_fantasia.ilike.%${termo}%,razao_social.ilike.%${termo}%,cnpj_cpf.ilike.%${termo}%`)
+          .limit(20))
+        if (seq !== clientesSeq.current) return // usuário já digitou outra coisa
+        setClienteResults((data || []) as Cliente[])
+        setShowClienteDropdown(true)
+      } catch {
+        if (seq === clientesSeq.current) setClienteResults([])
+      } finally {
+        if (seq === clientesSeq.current) setSearchingClientes(false)
+      }
     }, 300)
   }, [])
 
   // ── Buscar OS ao selecionar cliente ──
   const buscarOsDoCliente = useCallback(async (nomeCliente: string, cnpj?: string) => {
+    const seq = ++osSeq.current
     setOsModalLoading(true)
     setOsModalCliente(nomeCliente)
     setOsModalList([])
-    const query = supabase.from('Ordem_Servico')
-      .select('Id_Ordem, Status, Data, Os_Cliente, Os_Tecnico, Os_Tecnico2, Tipo_Servico, Serv_Solicitado, Previsao_Execucao, ID_PPV, Valor_Total, Endereco_Cliente, Projeto')
-      .not('Status', 'in', '("Concluída","Cancelada")')
-    if (cnpj) {
-      query.or(`Cnpj_Cliente.eq.${cnpj},Os_Cliente.ilike.%${nomeCliente}%`)
-    } else {
-      query.ilike('Os_Cliente', `%${nomeCliente}%`)
+    setOsModalSel(null)
+    const nomeFiltro = limparFiltro(nomeCliente)
+    const cnpjFiltro = cnpj ? limparFiltro(cnpj) : ''
+    try {
+      let query = supabase.from('Ordem_Servico')
+        .select('Id_Ordem, Status, Data, Os_Cliente, Os_Tecnico, Os_Tecnico2, Tipo_Servico, Serv_Solicitado, Previsao_Execucao, ID_PPV, Valor_Total, Endereco_Cliente, Projeto')
+        .not('Status', 'in', '("Concluída","Cancelada")')
+      if (cnpjFiltro && nomeFiltro) {
+        query = query.or(`Cnpj_Cliente.eq.${cnpjFiltro},Os_Cliente.ilike.%${nomeFiltro}%`)
+      } else if (cnpjFiltro) {
+        query = query.eq('Cnpj_Cliente', cnpjFiltro)
+      } else {
+        query = query.ilike('Os_Cliente', `%${nomeFiltro}%`)
+      }
+      const { data } = await comTimeout(query.order('Data', { ascending: false }).limit(20))
+      if (seq !== osSeq.current) return
+      setOsModalList((data || []) as OSAberta[])
+    } catch {
+      if (seq === osSeq.current) setOsModalList([])
+    } finally {
+      if (seq === osSeq.current) setOsModalLoading(false)
     }
-    const { data } = await query.order('Data', { ascending: false }).limit(20)
-    const ordens = (data || []) as OSAberta[]
-    setOsModalList(ordens)
-    setOsModalLoading(false)
   }, [])
 
   // ── CRUD ──
@@ -259,15 +324,27 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
     }
   }
 
-  const podeSalvar = modalTipo === 'servico'
+  const podeSalvar = !!modalDia && (modalTipo === 'servico'
     ? !!formClienteSearch.trim()
     : modalTipo === 'faltou'
       ? !!formDesc.trim()
-      : true
+      : true)
 
   const salvar = async () => {
-    if (!podeSalvar) return
+    if (!podeSalvar || salvandoRef.current) return
+    salvandoRef.current = true
     setSaving(true)
+    try {
+      await salvarInterno()
+    } catch {
+      alert('Não foi possível salvar. Verifique sua conexão e tente novamente.')
+    } finally {
+      salvandoRef.current = false
+      setSaving(false)
+    }
+  }
+
+  const salvarInterno = async () => {
     const isServico = modalTipo === 'servico'
     const payload: any = {
       data: modalDia,
@@ -280,26 +357,30 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
       periodo: modalPeriodo,
     }
 
-    let error: any = null
+    let error: { message: string } | null = null
     if (editEntry) {
-      const res = await supabase.from('lousa_servicos').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', editEntry.id)
+      const res = await comTimeout(supabase.from('lousa_servicos').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', editEntry.id), 30000)
       error = res.error
     } else {
-      const res = await supabase.from('lousa_servicos').insert({ ...payload, criado_por_id: userId, criado_por_nome: userName })
+      const res = await comTimeout(supabase.from('lousa_servicos').insert({ ...payload, criado_por_id: userId, criado_por_nome: userName }), 30000)
       error = res.error
     }
-    setSaving(false)
-    if (error) { alert(`Erro ao salvar: ${error.message}`); return }
+    if (error) {
+      console.error('[lousa] erro ao salvar', error)
+      alert('Não foi possível salvar a marcação. Verifique sua conexão e tente novamente.')
+      return
+    }
 
     // Notificar técnico via push (só se tem técnico e é novo ou técnico mudou)
     const tecAlvo = payload.tecnico_nome
     if (tecAlvo && (!editEntry || editEntry.tecnico_nome !== tecAlvo)) {
+      const diaBR = fmtDataBancoBR(modalDia)
       const descNotif = isServico
-        ? `${payload.cliente_nome || 'Serviço'} — ${modalDia}`
-        : `${TIPO_CONFIG[modalTipo].label} — ${modalDia}`
+        ? `${payload.cliente_nome || 'Serviço'} — ${diaBR}`
+        : `${TIPO_CONFIG[modalTipo].label} — ${diaBR}`
       fetch('/api/push/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tecnico_nome: tecAlvo,
           titulo: `Lousa: ${isServico ? payload.cliente_nome : TIPO_CONFIG[modalTipo].label}`,
@@ -322,35 +403,59 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
   }
 
   const excluir = async (id: string) => {
+    if (salvandoRef.current) return
     if (!confirm('Excluir esta marcação?')) return
-    await supabase.from('lousa_servicos').delete().eq('id', id)
-    setModalOpen(false)
-    carregar()
+    salvandoRef.current = true
+    setSaving(true)
+    try {
+      const { error } = await comTimeout(supabase.from('lousa_servicos').delete().eq('id', id), 30000)
+      if (error) throw error
+      setModalOpen(false)
+      carregar()
+    } catch {
+      alert('Não foi possível excluir. Verifique sua conexão e tente novamente.')
+    } finally {
+      salvandoRef.current = false
+      setSaving(false)
+    }
   }
 
   // ── Config notificação (admin only) ──
   const abrirConfig = async () => {
     setConfigOpen(true)
     setLoadingConfig(true)
-    const [{ data: cfg }, { data: usrs }] = await Promise.all([
-      supabase.from('lousa_config').select('*').eq('id', 1).maybeSingle(),
-      supabase.from('financeiro_usu').select('id, nome, funcao').order('nome'),
-    ])
-    setConfigUser(cfg?.notificar_user_id ? { id: cfg.notificar_user_id, nome: cfg.notificar_user_nome || '' } : null)
-    setUsuarios(usrs || [])
-    setLoadingConfig(false)
+    try {
+      const [{ data: cfg }, { data: usrs }] = await comTimeout(Promise.all([
+        supabase.from('lousa_config').select('*').eq('id', 1).maybeSingle(),
+        supabase.from('financeiro_usu').select('id, nome, funcao').order('nome'),
+      ]))
+      setConfigUser(cfg?.notificar_user_id ? { id: cfg.notificar_user_id, nome: cfg.notificar_user_nome || '' } : null)
+      setUsuarios((usrs || []) as Usuario[])
+    } catch {
+      alert(MSG_CONEXAO)
+      setConfigOpen(false)
+    } finally {
+      setLoadingConfig(false)
+    }
   }
 
   const salvarConfig = async () => {
-    await supabase.from('lousa_config').upsert({
-      id: 1, notificar_user_id: configUser?.id || null,
-      notificar_user_nome: configUser?.nome || null, updated_at: new Date().toISOString(),
-    })
-    setConfigOpen(false)
+    try {
+      const { error } = await comTimeout(supabase.from('lousa_config').upsert({
+        id: 1, notificar_user_id: configUser?.id || null,
+        notificar_user_nome: configUser?.nome || null, updated_at: new Date().toISOString(),
+      }), 30000)
+      if (error) throw error
+      setConfigOpen(false)
+    } catch {
+      alert('Não foi possível salvar a configuração. Verifique sua conexão e tente novamente.')
+    }
   }
 
   // ── Swipe ──
   const onTouchStart = useCallback((e: React.TouchEvent) => {
+    // Gestos dentro dos modais não podem trocar o dia que está por trás
+    if ((e.target as HTMLElement | null)?.closest?.('[data-lousa-modal]')) { swiping.current = false; return }
     touchStartX.current = e.touches[0].clientX
     touchStartY.current = e.touches[0].clientY
     swiping.current = true
@@ -366,6 +471,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
   }, [])
 
   // ── Dados filtrados ──
+  const osModalVisiveis = osModalSel ? [osModalSel] : osModalList
   const entradasDia = useMemo(() => entradas.filter(e => e.data === diaStr), [entradas, diaStr])
   const isHoje = diaStr === hoje
   const diaNome = diaAtual.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' })
@@ -428,7 +534,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
             setOsModalCliente(entry.cliente_nome)
             setOsModalLoading(true)
             setOsModalOpen(true)
-            buscarOsDoCliente(entry.cliente_nome, entry.cliente_cnpj || undefined).then(() => setOsModalOpen(true))
+            buscarOsDoCliente(entry.cliente_nome, entry.cliente_cnpj || undefined)
           } : undefined}
         >
           {!isServico && <IconMarca size={14} color={cfgMarca.cor} />}
@@ -464,8 +570,8 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
           }}>
             {grupo.nome ? grupo.nome.charAt(0).toUpperCase() : '?'}
           </div>
-          <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: palette.text }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: palette.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {grupo.nome || 'Sem Técnico'}
             </div>
             <div style={{ fontSize: 10, color: '#9CA3AF', fontWeight: 600 }}>
@@ -521,12 +627,13 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
 
       {/* ─── Dia atual ─── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-        <button onClick={() => setDiaAtual(prev => addDays(prev, -1))} style={{
-          background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center',
+        <button onClick={() => setDiaAtual(prev => addDays(prev, -1))} aria-label="Dia anterior" style={{
+          background: 'none', border: 'none', cursor: 'pointer', padding: 0, width: 44, height: 44, flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
           <ChevronLeft size={22} color="#1E3A5F" />
         </button>
-        <div style={{ flex: 1, textAlign: 'center' }}>
+        <div style={{ flex: 1, minWidth: 0, textAlign: 'center' }}>
           <div style={{
             fontSize: 20, fontWeight: 800, color: isHoje ? '#2563EB' : '#1E3A5F',
             textTransform: 'capitalize', lineHeight: 1.2,
@@ -540,8 +647,9 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
             }}>HOJE</span>
           )}
         </div>
-        <button onClick={() => setDiaAtual(prev => addDays(prev, 1))} style={{
-          background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center',
+        <button onClick={() => setDiaAtual(prev => addDays(prev, 1))} aria-label="Próximo dia" style={{
+          background: 'none', border: 'none', cursor: 'pointer', padding: 0, width: 44, height: 44, flexShrink: 0,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
           <ChevronRight size={22} color="#1E3A5F" />
         </button>
@@ -584,6 +692,21 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
         <span style={{ display: 'flex', alignItems: 'center', gap: 3 }}><LogOut size={11} color="#8b5cf6" /> Saída</span>
       </div>
 
+      {/* ─── Erro de carga (mantém os dados já exibidos) ─── */}
+      {erroCarga && !loading && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 12,
+          padding: '10px 12px', borderRadius: 10, background: '#FEF2F2', border: '1px solid #FECACA',
+          fontSize: 12, fontWeight: 600, color: '#991B1B',
+        }}>
+          <span style={{ flex: 1, minWidth: 0 }}>{erroCarga}</span>
+          <button onClick={() => carregar()} style={{
+            padding: '8px 14px', minHeight: 36, borderRadius: 8, border: '1px solid #FECACA', background: '#fff',
+            fontSize: 12, fontWeight: 700, color: '#991B1B', cursor: 'pointer',
+          }}>Tentar novamente</button>
+        </div>
+      )}
+
       {/* ─── Conteúdo do dia ─── */}
       <div style={{ flex: 1 }}>
         {loading ? (
@@ -624,8 +747,8 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
       </div>
 
       {/* ─── FAB criar ─── */}
-      <button onClick={() => abrirNovaEntrada('manha')} style={{
-        position: 'fixed', bottom: 24, right: 24, width: 56, height: 56, borderRadius: 16,
+      <button onClick={() => abrirNovaEntrada('manha')} aria-label="Nova marcação" style={{
+        position: 'fixed', bottom: 'calc(24px + env(safe-area-inset-bottom, 0px))', right: 24, width: 56, height: 56, borderRadius: 16,
         background: 'linear-gradient(135deg, #3b82f6, #2563eb)', border: 'none',
         boxShadow: '0 6px 20px rgba(59,130,246,0.4)', cursor: 'pointer',
         display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 40,
@@ -637,13 +760,13 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
       {/* MODAL CRIAR / EDITAR                                       */}
       {/* ════════════════════════════════════════════════════════════ */}
       {modalOpen && (
-        <div onClick={e => { if (e.target === e.currentTarget) setModalOpen(false) }} style={{
+        <div data-lousa-modal onClick={e => { if (e.target === e.currentTarget) setModalOpen(false) }} style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)',
           zIndex: 50000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
         }}>
           <div style={{
             background: '#fff', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 540,
-            maxHeight: '90vh', overflowY: 'auto', padding: '24px 20px env(safe-area-inset-bottom, 20px)',
+            maxHeight: '90vh', overflowY: 'auto', padding: '24px 20px calc(20px + env(safe-area-inset-bottom, 0px))',
           }}>
             {/* Header modal */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
@@ -652,16 +775,16 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
               </h3>
               <div style={{ display: 'flex', gap: 8 }}>
                 {editEntry && (
-                  <button onClick={() => excluir(editEntry.id)} style={{
-                    width: 36, height: 36, borderRadius: 10, border: 'none',
+                  <button onClick={() => excluir(editEntry.id)} disabled={saving} aria-label="Excluir marcação" style={{
+                    width: 40, height: 40, borderRadius: 10, border: 'none',
                     background: '#FEF2F2', cursor: 'pointer', display: 'flex',
                     alignItems: 'center', justifyContent: 'center',
                   }}>
                     <Trash2 size={16} color="#dc2626" />
                   </button>
                 )}
-                <button onClick={() => setModalOpen(false)} style={{
-                  width: 36, height: 36, borderRadius: 10, border: 'none',
+                <button onClick={() => setModalOpen(false)} aria-label="Fechar" style={{
+                  width: 40, height: 40, borderRadius: 10, border: 'none',
                   background: '#F3F4F6', cursor: 'pointer', display: 'flex',
                   alignItems: 'center', justifyContent: 'center',
                 }}>
@@ -701,7 +824,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                 <label style={{ fontSize: 11, fontWeight: 700, color: '#9CA3AF', letterSpacing: 1, display: 'block', marginBottom: 6 }}>TÉCNICO</label>
                 <select value={modalTecnico} onChange={e => setModalTecnico(e.target.value)} style={{
                   width: '100%', padding: '10px 12px', borderRadius: 10, border: '1px solid #E5E7EB',
-                  fontSize: 13, background: '#fff', color: '#1a1a1a', boxSizing: 'border-box',
+                  fontSize: 16, background: '#fff', color: '#1a1a1a', boxSizing: 'border-box',
                 }}>
                   <option value="">Sem técnico</option>
                   {tecnicos.map(t => <option key={t.user_id} value={t.tecnico_nome}>{t.tecnico_nome}</option>)}
@@ -729,7 +852,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
               <label style={{ fontSize: 11, fontWeight: 700, color: '#9CA3AF', letterSpacing: 1, display: 'block', marginBottom: 6 }}>DATA</label>
               <input type="date" value={modalDia} onChange={e => setModalDia(e.target.value)} style={{
                 width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #E5E7EB',
-                fontSize: 14, background: '#fff', color: '#1a1a1a', boxSizing: 'border-box',
+                fontSize: 16, background: '#fff', color: '#1a1a1a', boxSizing: 'border-box',
               }} />
             </div>
 
@@ -746,7 +869,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                     placeholder="Buscar por nome, CNPJ..."
                     style={{
                       width: '100%', padding: '10px 14px 10px 36px', borderRadius: 10,
-                      border: '1px solid #E5E7EB', fontSize: 14, background: '#fff',
+                      border: '1px solid #E5E7EB', fontSize: 16, background: '#fff',
                       color: '#1a1a1a', boxSizing: 'border-box',
                     }}
                   />
@@ -825,7 +948,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                       borderRadius: '0 0 10px 10px', background: '#FAFAFA',
                     }}>
                       {osModalList.map(os => (
-                        <div key={os.Id_Ordem} onClick={() => { setOsModalList([os]); setOsModalCliente(os.Os_Cliente); setOsModalOpen(true) }} style={{
+                        <div key={os.Id_Ordem} onClick={() => { setOsModalSel(os); setOsModalCliente(os.Os_Cliente); setOsModalOpen(true) }} style={{
                           padding: '10px 12px', borderBottom: '1px solid #F3F4F6', cursor: 'pointer',
                         }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
@@ -839,7 +962,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                           </div>
                           <div style={{ fontSize: 11, color: '#6B7280' }}>
                             {os.Tipo_Servico || '---'} · {os.Os_Tecnico || 'Sem técnico'}
-                            {os.Previsao_Execucao && ` · Prev: ${new Date(os.Previsao_Execucao).toLocaleDateString('pt-BR')}`}
+                            {os.Previsao_Execucao && ` · Prev: ${fmtDataBancoBR(os.Previsao_Execucao)}`}
                           </div>
                         </div>
                       ))}
@@ -861,7 +984,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                   rows={3}
                   style={{
                     width: '100%', padding: '10px 14px', borderRadius: 10, border: '1px solid #E5E7EB',
-                    fontSize: 14, background: '#fff', color: '#1a1a1a', resize: 'vertical',
+                    fontSize: 16, background: '#fff', color: '#1a1a1a', resize: 'vertical',
                     fontFamily: 'inherit', boxSizing: 'border-box',
                   }}
                 />
@@ -872,7 +995,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
             {modalTipo === 'servico' && (
               <div style={{ marginBottom: 24 }}>
                 <label style={{ fontSize: 11, fontWeight: 700, color: '#9CA3AF', letterSpacing: 1, display: 'block', marginBottom: 6 }}>COR</label>
-                <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                   {CORES.map(c => (
                     <button key={c} onClick={() => setFormCor(c)} style={{
                       width: 32, height: 32, borderRadius: 8,
@@ -910,13 +1033,13 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
       {/* MODAL CONFIG NOTIFICAÇÃO (admin only)                      */}
       {/* ════════════════════════════════════════════════════════════ */}
       {configOpen && (
-        <div onClick={e => { if (e.target === e.currentTarget) setConfigOpen(false) }} style={{
+        <div data-lousa-modal onClick={e => { if (e.target === e.currentTarget) setConfigOpen(false) }} style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)',
           zIndex: 50000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
         }}>
           <div style={{
             background: '#fff', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 540,
-            maxHeight: '80vh', overflowY: 'auto', padding: '24px 20px env(safe-area-inset-bottom, 20px)',
+            maxHeight: '80vh', overflowY: 'auto', padding: '24px 20px calc(20px + env(safe-area-inset-bottom, 0px))',
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -932,8 +1055,8 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                   <p style={{ fontSize: 11, color: '#9CA3AF', margin: 0 }}>Aviso diário às 16h</p>
                 </div>
               </div>
-              <button onClick={() => setConfigOpen(false)} style={{
-                width: 36, height: 36, borderRadius: 10, border: 'none', background: '#F3F4F6',
+              <button onClick={() => setConfigOpen(false)} aria-label="Fechar" style={{
+                width: 40, height: 40, borderRadius: 10, border: 'none', background: '#F3F4F6',
                 cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
                 <X size={16} color="#6B7280" />
@@ -1006,32 +1129,32 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
       {/* MODAL OS DO CLIENTE                                        */}
       {/* ════════════════════════════════════════════════════════════ */}
       {osModalOpen && (
-        <div onClick={e => { if (e.target === e.currentTarget) setOsModalOpen(false) }} style={{
+        <div data-lousa-modal onClick={e => { if (e.target === e.currentTarget) { setOsModalOpen(false); setOsModalSel(null) } }} style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(6px)',
           zIndex: 60000, display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
         }}>
           <div style={{
             background: '#fff', borderRadius: '20px 20px 0 0', width: '100%', maxWidth: 540,
-            maxHeight: '80vh', overflowY: 'auto', padding: '20px 20px env(safe-area-inset-bottom, 20px)',
+            maxHeight: '80vh', overflowY: 'auto', padding: '20px 20px calc(20px + env(safe-area-inset-bottom, 0px))',
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <div>
                 <h3 style={{ fontSize: 16, fontWeight: 800, color: '#1E3A5F', margin: 0 }}>
-                  {osModalList.length > 0 ? 'Ordens de Serviço' : 'Sem OS aberta'}
+                  {osModalVisiveis.length > 0 ? 'Ordens de Serviço' : 'Sem OS aberta'}
                 </h3>
                 <p style={{ fontSize: 12, color: '#6B7280', margin: '4px 0 0' }}>{osModalCliente}</p>
               </div>
-              <button onClick={() => setOsModalOpen(false)} style={{
-                width: 36, height: 36, borderRadius: 10, border: 'none', background: '#F3F4F6',
+              <button onClick={() => { setOsModalOpen(false); setOsModalSel(null) }} aria-label="Fechar" style={{
+                width: 40, height: 40, borderRadius: 10, border: 'none', background: '#F3F4F6',
                 cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
                 <X size={16} color="#6B7280" />
               </button>
             </div>
 
-            {osModalLoading ? (
+            {osModalLoading && !osModalSel ? (
               <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
-            ) : osModalList.length === 0 ? (
+            ) : osModalVisiveis.length === 0 ? (
               <div style={{
                 padding: 32, textAlign: 'center', background: '#FEF2F2', borderRadius: 14,
                 border: '1px solid #FECACA',
@@ -1050,9 +1173,9 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                   padding: '8px 12px', background: '#ECFDF5', borderRadius: 8,
                   border: '1px solid #A7F3D0', fontSize: 12, fontWeight: 600, color: '#065F46',
                 }}>
-                  {osModalList.length} OS aberta{osModalList.length !== 1 ? 's' : ''}
+                  {osModalVisiveis.length} OS aberta{osModalVisiveis.length !== 1 ? 's' : ''}
                 </div>
-                {osModalList.map(os => (
+                {osModalVisiveis.map(os => (
                   <div key={os.Id_Ordem} style={{
                     background: '#FAFAFA', borderRadius: 14, padding: 16,
                     border: '1px solid #E5E7EB',
@@ -1087,7 +1210,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                       <div>
                         <span style={{ color: '#9CA3AF', fontWeight: 600, fontSize: 10 }}>PREVISÃO</span>
                         <div style={{ fontWeight: 600, color: '#374151' }}>
-                          {os.Previsao_Execucao ? new Date(os.Previsao_Execucao).toLocaleDateString('pt-BR') : '---'}
+                          {os.Previsao_Execucao ? fmtDataBancoBR(os.Previsao_Execucao) : '---'}
                         </div>
                       </div>
                       <div>
@@ -1114,7 +1237,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
               </div>
             )}
 
-            <button onClick={() => setOsModalOpen(false)} style={{
+            <button onClick={() => { setOsModalOpen(false); setOsModalSel(null) }} style={{
               width: '100%', padding: '14px 0', borderRadius: 12, border: 'none', marginTop: 16,
               background: '#F3F4F6', fontSize: 14, fontWeight: 600, cursor: 'pointer', color: '#6B7280',
             }}>Fechar</button>

@@ -1,5 +1,6 @@
 import { supabase } from './supabase'
 import type { AlertaSeveridade } from './types'
+import { dataLocalISO } from './tecnico-utils'
 
 interface AlertaDetectado {
   tecnico_nome: string
@@ -284,7 +285,8 @@ export async function varrerAlertas(dataInicio: string, dataFim: string): Promis
   const datasNoRange = new Set(diarioList.map(d => d.data as string))
   for (const data of datasNoRange) {
     // Pular hoje (pode não ter terminado ainda)
-    if (data === new Date().toISOString().split('T')[0]) continue
+    // Data local: em UTC, depois das 21h "hoje" já seria amanhã e o dia corrente entraria na varredura
+    if (data === dataLocalISO()) continue
     const dow = new Date(data + 'T12:00:00').getDay()
     if (dow === 0 || dow === 6) continue // pular fim de semana
     for (const tec of tecnicosList) {
@@ -353,12 +355,12 @@ export async function varrerAlertas(dataInicio: string, dataFim: string): Promis
   }
 
   // 9. OS rascunho antiga (3+ dias)
-  const hoje = new Date().toISOString().split('T')[0]
+  const hoje = dataLocalISO()
   for (const r of relatorioList) {
     if (r.Status !== 'rascunho') continue
     const dataRel = r.Data as string
     if (!dataRel) continue
-    const diff = (new Date(hoje).getTime() - new Date(dataRel).getTime()) / 86400000
+    const diff = (new Date(hoje).getTime() - new Date(dataRel.slice(0, 10)).getTime()) / 86400000
     if (diff >= 3) {
       add({
         tecnico_nome: r.TecResp1 as string,
@@ -377,7 +379,7 @@ export async function varrerAlertas(dataInicio: string, dataFim: string): Promis
   for (const o of osList) {
     const prev = o.Previsao_Execucao as string
     if (!prev || prev >= hoje) continue
-    const diff = (new Date(hoje).getTime() - new Date(prev).getTime()) / 86400000
+    const diff = (new Date(hoje).getTime() - new Date(prev.slice(0, 10)).getTime()) / 86400000
     if (diff < 2) continue // Só conta >= 2 dias
     const temRelatorio = relatorioList.some(r => r.Ordem_Servico === o.Id_Ordem)
     if (!temRelatorio) {

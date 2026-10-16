@@ -45,7 +45,12 @@ export default function LoginPage() {
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (loading) return
     setErro('')
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setErro('Sem conexão com a internet. Conecte-se para entrar.')
+      return
+    }
     setLoading(true)
 
     try {
@@ -55,7 +60,11 @@ export default function LoginPage() {
       })
 
       if (loginError) {
-        setErro('E-mail ou senha incorretos')
+        // Falha de rede não é senha errada — não confundir o técnico
+        const erroRede = loginError.name === 'AuthRetryableFetchError' || !loginError.status || loginError.status >= 500
+        setErro(erroRede
+          ? 'Não foi possível conectar. Verifique o sinal e tente novamente.'
+          : 'E-mail ou senha incorretos')
         setLoading(false)
         return
       }
@@ -68,11 +77,13 @@ export default function LoginPage() {
       }
 
       // 1. Checar portal_permissoes
-      const { data: perm } = await supabase
+      // maybeSingle: "sem linha" não é erro; erro real (rede) não pode virar "sem acesso" + signOut
+      const { data: perm, error: permErr } = await supabase
         .from('portal_permissoes')
         .select('is_admin, mecanico_role')
         .eq('user_id', uid)
-        .single()
+        .maybeSingle()
+      if (permErr) throw permErr
 
       if (perm) {
         // Admin do portal → admin do mecânicos
@@ -88,11 +99,12 @@ export default function LoginPage() {
       }
 
       // 2. Fallback: checar mecanico_usuarios (legado)
-      const { data: perfil } = await supabase
+      const { data: perfil, error: perfilErr } = await supabase
         .from('mecanico_usuarios')
         .select('role')
         .eq('id', uid)
-        .single()
+        .maybeSingle()
+      if (perfilErr) throw perfilErr
 
       if (perfil) {
         router.push(perfil.role === 'admin' ? '/admin' : '/')
@@ -103,7 +115,7 @@ export default function LoginPage() {
       await supabase.auth.signOut()
       setErro('Sem acesso ao app. Solicite ao administrador do portal.')
     } catch {
-      setErro('Erro de conexão')
+      setErro('Não foi possível conectar. Verifique o sinal e tente novamente.')
     }
     setLoading(false)
   }
@@ -113,10 +125,10 @@ export default function LoginPage() {
       minHeight: '100vh', display: 'flex', flexDirection: 'column',
       alignItems: 'center', justifyContent: 'center',
       background: 'linear-gradient(135deg, #1E3A5F 0%, #2D5A8E 100%)',
-      padding: 24,
+      padding: 'calc(24px + env(safe-area-inset-top, 0px)) 16px calc(24px + env(safe-area-inset-bottom, 0px))',
     }}>
       <div style={{
-        background: '#fff', borderRadius: 20, padding: 32,
+        background: '#fff', borderRadius: 20, padding: '32px 24px',
         width: '100%', maxWidth: 380, boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
       }}>
         <div style={{ textAlign: 'center', marginBottom: 24 }}>
@@ -131,12 +143,14 @@ export default function LoginPage() {
           <div style={{ marginBottom: 16 }}>
             <label style={labelStyle}>E-mail</label>
             <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-              required placeholder="seu@email.com" style={inputStyle} />
+              required placeholder="seu@email.com" style={inputStyle}
+              autoComplete="email" inputMode="email" autoCapitalize="none" autoCorrect="off" spellCheck={false} />
           </div>
           <div style={{ marginBottom: 20 }}>
             <label style={labelStyle}>Senha</label>
             <input type="password" value={senha} onChange={(e) => setSenha(e.target.value)}
-              required placeholder="Sua senha do portal" minLength={6} style={inputStyle} />
+              required placeholder="Sua senha do portal" minLength={6} style={inputStyle}
+              autoComplete="current-password" />
           </div>
           {erro && <Erro texto={erro} />}
           <button type="submit" disabled={loading} style={btnStyle(loading)}>
@@ -168,13 +182,13 @@ const labelStyle: React.CSSProperties = {
 
 const inputStyle: React.CSSProperties = {
   width: '100%', padding: '12px 16px', borderRadius: 12,
-  border: '1.5px solid #E5E7EB', fontSize: 15, outline: 'none',
+  border: '1.5px solid #E5E7EB', fontSize: 16, outline: 'none',
   boxSizing: 'border-box',
 }
 
 const btnStyle = (loading: boolean): React.CSSProperties => ({
   width: '100%', padding: '14px 0', borderRadius: 12,
   background: loading ? '#9CA3AF' : '#1E3A5F', color: '#fff',
-  fontSize: 15, fontWeight: 700, border: 'none',
+  fontSize: 16, fontWeight: 700, border: 'none',
   cursor: loading ? 'default' : 'pointer',
 })

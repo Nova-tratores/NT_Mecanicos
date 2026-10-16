@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabase, authHeaders } from '@/lib/supabase'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { geocodificar, rotaDaOficina } from '@/lib/ors'
 import { offlineWrite } from '@/lib/offlineWrite'
@@ -10,6 +10,7 @@ import {
   Loader2, Wrench, ArrowLeft, Route,
 } from 'lucide-react'
 import { colors } from '@/lib/ui'
+import { dataLocalISO } from '@/lib/tecnico-utils'
 import { PageSpinner } from '@/components/ui'
 import Link from 'next/link'
 
@@ -32,6 +33,14 @@ interface OrdemOption {
   Qtd_HR: number | null
 }
 
+// Sinal fraco: não deixa a tela presa no spinner — cai pro cache após 10s
+function comTimeout<T>(p: PromiseLike<T>, ms = 10000): Promise<T> {
+  return Promise.race([
+    Promise.resolve(p),
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms)),
+  ])
+}
+
 export default function JornadaPage() {
   const { user, loading: userLoading } = useCurrentUser()
   const [entries, setEntries] = useState<CheckinEntry[]>([])
@@ -50,7 +59,7 @@ export default function JornadaPage() {
 
   const tecnicoNome = user?.tecnico_nome || ''
   const nomeBusca = user?.nome_pos || user?.tecnico_nome || ''
-  const hoje = new Date().toISOString().split('T')[0]
+  const hoje = dataLocalISO()
 
   // Fallback offline: le tudo do cache do IndexedDB (prefetch)
   const carregarDoCache = useCallback(async () => {
@@ -73,13 +82,13 @@ export default function JornadaPage() {
   }, [hoje])
 
   const carregar = useCallback(async () => {
-    if (!tecnicoNome) return
+    if (!tecnicoNome) { setLoading(false); return }
     setLoading(true)
 
     if (!navigator.onLine) { await carregarDoCache(); return }
 
     try {
-      const [entriesRes, veicRes, osRes] = await Promise.all([
+      const [entriesRes, veicRes, osRes] = await comTimeout(Promise.all([
         supabase
           .from('checkin_diario')
           .select('id, placa, id_ordem, cliente, destino, distancia_km, tempo_estimado_min, lat_destino, lng_destino')
@@ -92,7 +101,7 @@ export default function JornadaPage() {
           .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Qtd_HR')
           .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
           .or(`Os_Tecnico.ilike.%${nomeBusca}%,Os_Tecnico2.ilike.%${nomeBusca}%`),
-      ])
+      ]))
 
       if (entriesRes.error) throw entriesRes.error
       setEntries((entriesRes.data || []) as CheckinEntry[])
@@ -135,8 +144,9 @@ export default function JornadaPage() {
   const ficaNaOficina = placa === 'OFICINA'
 
   const salvar = async () => {
-    if (!placa || (!ficaNaOficina && !ordemId)) return
+    if (saving || !placa || (!ficaNaOficina && !ordemId)) return
     setSaving(true)
+    try {
 
     const isOficina = ficaNaOficina || ordemId === 'OFICINA'
     const ordem = isOficina ? null : getOrdem(ordemId)
@@ -147,17 +157,22 @@ export default function JornadaPage() {
 
     if (!isOficina && ordem?.Endereco_Cliente) {
       setCalculando(true)
-      const coords = await geocodificar(ordem.Endereco_Cliente + ', SP, Brasil')
-      if (coords) {
-        lat_destino = coords.lat
-        lng_destino = coords.lng
-        const rota = await rotaDaOficina(coords.lat, coords.lng)
-        if (rota) {
-          distancia_km = rota.distancia_km
-          tempo_estimado_min = rota.tempo_min
+      try {
+        const coords = await geocodificar(ordem.Endereco_Cliente + ', SP, Brasil')
+        if (coords) {
+          lat_destino = coords.lat
+          lng_destino = coords.lng
+          const rota = await rotaDaOficina(coords.lat, coords.lng)
+          if (rota) {
+            distancia_km = rota.distancia_km
+            tempo_estimado_min = rota.tempo_min
+          }
         }
+      } catch {
+        // Sem sinal / serviço de rotas fora: salva o destino sem a estimativa
+      } finally {
+        setCalculando(false)
       }
-      setCalculando(false)
     }
 
     const payload = {
@@ -182,15 +197,14 @@ export default function JornadaPage() {
 
     // Sincronizar veiculo com Rota Exata (so quando ha placa real e online)
     if (placa && !ficaNaOficina && online) {
-      fetch('/api/sync-veiculo', {
+      authHeaders().then((h) => fetch('/api/sync-veiculo', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...h },
         body: JSON.stringify({ tecnico_nome: tecnicoNome, placa }),
-      }).catch(() => {})
+      })).catch(() => {})
     }
 
     closeForm()
-    setSaving(false)
 
     if (online) {
       await carregar()
@@ -207,17 +221,31 @@ export default function JornadaPage() {
         ? prev.map(e => e.id === editingId ? entryLocal : e)
         : [...prev, entryLocal])
     }
+    } catch (err) {
+      console.error('[jornada] erro ao salvar:', err)
+      alert('Não foi possível salvar o destino. Tente novamente.')
+    } finally {
+      setSaving(false)
+      setCalculando(false)
+    }
   }
 
   const deletar = async (id: number) => {
-    if (entries.length <= 1) return // Nao pode deletar a unica entrada
+    if (entries.length <= 1 || deletingId !== null) return // Nao pode deletar a unica entrada
+    if (!confirm('Remover este destino da jornada de hoje?')) return
     setDeletingId(id)
-    await offlineWrite({ table: 'checkin_diario', action: 'delete', data: {}, match: { id } })
-    setDeletingId(null)
-    if (navigator.onLine) {
-      await carregar()
-    } else {
-      setEntries(prev => prev.filter(e => e.id !== id))
+    try {
+      await offlineWrite({ table: 'checkin_diario', action: 'delete', data: {}, match: { id } })
+      if (navigator.onLine) {
+        await carregar()
+      } else {
+        setEntries(prev => prev.filter(e => e.id !== id))
+      }
+    } catch (err) {
+      console.error('[jornada] erro ao remover:', err)
+      alert('Não foi possível remover o destino. Tente novamente.')
+    } finally {
+      setDeletingId(null)
     }
   }
 
@@ -232,15 +260,15 @@ export default function JornadaPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <Link href="/" style={{
-          width: 36, height: 36, borderRadius: 10,
+        <Link href="/" aria-label="Voltar" style={{
+          width: 40, height: 40, borderRadius: 10, flexShrink: 0,
           background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           color: colors.textSubtle, textDecoration: 'none',
         }}>
           <ArrowLeft size={18} />
         </Link>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <h1 style={{ fontSize: 20, fontWeight: 700, color: '#1F2937', margin: 0 }}>Jornada</h1>
           <div style={{ fontSize: 12, color: colors.textMuted, textTransform: 'capitalize' }}>
             {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
@@ -337,7 +365,7 @@ export default function JornadaPage() {
                 <div style={{ padding: 16 }}>
                   {/* Header da entry */}
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 }}>
                       <div style={{
                         width: 44, height: 44, borderRadius: 13, flexShrink: 0,
                         background: isOficina ? colors.success : colors.primary,
@@ -349,8 +377,8 @@ export default function JornadaPage() {
                           : <span style={{ fontSize: 17, fontWeight: 700, color: '#fff' }}>{idx + 1}</span>
                         }
                       </div>
-                      <div>
-                        <div style={{ fontSize: 15, fontWeight: 600, color: colors.text }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 15, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {isOficina ? 'Oficina' : entry.cliente || 'Cliente'}
                         </div>
                         {!isOficina && entry.id_ordem && (
@@ -360,17 +388,17 @@ export default function JornadaPage() {
                         )}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', gap: 6 }}>
-                      <button onClick={() => openEdit(entry)} style={{
-                        width: 32, height: 32, borderRadius: 8, border: `1px solid ${colors.border}`,
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                      <button onClick={() => openEdit(entry)} aria-label="Editar destino" style={{
+                        width: 40, height: 40, borderRadius: 8, border: `1px solid ${colors.border}`,
                         background: colors.surfaceAlt, cursor: 'pointer',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                       }}>
                         <Edit3 size={14} color={colors.textSubtle} />
                       </button>
                       {entries.length > 1 && (
-                        <button onClick={() => deletar(entry.id)} disabled={isDeleting} style={{
-                          width: 32, height: 32, borderRadius: 8, border: `1px solid ${colors.dangerBorder}`,
+                        <button onClick={() => deletar(entry.id)} disabled={isDeleting} aria-label="Remover destino" style={{
+                          width: 40, height: 40, borderRadius: 8, border: `1px solid ${colors.dangerBorder}`,
                           background: colors.dangerBg, cursor: 'pointer',
                           display: 'flex', alignItems: 'center', justifyContent: 'center',
                         }}>
@@ -421,7 +449,7 @@ export default function JornadaPage() {
                           <div style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>
                             {tempoExecucao > 0 ? formatTempo(tempoExecucao) : '--'}
                           </div>
-                          <div style={{ fontSize: 9, color: colors.textMuted }}>Execucao (OS)</div>
+                          <div style={{ fontSize: 9, color: colors.textMuted }}>Execução (OS)</div>
                         </div>
                       </div>
                       <div style={{
@@ -447,7 +475,7 @@ export default function JornadaPage() {
                     }}>
                       <Wrench size={14} color={colors.success} />
                       <span style={{ fontSize: 12, fontWeight: 600, color: colors.success }}>
-                        Servico interno - sem deslocamento
+                        Serviço interno - sem deslocamento
                       </span>
                     </div>
                   )}
@@ -470,8 +498,8 @@ export default function JornadaPage() {
         >
           <div
             style={{
-              background: '#fff', borderRadius: '20px 20px 0 0', padding: '20px 20px 32px',
-              width: '100%', maxWidth: 500, maxHeight: '80vh', overflowY: 'auto',
+              background: '#fff', borderRadius: '20px 20px 0 0', padding: '20px 20px calc(32px + env(safe-area-inset-bottom, 0px))',
+              width: '100%', maxWidth: 500, maxHeight: '85vh', overflowY: 'auto', overscrollBehavior: 'contain',
             }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -484,8 +512,8 @@ export default function JornadaPage() {
               <h2 style={{ fontSize: 18, fontWeight: 700, color: '#1F2937', margin: 0 }}>
                 {editingId ? 'Editar Destino' : 'Novo Destino'}
               </h2>
-              <button onClick={closeForm} style={{
-                width: 32, height: 32, borderRadius: 8, border: 'none',
+              <button onClick={closeForm} aria-label="Fechar" style={{
+                width: 40, height: 40, borderRadius: 10, border: 'none',
                 background: '#F3F4F6', cursor: 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
@@ -497,16 +525,16 @@ export default function JornadaPage() {
               {/* Veiculo */}
               <div>
                 <label style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-                  <Car size={14} /> VEICULO
+                  <Car size={14} /> VEÍCULO
                 </label>
                 <select value={placa} onChange={(e) => setPlaca(e.target.value)} style={{
                   width: '100%', padding: '13px 14px', borderRadius: 12,
                   border: `2px solid ${placa ? colors.primary : colors.border}`,
-                  fontSize: 15, fontWeight: 600, background: '#FAFAFA',
+                  fontSize: 16, fontWeight: 600, background: '#FAFAFA',
                   outline: 'none', appearance: 'none',
                   color: placa ? colors.text : '#9CA3AF',
                 }}>
-                  <option value="">Selecione o veiculo...</option>
+                  <option value="">Selecione o veículo...</option>
                   <option value="OFICINA">Oficina — vou ficar na oficina</option>
                   {veiculos.map((v) => (
                     <option key={v.IdPlaca} value={v.NumPlaca}>{v.NumPlaca}</option>
@@ -523,12 +551,12 @@ export default function JornadaPage() {
                 <select value={ordemId} onChange={(e) => setOrdemId(e.target.value)} style={{
                   width: '100%', padding: '13px 14px', borderRadius: 12,
                   border: `2px solid ${ordemId ? colors.primary : colors.border}`,
-                  fontSize: 14, fontWeight: 600, background: '#FAFAFA',
+                  fontSize: 16, fontWeight: 600, background: '#FAFAFA',
                   outline: 'none', appearance: 'none',
                   color: ordemId ? colors.text : '#9CA3AF',
                 }}>
                   <option value="">Selecione o destino...</option>
-                  <option value="OFICINA">Oficina - Servico interno</option>
+                  <option value="OFICINA">Oficina - Serviço interno</option>
                   {ordens.map((o) => (
                     <option key={o.Id_Ordem} value={o.Id_Ordem}>
                       OS {o.Id_Ordem} - {o.Os_Cliente}{o.Qtd_HR ? ` (${o.Qtd_HR}h)` : ''}
@@ -553,7 +581,7 @@ export default function JornadaPage() {
                   </div>
                   <div>
                     <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>Vou ficar na oficina</div>
-                    <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>Servico interno, sem deslocamento</div>
+                    <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>Serviço interno, sem deslocamento</div>
                   </div>
                 </div>
               )}
@@ -573,7 +601,7 @@ export default function JornadaPage() {
                     )}
                     {os.Qtd_HR != null && os.Qtd_HR > 0 && (
                       <div style={{ fontSize: 12, color: colors.info, fontWeight: 600, marginTop: 4, display: 'flex', alignItems: 'center', gap: 4 }}>
-                        <Clock size={12} /> Execucao prevista: {os.Qtd_HR}h
+                        <Clock size={12} /> Execução prevista: {os.Qtd_HR}h
                       </div>
                     )}
                   </div>
@@ -600,7 +628,7 @@ export default function JornadaPage() {
                 ) : (
                   <>
                     <Check size={18} />
-                    {editingId ? 'Salvar Alteracao' : 'Adicionar Destino'}
+                    {editingId ? 'Salvar Alteração' : 'Adicionar Destino'}
                   </>
                 )}
               </button>

@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { removerInscricaoPush } from '@/lib/push'
 import type { MecanicoProfile } from '@/lib/types'
 
 export function useAdmin() {
@@ -74,6 +75,7 @@ export function useAdmin() {
   }, [router])
 
   const logout = async () => {
+    await removerInscricaoPush()
     await supabase.auth.signOut()
     router.replace('/login')
   }

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { requireAdmin } from '../_lib/auth'
+import { hojeBR } from '../_lib/date'
 
 const API_URL = process.env.ROTAEXATA_API_URL || 'https://api.rotaexata.com.br'
 const EMAIL = process.env.ROTAEXATA_EMAIL || ''
@@ -54,6 +56,9 @@ function naLoja(lat: number, lng: number): boolean {
 
 // ---------- GET ----------
 export async function GET(req: NextRequest) {
+  // Rota usa as credenciais do Rota Exata (servidor) — só admin
+  const auth = await requireAdmin(req)
+  if (auth instanceof NextResponse) return auth
   try {
     const sp = req.nextUrl.searchParams
     const acao = sp.get('acao') || 'veiculos'
@@ -107,8 +112,8 @@ export async function GET(req: NextRequest) {
       const vinculoMap: Record<number, any> = {}
       for (const v of (vincRes.data || [])) vinculoMap[v.adesao_id] = v
 
-      const hoje = new Date().toISOString().slice(0, 10)
-      const tresDiasAtras = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      const hoje = hojeBR()
+      const tresDiasAtras = hojeBR(new Date(Date.now() - 3 * 24 * 60 * 60 * 1000))
       const results: any[] = []
 
       for (let i = 0; i < adesoes.length; i += 15) {
@@ -163,7 +168,7 @@ export async function GET(req: NextRequest) {
       const adesaoId = sp.get('adesao_id')
       if (!adesaoId) return NextResponse.json({ error: 'adesao_id obrigatório' }, { status: 400 })
 
-      const dia = sp.get('data') || new Date().toISOString().slice(0, 10)
+      const dia = sp.get('data') || hojeBR()
       const where = JSON.stringify({
         adesao_id: Number(adesaoId),
         dt_posicao: { $gte: `${dia}T00:00:00.000-03:00`, $lte: `${dia}T23:59:59.999-03:00` }
@@ -232,7 +237,7 @@ export async function GET(req: NextRequest) {
     // ---- Posições brutas de um veículo (para rota) ----
     if (acao === 'posicoes') {
       const adesaoId = sp.get('adesao_id')
-      const data = sp.get('data') || new Date().toISOString().slice(0, 10)
+      const data = sp.get('data') || hojeBR()
       const limit = sp.get('limit') || '2000'
       if (!adesaoId) return NextResponse.json({ error: 'adesao_id obrigatório' }, { status: 400 })
 
@@ -262,12 +267,21 @@ export async function GET(req: NextRequest) {
 
     // ---- Clientes com coordenadas ----
     if (acao === 'clientes') {
-      const { data } = await supabase
-        .from('portal_nt_clientes_PRINCIPAL')
-        .select('id, nome_fantasia, razao_social, cnpj_cpf, cidade, estado, lat, lng, latitude, longitude')
-        .order('nome_fantasia')
+      // Paginado: a tabela tem mais de 1000 clientes (limite do PostgREST)
+      const data: any[] = []
+      for (let from = 0; ; from += 1000) {
+        const { data: lote, error } = await supabase
+          .from('portal_nt_clientes_PRINCIPAL')
+          .select('id, nome_fantasia, razao_social, cnpj_cpf, cidade, estado, lat, lng, latitude, longitude')
+          .order('id')
+          .range(from, from + 999)
+        if (error) throw error
+        data.push(...(lote || []))
+        if (!lote || lote.length < 1000) break
+      }
+      data.sort((a, b) => String(a.nome_fantasia || '').localeCompare(String(b.nome_fantasia || ''), 'pt-BR'))
 
-      const clientes = (data || [])
+      const clientes = data
         .map((c: any) => ({
           id: c.id,
           nome: c.nome_fantasia || c.razao_social || '',
@@ -291,6 +305,8 @@ export async function GET(req: NextRequest) {
 
 // ---------- POST ----------
 export async function POST(req: NextRequest) {
+  const auth = await requireAdmin(req)
+  if (auth instanceof NextResponse) return auth
   try {
     const body = await req.json()
     const { acao } = body
@@ -304,8 +320,9 @@ export async function POST(req: NextRequest) {
         headers: { Authorization: token, 'Content-Type': 'application/json', 'User-Agent': UA },
         body: JSON.stringify({ adesao_id, motorista_id }),
       })
-      if (!res.ok) { const t = await res.text(); return NextResponse.json({ error: t }, { status: res.status }) }
-      return NextResponse.json(await res.json())
+      if (!res.ok) { const t = await res.text(); return NextResponse.json({ error: t || `Rota Exata: ${res.status}` }, { status: res.status }) }
+      // Corpo vazio/não-JSON em resposta 2xx gerava 500 mesmo com a operação feita
+      return NextResponse.json(await res.json().catch(() => ({ ok: true })))
     }
 
     if (acao === 'desvincular_motorista') {
@@ -313,8 +330,9 @@ export async function POST(req: NextRequest) {
       if (!vinculo_id) return NextResponse.json({ error: 'vinculo_id obrigatório' }, { status: 400 })
       const token = await getToken()
       const res = await fetch(`${API_URL}/motoristas/${vinculo_id}`, { method: 'DELETE', headers: { Authorization: token, 'User-Agent': UA } })
-      if (!res.ok) { const t = await res.text(); return NextResponse.json({ error: t }, { status: res.status }) }
-      return NextResponse.json(await res.json())
+      if (!res.ok) { const t = await res.text(); return NextResponse.json({ error: t || `Rota Exata: ${res.status}` }, { status: res.status }) }
+      // Corpo vazio/não-JSON em resposta 2xx gerava 500 mesmo com a operação feita
+      return NextResponse.json(await res.json().catch(() => ({ ok: true })))
     }
 
     if (acao === 'salvar_vinculo_supabase') {

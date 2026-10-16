@@ -29,26 +29,38 @@ export default function OfflineSync() {
     startAutoSync()
 
     const checkQueue = async () => {
-      const count = await getQueueCount()
-      setPendentes(count)
-      const f = await getFailedItems()
-      setFalhas(f.length)
+      // Roda a cada 5s: erro do IndexedDB não pode virar rejeição não tratada em loop
+      try {
+        const count = await getQueueCount()
+        setPendentes(count)
+        const f = await getFailedItems()
+        setFalhas(f.length)
+      } catch (e) {
+        console.error('[offline-sync] erro ao ler a fila:', e)
+      }
     }
     checkQueue()
 
     // Abriu online com PDFs pendentes (de sessão anterior)? processa em background.
     let pdfTimer: ReturnType<typeof setTimeout> | undefined
     if (navigator.onLine) {
-      pdfTimer = setTimeout(() => { processarPdfsPendentes() }, 4000)
+      pdfTimer = setTimeout(() => { processarPdfsPendentes().catch(() => {}) }, 4000)
     }
 
     const goOnline = async () => {
       setOnline(true)
       setSyncing(true)
-      const count = await processQueue()
-      // Depois de subir os dados, gera/anexa o PDF das OS enviadas offline
-      await processarPdfsPendentes()
-      setSyncing(false)
+      let count = 0
+      try {
+        count = await processQueue()
+        // Depois de subir os dados, gera/anexa o PDF das OS enviadas offline
+        await processarPdfsPendentes()
+      } catch (e) {
+        console.error('[offline-sync] erro ao sincronizar:', e)
+      } finally {
+        // Sem isso, um erro deixava "Sincronizando dados..." na tela para sempre
+        setSyncing(false)
+      }
       await checkQueue()
       if (count > 0) {
         setShowBanner(true)
@@ -79,13 +91,13 @@ export default function OfflineSync() {
     return (
       <div style={{
         position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
-        background: '#F59E0B', color: '#fff', padding: '6px 16px',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-        fontSize: 13, fontWeight: 700,
+        background: '#F59E0B', color: '#fff', padding: 'calc(6px + env(safe-area-inset-top, 0px)) 16px 6px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px 8px',
+        fontSize: 13, fontWeight: 700, flexWrap: 'wrap', textAlign: 'center',
         animation: 'slideDown 0.3s ease',
       }}>
-        <WifiOff size={16} />
-        Sem internet — alterações serão salvas localmente
+        <WifiOff size={16} style={{ flexShrink: 0 }} />
+        Sem internet — alterações salvas no celular
         {pendentes > 0 && (
           <span style={{
             background: 'rgba(255,255,255,0.3)', borderRadius: 10,
@@ -103,7 +115,7 @@ export default function OfflineSync() {
     return (
       <div style={{
         position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
-        background: '#2563EB', color: '#fff', padding: '6px 16px',
+        background: '#2563EB', color: '#fff', padding: 'calc(6px + env(safe-area-inset-top, 0px)) 16px 6px',
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
         fontSize: 13, fontWeight: 700,
       }}>
@@ -119,7 +131,7 @@ export default function OfflineSync() {
     return (
       <div style={{
         position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
-        background: '#DC2626', color: '#fff', padding: '8px 16px',
+        background: '#DC2626', color: '#fff', padding: 'calc(8px + env(safe-area-inset-top, 0px)) 16px 8px',
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
         fontSize: 13, fontWeight: 700, flexWrap: 'wrap',
       }}>
@@ -127,20 +139,32 @@ export default function OfflineSync() {
         {falhas} envio{falhas > 1 ? 's' : ''} NÃO subi{falhas > 1 ? 'ram' : 'u'} pro portal
         <button
           onClick={async () => {
+            if (syncing) return
+            if (!navigator.onLine) {
+              alert('Sem conexão. Tente de novo quando o sinal voltar.')
+              return
+            }
             setSyncing(true)
-            const f = await getFailedItems()
-            for (const item of f) { if (item.id) await retryFailedItem(item.id) }
-            await ressuscitarFalhasDeRede()
-            await processQueue()
-            await processarPdfsPendentes()
-            setSyncing(false)
-            const rest = await getFailedItems()
-            setFalhas(rest.length)
-            setPendentes(await getQueueCount())
+            try {
+              const f = await getFailedItems()
+              for (const item of f) { if (item.id) await retryFailedItem(item.id) }
+              await ressuscitarFalhasDeRede()
+              await processQueue()
+              await processarPdfsPendentes()
+            } catch (e) {
+              console.error('[offline-sync] erro ao reenviar:', e)
+            } finally {
+              setSyncing(false)
+            }
+            try {
+              const rest = await getFailedItems()
+              setFalhas(rest.length)
+              setPendentes(await getQueueCount())
+            } catch {}
           }}
           style={{
             background: '#fff', color: '#DC2626', border: 'none', borderRadius: 8,
-            padding: '4px 14px', fontSize: 13, fontWeight: 800, cursor: 'pointer',
+            padding: '8px 14px', minHeight: 36, fontSize: 13, fontWeight: 800, cursor: 'pointer',
           }}
         >
           TENTAR DE NOVO
@@ -154,7 +178,7 @@ export default function OfflineSync() {
     return (
       <div style={{
         position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
-        background: '#059669', color: '#fff', padding: '6px 16px',
+        background: '#059669', color: '#fff', padding: 'calc(6px + env(safe-area-inset-top, 0px)) 16px 6px',
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
         fontSize: 13, fontWeight: 700,
       }}>

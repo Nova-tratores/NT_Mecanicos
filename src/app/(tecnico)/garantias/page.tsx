@@ -1,10 +1,13 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   ShieldCheck, Factory, Clock, AlertTriangle, CheckCircle2, XCircle,
-  Send, Camera, X, Loader2, MapPin, FileText, Download,
+  Send, Camera, X, Loader2, MapPin, FileText, Download, WifiOff, RefreshCw,
 } from 'lucide-react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
+import { usePersistedState } from '@/hooks/usePersistedState'
+import { offlineGet, offlineSet } from '@/lib/offlineCache'
+import { getCachedGarantias } from '@/lib/prefetch'
 import { PageHeader, EmptyState, PageSpinner, Card } from '@/components/ui'
 import { colors, radius } from '@/lib/ui'
 import type { GarantiaResumo } from '@/lib/garantias/types'
@@ -12,24 +15,64 @@ import { STATUS_LABEL, STATUS_COR, STATUS_BG } from '@/lib/garantias/constants'
 import { tempoDecorrido, diasEntre, fmtMoeda } from '@/lib/garantias/format'
 import { listarMinhasGarantias, responderPendencia } from '@/lib/garantias/client'
 
+// Com sinal fraco a consulta pode ficar pendurada — corta e cai no cache.
+const LISTA_TIMEOUT = 12000
+
+function comTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([
+    p,
+    new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), ms) }),
+  ]).finally(() => clearTimeout(timer))
+}
+
 export default function GarantiasPage() {
   const { user, loading: loadingUser } = useCurrentUser()
   const nome = user?.nome_pos || user?.tecnico_nome || ''
 
   const [lista, setLista] = useState<GarantiaResumo[]>([])
   const [loading, setLoading] = useState(true)
+  const [aviso, setAviso] = useState<'' | 'offline' | 'erro'>('')
+  const reqIdRef = useRef(0)
 
   const carregar = useCallback(async () => {
-    if (!nome) return
+    if (!nome) {
+      setLoading(false)
+      return
+    }
+    // Ignora respostas de cargas antigas (ex.: troca de usuário / refresh duplo)
+    const reqId = ++reqIdRef.current
+    const cacheKey = `garantias:lista:${nome}`
     setLoading(true)
-    const dados = await listarMinhasGarantias(nome)
-    setLista(dados)
-    setLoading(false)
+    try {
+      const dados = await comTimeout(listarMinhasGarantias(nome), LISTA_TIMEOUT)
+      if (reqId !== reqIdRef.current) return
+      setLista(dados)
+      setAviso('')
+      offlineSet(cacheKey, dados).catch(() => {})
+    } catch {
+      // Offline / sinal fraco: usa a última lista salva ou o prefetch
+      let salvo: GarantiaResumo[] | null = null
+      try {
+        salvo = (await offlineGet<GarantiaResumo[]>(cacheKey))
+          || ((await getCachedGarantias()) as unknown as GarantiaResumo[] | null)
+      } catch { /* sem cache */ }
+      if (reqId !== reqIdRef.current) return
+      if (salvo && salvo.length > 0) {
+        const fallback = salvo
+        setLista((prev) => (prev.length > 0 ? prev : fallback))
+        setAviso('offline')
+      } else {
+        setAviso('erro')
+      }
+    } finally {
+      if (reqId === reqIdRef.current) setLoading(false)
+    }
   }, [nome])
 
   useEffect(() => {
-    if (nome) carregar()
-  }, [nome, carregar])
+    if (!loadingUser) carregar()
+  }, [loadingUser, carregar])
 
   if (loadingUser) return <PageSpinner />
 
@@ -46,15 +89,48 @@ export default function GarantiasPage() {
         }
       />
 
+      {aviso && !loading && (
+        <div
+          role="status"
+          style={{
+            marginTop: 12, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+            padding: '10px 12px', borderRadius: radius.md,
+            background: aviso === 'offline' ? colors.warningBg : colors.dangerBg,
+            color: aviso === 'offline' ? '#92400E' : colors.danger,
+            fontSize: 13, fontWeight: 600,
+          }}
+        >
+          <WifiOff size={15} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1, minWidth: 0 }}>
+            {aviso === 'offline'
+              ? 'Sem conexão — mostrando as garantias salvas no aparelho.'
+              : 'Não foi possível carregar as garantias. Verifique o sinal.'}
+          </span>
+          <button
+            type="button"
+            onClick={carregar}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4, minHeight: 40,
+              padding: '0 12px', borderRadius: radius.md, border: 'none',
+              background: '#fff', color: 'inherit', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            <RefreshCw size={14} /> Tentar de novo
+          </button>
+        </div>
+      )}
+
       <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {loading ? (
+        {loading && lista.length === 0 ? (
           <PageSpinner />
         ) : lista.length === 0 ? (
+          aviso === 'erro' ? null : (
           <EmptyState
             icon={ShieldCheck}
             title="Nenhuma garantia ainda"
             subtitle="Ao preencher uma OS como Garantia, marque as peças solicitadas — a requisição aparece aqui."
           />
+          )
         ) : (
           lista.map((g) => (
             <GarantiaCard key={g.id} g={g} tecnicoNome={nome} onChange={carregar} />
@@ -69,9 +145,11 @@ export default function GarantiasPage() {
 
 function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnicoNome: string; onChange: () => void }) {
   const [expandido, setExpandido] = useState(false)
-  const [respostaTexto, setRespostaTexto] = useState('')
+  // Texto da resposta sobrevive a minimizar o app / recarregar a página
+  const [respostaTexto, setRespostaTexto, limparRespostaSalva] = usePersistedState(`garantia-resp-${g.id}`, '')
   const [imagens, setImagens] = useState<File[]>([])
   const [enviando, setEnviando] = useState(false)
+  const enviandoRef = useRef(false)
   const [erro, setErro] = useState('')
 
   const pendAberta = g.pendencias?.find((p) => p.status === 'aberta')
@@ -79,29 +157,42 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
   const naFabrica = g.status === 'enviada' || g.status === 'info_pendente' || g.status === 'ressarcimento_fabrica'
 
   async function enviar() {
-    if (!pendAberta) return
+    if (!pendAberta || enviandoRef.current) return
     if (!respostaTexto.trim() && imagens.length === 0) {
       setErro('Escreva uma resposta ou anexe ao menos uma imagem.')
       return
     }
+    // Guarda síncrona contra toque duplo (o disabled só vale após o re-render)
+    enviandoRef.current = true
     setEnviando(true)
     setErro('')
-    const res = await responderPendencia({
-      garantiaId: g.id,
-      pendenciaId: pendAberta.id,
-      texto: respostaTexto,
-      imagens,
-      tecnicoNome,
-    })
-    setEnviando(false)
-    if (!res.ok) {
-      setErro(res.erro || 'Falha ao enviar.')
-      return
+    try {
+      const res = await responderPendencia({
+        garantiaId: g.id,
+        pendenciaId: pendAberta.id,
+        texto: respostaTexto,
+        imagens,
+        tecnicoNome,
+      })
+      if (!res.ok) {
+        // Tira da seleção o que já subiu, para não duplicar no reenvio
+        const enviados = res.enviados || []
+        if (enviados.length > 0) setImagens((prev) => prev.filter((f) => !enviados.includes(f)))
+        setErro(res.erro || 'Falha ao enviar. Tente de novo.')
+        return
+      }
+      setExpandido(false)
+      setRespostaTexto('')
+      limparRespostaSalva()
+      setImagens([])
+      onChange()
+    } catch (err) {
+      console.error('[garantias] enviar resposta:', err)
+      setErro('Falha ao enviar. Verifique o sinal e tente de novo.')
+    } finally {
+      enviandoRef.current = false
+      setEnviando(false)
     }
-    setExpandido(false)
-    setRespostaTexto('')
-    setImagens([])
-    onChange()
   }
 
   return (
@@ -110,11 +201,11 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
       style={{ borderLeft: `4px solid ${STATUS_COR[g.status]}`, padding: 14 }}
     >
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 14, fontWeight: 800, color: colors.text }}>{g.numero}</span>
         <span
           style={{
-            fontSize: 10,
+            fontSize: 10, textAlign: 'right', maxWidth: '100%',
             fontWeight: 700,
             textTransform: 'uppercase',
             color: STATUS_COR[g.status],
@@ -127,7 +218,7 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
         </span>
       </div>
 
-      <div style={{ fontSize: 13, color: colors.text, marginTop: 4, fontWeight: 600 }}>
+      <div style={{ fontSize: 13, color: colors.text, marginTop: 4, fontWeight: 600, overflowWrap: 'anywhere' }}>
         OS {g.id_ordem} · {g.cliente || 'Cliente'}
       </div>
 
@@ -252,7 +343,7 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
               <AlertTriangle size={13} />
               {pendAberta.tipo === 'bo' ? 'Garantista pediu (B.O.):' : 'A fábrica solicitou:'}
             </strong>
-            {pendAberta.descricao}
+            <span style={{ overflowWrap: 'anywhere' }}>{pendAberta.descricao}</span>
             {pendAberta.exige_visita && (
               <div style={{ marginTop: 4, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4 }}>
                 <MapPin size={12} /> É necessário ir até a propriedade do cliente.
@@ -265,7 +356,7 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
               onClick={() => setExpandido(true)}
               style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                width: '100%', padding: '10px 0', borderRadius: radius.md,
+                width: '100%', padding: '10px 0', minHeight: 44, borderRadius: radius.md,
                 border: 'none', background: '#F59E0B', color: '#fff',
                 fontSize: 13, fontWeight: 700, cursor: 'pointer',
               }}
@@ -281,7 +372,7 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
                 rows={3}
                 style={{
                   width: '100%', padding: '10px 12px', borderRadius: 10,
-                  border: '2px solid #E5E7EB', fontSize: 13,
+                  border: '2px solid #E5E7EB', fontSize: 16,
                   resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box',
                   background: '#fff', outline: 'none',
                 }}
@@ -290,7 +381,7 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
                 style={{
                   display: 'flex', alignItems: 'center', gap: 6,
                   fontSize: 12, color: colors.textMuted, fontWeight: 600,
-                  cursor: 'pointer', padding: '8px 10px', borderRadius: 8,
+                  cursor: 'pointer', padding: '8px 10px', minHeight: 44, borderRadius: 8,
                   border: `1px dashed ${colors.borderStrong}`, background: '#fff',
                 }}
               >
@@ -312,6 +403,8 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
                       setErro('')
                     }
                     setImagens(todos.filter((f) => f.size <= MAX_MB * 1024 * 1024))
+                    // permite escolher o mesmo arquivo de novo (onChange não dispara sem isso)
+                    e.target.value = ''
                   }}
                 />
               </label>
@@ -322,7 +415,7 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
                   disabled={enviando}
                   style={{
                     flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                    padding: '11px 0', borderRadius: radius.md, border: 'none',
+                    padding: '11px 0', minHeight: 44, borderRadius: radius.md, border: 'none',
                     background: colors.accent, color: '#fff',
                     fontSize: 13, fontWeight: 700, cursor: enviando ? 'default' : 'pointer',
                     opacity: enviando ? 0.7 : 1,
@@ -332,9 +425,12 @@ function GarantiaCard({ g, tecnicoNome, onChange }: { g: GarantiaResumo; tecnico
                   Enviar resposta
                 </button>
                 <button
-                  onClick={() => { setExpandido(false); setRespostaTexto(''); setImagens([]); setErro('') }}
+                  type="button"
+                  aria-label="Cancelar resposta"
+                  disabled={enviando}
+                  onClick={() => { setExpandido(false); setRespostaTexto(''); limparRespostaSalva(); setImagens([]); setErro('') }}
                   style={{
-                    padding: '11px 14px', borderRadius: radius.md, border: 'none',
+                    padding: '11px 14px', minWidth: 44, minHeight: 44, borderRadius: radius.md, border: 'none',
                     background: colors.surfaceAlt, color: colors.textMuted,
                     fontSize: 13, fontWeight: 600, cursor: 'pointer',
                   }}

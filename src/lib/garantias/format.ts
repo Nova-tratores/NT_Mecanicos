@@ -1,7 +1,18 @@
+/**
+ * Converte string de data do banco em Date.
+ * `new Date('YYYY-MM-DD')` é interpretado como UTC e, no Brasil (-03:00),
+ * cai no dia anterior — por isso datas "só dia" são montadas no fuso local.
+ */
+export function parseDataLocal(iso: string | null | undefined): Date | null {
+  if (!iso) return null
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso.trim())
+  const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(iso)
+  return isNaN(d.getTime()) ? null : d
+}
+
 export function fmtData(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return '—'
+  const d = parseDataLocal(iso)
+  if (!d) return '—'
   return d.toLocaleDateString('pt-BR')
 }
 
@@ -15,13 +26,12 @@ export function fmtDataHora(iso: string | null | undefined): string {
 }
 
 export function fmtMoeda(n: number | null | undefined): string {
-  return (n || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+  return (Number(n) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
 }
 
 export function tempoDecorrido(iso: string | null | undefined): string {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (isNaN(d.getTime())) return '—'
+  const d = parseDataLocal(iso)
+  if (!d) return '—'
   const ms = Date.now() - d.getTime()
   const min = Math.floor(ms / 60000)
   if (min < 1) return 'agora'
@@ -33,9 +43,9 @@ export function tempoDecorrido(iso: string | null | undefined): string {
 }
 
 export function diasEntre(aIso: string | null | undefined, bIso?: string | null): number | null {
-  if (!aIso) return null
-  const a = new Date(aIso).getTime()
-  const b = bIso ? new Date(bIso).getTime() : Date.now()
-  if (isNaN(a) || isNaN(b)) return null
-  return Math.max(0, Math.floor((b - a) / 86400000))
+  const a = parseDataLocal(aIso)
+  if (!a) return null
+  const b = bIso ? parseDataLocal(bIso) : new Date()
+  if (!b) return null
+  return Math.max(0, Math.floor((b.getTime() - a.getTime()) / 86400000))
 }

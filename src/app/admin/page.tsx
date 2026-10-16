@@ -30,7 +30,7 @@ export default function AdminHome() {
   const toggleFavorite = (href: string) => {
     setFavorites(prev => {
       const next = prev.includes(href) ? prev.filter(f => f !== href) : [...prev, href]
-      localStorage.setItem(FAVORITES_KEY, JSON.stringify(next))
+      try { localStorage.setItem(FAVORITES_KEY, JSON.stringify(next)) } catch { /* storage indisponível */ }
       return next
     })
   }

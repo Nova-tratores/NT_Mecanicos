@@ -1,25 +1,36 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { requireAdmin } from '../../_lib/auth'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
 )
 
+// JSON malformado em uma única OS derrubava a rota inteira (500)
+function parseLista(v: any): any[] {
+  if (typeof v === 'string') {
+    try { const p = JSON.parse(v); return Array.isArray(p) ? p : [] } catch { return [] }
+  }
+  return Array.isArray(v) ? v : []
+}
+
 function extractChassis(servicos: any): string[] {
-  const servs = typeof servicos === 'string' ? JSON.parse(servicos) : (servicos || [])
+  const servs = parseLista(servicos)
   const r: string[] = []
   for (const s of servs) { const m = (s.desc || '').match(/Chassis:\s*([^|]+)/i); if (m && m[1].trim()) r.push(m[1].trim()) }
   return r
 }
 
 function extractModelo(servicos: any): string {
-  const servs = typeof servicos === 'string' ? JSON.parse(servicos) : (servicos || [])
+  const servs = parseLista(servicos)
   for (const s of servs) { const m = (s.desc || '').match(/Modelo:\s*([^|]+)/i); if (m && m[1].trim()) return m[1].trim() }
   return ''
 }
 
 export async function GET(req: NextRequest) {
+  const auth = await requireAdmin(req)
+  if (auth instanceof NextResponse) return auth
   const nome = req.nextUrl.searchParams.get('nome')
   const empresa = req.nextUrl.searchParams.get('empresa') || 'Nova Tratores'
 
@@ -67,7 +78,7 @@ export async function GET(req: NextRequest) {
     const numPedidos = [...new Set(osDoProj.map(o => o.num_pedido_cli).filter((v: string) => v && /^\d+$/.test(v)))]
     let pvs: any[] = []
     if (numPedidos.length > 0) {
-      const { data } = await supabase.from('portal_nt_clientes_pv').select('*').in('num_pedido', numPedidos)
+      const { data } = await supabase.from('portal_nt_clientes_pv').select('*').in('num_pedido', numPedidos).eq('empresa', empresa)
       pvs = data || []
     }
 
@@ -115,7 +126,7 @@ export async function GET(req: NextRequest) {
     // Servicos
     const servicosLista: any[] = []
     for (const os of osDoProj) {
-      const servs = typeof os.servicos === 'string' ? JSON.parse(os.servicos) : (os.servicos || [])
+      const servs = parseLista(os.servicos)
       for (const s of servs) {
         servicosLista.push({
           num_os: os.num_os, data: os.data_previsao || os.data_inclusao || '',
@@ -130,7 +141,7 @@ export async function GET(req: NextRequest) {
     // Pecas
     const pecasLista: any[] = []
     for (const pv of pvs) {
-      const itens = typeof pv.itens === 'string' ? JSON.parse(pv.itens) : (pv.itens || [])
+      const itens = parseLista(pv.itens)
       for (const it of itens) {
         pecasLista.push({
           num_pv: pv.num_pedido, data: pv.data_previsao || pv.data_inclusao || '',

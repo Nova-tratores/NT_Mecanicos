@@ -1,5 +1,5 @@
 'use client'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { use } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { supabase } from '@/lib/supabase'
@@ -20,48 +20,77 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
   const [showCancelar, setShowCancelar] = useState(false)
   const [justificativaCancelamento, setJustificativaCancelamento] = useState('')
   const [savingCancel, setSavingCancel] = useState(false)
+  const [erroCarga, setErroCarga] = useState(false)
+  // Guardas síncronas contra toque duplo (o disabled só vale após o re-render)
+  const savingRef = useRef(false)
+  const savingCancelRef = useRef(false)
 
   useEffect(() => {
     if (!id) return
+    let vivo = true
+    let timer: ReturnType<typeof setTimeout> | undefined
     const carregar = async () => {
-      const { data } = await supabase
-        .from('mecanico_requisicoes')
-        .select('*')
-        .eq('id', id)
-        .single()
-      const r = data as MecanicoRequisicao
-      setReq(r)
-      if (r) {
-        setNovoMaterial(r.material_solicitado)
-        setNovaQtd(r.quantidade || '')
+      try {
+        // Com sinal fraco a consulta podia ficar pendurada e o spinner nunca saía
+        const { data, error } = await Promise.race([
+          supabase.from('mecanico_requisicoes').select('*').eq('id', id).maybeSingle(),
+          new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), 10000) }),
+        ])
+        if (error) throw error
+        if (!vivo) return
+        const r = (data as MecanicoRequisicao | null) || null
+        setReq(r)
+        if (r) {
+          setNovoMaterial(r.material_solicitado || '')
+          setNovaQtd(r.quantidade || '')
+        }
+      } catch (err) {
+        console.error('[requisicao] carregar:', err)
+        if (vivo) setErroCarga(true)
+      } finally {
+        clearTimeout(timer)
+        if (vivo) setLoading(false)
       }
-      setLoading(false)
     }
     carregar()
+    return () => { vivo = false }
   }, [id])
 
   const handleAtualizar = async () => {
+    if (savingRef.current) return
     if (!req || !novoMaterial.trim()) return
+    savingRef.current = true
     setSaving(true)
-    await supabase
-      .from('mecanico_requisicoes')
-      .update({
-        material_solicitado: novoMaterial.trim(),
-        quantidade: novaQtd.trim() || null,
-        atualizada_pelo_tecnico: true,
-        status: 'atualizada',
-      })
-      .eq('id', req.id)
-    setReq({ ...req, material_solicitado: novoMaterial.trim(), quantidade: novaQtd.trim() || null, status: 'atualizada', atualizada_pelo_tecnico: true })
-    setEditando(false)
-    setSaving(false)
+    try {
+      const { error } = await supabase
+        .from('mecanico_requisicoes')
+        .update({
+          material_solicitado: novoMaterial.trim(),
+          quantidade: novaQtd.trim() || null,
+          atualizada_pelo_tecnico: true,
+          status: 'atualizada',
+        })
+        .eq('id', req.id)
+      // Antes o erro era ignorado e a tela mostrava "atualizada" mesmo sem salvar
+      if (error) throw error
+      setReq({ ...req, material_solicitado: novoMaterial.trim(), quantidade: novaQtd.trim() || null, status: 'atualizada', atualizada_pelo_tecnico: true })
+      setEditando(false)
+    } catch (err) {
+      console.error('[requisicao] atualizar:', err)
+      alert('Não foi possível salvar a atualização. Verifique o sinal e tente novamente.')
+    } finally {
+      savingRef.current = false
+      setSaving(false)
+    }
   }
 
   const handleSolicitarCancelamento = async () => {
+    if (savingCancelRef.current) return
     if (!req || !justificativaCancelamento.trim()) return
+    savingCancelRef.current = true
     setSavingCancel(true)
     try {
-      await supabase
+      const { error: updErr } = await supabase
         .from('mecanico_requisicoes')
         .update({
           cancelamento_solicitado: true,
@@ -69,6 +98,8 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
           cancelamento_status: 'pendente',
         })
         .eq('id', req.id)
+      // supabase-js não lança: sem isso a falha virava "pendente" falso na tela
+      if (updErr) throw updErr
 
       // Notificar admins
       const { data: admins } = await supabase
@@ -98,14 +129,28 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
       setJustificativaCancelamento('')
     } catch (err) {
       console.error(err)
-      alert('Erro ao solicitar cancelamento.')
+      alert('Erro ao solicitar cancelamento. Verifique o sinal e tente novamente.')
     } finally {
+      savingCancelRef.current = false
       setSavingCancel(false)
     }
   }
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
-  if (!req) return <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>Requisicao nao encontrada</div>
+  if (!req) {
+    return (
+      <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>
+        {erroCarga
+          ? 'Não foi possível carregar a requisição. Verifique o sinal e tente novamente.'
+          : 'Requisição não encontrada'}
+        <div style={{ marginTop: 16 }}>
+          <Link href="/requisicoes" style={{ color: '#1E3A5F', fontWeight: 600, textDecoration: 'none' }}>
+            Voltar às Requisições
+          </Link>
+        </div>
+      </div>
+    )
+  }
 
   const st = STATUS_REQUISICAO[req.status as keyof typeof STATUS_REQUISICAO]
   const podeEditar = req.status === 'pendente' || req.status === 'recusada'
@@ -116,7 +161,7 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
       <Link href="/requisicoes" style={{
         display: 'flex', alignItems: 'center', gap: 6,
         color: '#1E3A5F', fontSize: 14, fontWeight: 600,
-        textDecoration: 'none', marginBottom: 16,
+        textDecoration: 'none', marginBottom: 16, minHeight: 44,
       }}>
         <ArrowLeft size={18} /> Voltar
       </Link>
@@ -125,8 +170,8 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
       <div style={{
         background: '#1E3A5F', borderRadius: 16, padding: 16, color: '#fff', marginBottom: 16,
       }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: 18, fontWeight: 700 }}>Requisicao #{req.id}</span>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 18, fontWeight: 700 }}>Requisição #{req.id}</span>
           <span style={{
             fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 8,
             background: 'rgba(255,255,255,0.2)',
@@ -158,7 +203,7 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
         <div style={{ background: '#fff', borderRadius: 14, padding: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
           <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 4 }}>Material Solicitado</div>
-          <div style={{ fontSize: 14, fontWeight: 600 }}>{req.material_solicitado}</div>
+          <div style={{ fontSize: 14, fontWeight: 600, overflowWrap: 'anywhere' }}>{req.material_solicitado}</div>
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
@@ -167,7 +212,7 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
             <div style={{ fontSize: 14, fontWeight: 600 }}>{req.quantidade || '-'}</div>
           </div>
           <div style={{ background: '#fff', borderRadius: 14, padding: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
-            <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 4 }}>Urgencia</div>
+            <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 4 }}>Urgência</div>
             <div style={{
               fontSize: 14, fontWeight: 600,
               color: req.urgencia === 'urgente' ? '#DC2626' : '#1F2937',
@@ -180,7 +225,7 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
         {req.motivo && (
           <div style={{ background: '#fff', borderRadius: 14, padding: 16, boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
             <div style={{ fontSize: 12, color: '#9CA3AF', marginBottom: 4 }}>Motivo</div>
-            <div style={{ fontSize: 14, lineHeight: 1.5 }}>{req.motivo}</div>
+            <div style={{ fontSize: 14, lineHeight: 1.5, overflowWrap: 'anywhere' }}>{req.motivo}</div>
           </div>
         )}
 
@@ -202,7 +247,7 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
               border: '2px solid #1E3A5F', cursor: 'pointer', marginTop: 8,
             }}
           >
-            <RefreshCw size={16} /> Atualizar Requisicao
+            <RefreshCw size={16} /> Atualizar Requisição
           </button>
         )}
 
@@ -213,7 +258,7 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
             border: '1px solid #3B82F6', marginTop: 8,
           }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>
-              Atualizar Requisicao
+              Atualizar Requisição
             </div>
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 12, fontWeight: 600, color: '#374151', display: 'block', marginBottom: 4 }}>
@@ -224,8 +269,8 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
                 onChange={(e) => setNovoMaterial(e.target.value)}
                 rows={3}
                 style={{
-                  width: '100%', padding: '10px 14px', borderRadius: 10,
-                  border: '1.5px solid #E5E7EB', fontSize: 14, outline: 'none', resize: 'vertical',
+                  width: '100%', padding: '10px 14px', borderRadius: 10, boxSizing: 'border-box',
+                  border: '1.5px solid #E5E7EB', fontSize: 16, outline: 'none', resize: 'vertical',
                 }}
               />
             </div>
@@ -238,8 +283,8 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
                 value={novaQtd}
                 onChange={(e) => setNovaQtd(e.target.value)}
                 style={{
-                  width: '100%', padding: '10px 14px', borderRadius: 10,
-                  border: '1.5px solid #E5E7EB', fontSize: 14, outline: 'none',
+                  width: '100%', padding: '10px 14px', borderRadius: 10, boxSizing: 'border-box',
+                  border: '1.5px solid #E5E7EB', fontSize: 16, outline: 'none',
                 }}
               />
             </div>
@@ -299,7 +344,7 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
                   : 'Cancelamento pendente de aprovação'}
               </span>
             </div>
-            <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.5 }}>
+            <div style={{ fontSize: 13, color: '#374151', lineHeight: 1.5, overflowWrap: 'anywhere' }}>
               <strong>Justificativa:</strong> {req.cancelamento_justificativa}
             </div>
           </div>
@@ -341,7 +386,7 @@ export default function RequisicaoDetalhe({ params }: { params: Promise<{ id: st
                 rows={3}
                 style={{
                   width: '100%', padding: '10px 14px', borderRadius: 10,
-                  border: '1.5px solid #FECACA', fontSize: 14, outline: 'none',
+                  border: '1.5px solid #FECACA', fontSize: 16, outline: 'none',
                   resize: 'vertical', boxSizing: 'border-box',
                 }}
               />

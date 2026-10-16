@@ -2,9 +2,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { colors, shadow } from '@/lib/ui'
+import { dataLocalISO } from '@/lib/tecnico-utils'
 import {
   Headset, Plus, Search, X, Clock, AlertTriangle, Loader2, ChevronDown,
-  Wrench, RotateCcw, Truck, Calculator, CalendarDays, User,
+  Wrench, RotateCcw, Truck, Calculator, CalendarDays, User, WifiOff, RefreshCw,
 } from 'lucide-react'
 
 interface SAT {
@@ -32,15 +33,26 @@ const STATUS_CONFIG: Record<string, { label: string; cor: string }> = {
   cancelado: { label: 'Cancelado', cor: '#6B7280' },
 }
 
+// Data pura (YYYY-MM-DD) vira meia-noite UTC no new Date() → no Brasil mostrava
+// o dia anterior e marcava "ATRASADO" no próprio dia limite. Ancora no fuso local.
+function parseData(iso: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso) ? new Date(iso + 'T12:00:00') : new Date(iso)
+}
+
 function fmtData(iso: string) {
   if (!iso) return ''
-  return new Date(iso).toLocaleDateString('pt-BR')
+  const d = parseData(iso)
+  return isNaN(d.getTime()) ? '' : d.toLocaleDateString('pt-BR')
 }
 
 function isAtrasado(sat: SAT) {
   if (!sat.data_limite) return false
   if (sat.status === 'concluido' || sat.status === 'cancelado') return false
-  return new Date(sat.data_limite) < new Date(new Date().toDateString())
+  return sat.data_limite.slice(0, 10) < dataLocalISO()
+}
+
+function statusCfg(status: string) {
+  return STATUS_CONFIG[status] || { label: status || '—', cor: '#6B7280' }
 }
 
 function primeiroNome(nome: string) {
@@ -58,18 +70,33 @@ export default function SatDigital({ userId, userName }: Props) {
   const [tab, setTab] = useState<'aberto' | 'andamento' | 'concluido' | 'cancelado'>('aberto')
   const [showModal, setShowModal] = useState(false)
   const [selectedSat, setSelectedSat] = useState<SAT | null>(null)
+  const [erroCarga, setErroCarga] = useState(false)
+  const [cancelando, setCancelando] = useState(false)
 
-  const carregar = useCallback(async () => {
-    setLoading(true)
+  // Recarrega sem piscar o spinner (realtime chama isto a cada mudança)
+  const carregar = useCallback(async (mostrarSpinner = false) => {
+    if (mostrarSpinner) setLoading(true)
     try {
       const res = await fetch('/api/sat')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setSats(Array.isArray(data) ? data : [])
-    } catch (e) { console.error(e) }
-    setLoading(false)
+      setErroCarga(false)
+    } catch (e) {
+      console.error(e)
+      setErroCarga(true)
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
-  useEffect(() => { carregar() }, [carregar])
+  useEffect(() => { carregar(true) }, [carregar])
+
+  useEffect(() => {
+    const onOnline = () => carregar()
+    window.addEventListener('online', onOnline)
+    return () => window.removeEventListener('online', onOnline)
+  }, [carregar])
 
   // Realtime
   useEffect(() => {
@@ -89,29 +116,39 @@ export default function SatDigital({ userId, userName }: Props) {
   }
 
   const cancelar = async (sat: SAT) => {
+    if (cancelando) return
     if (!confirm(`Cancelar SAT do cliente "${sat.cliente_nome}"?`)) return
-    await fetch('/api/sat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ acao: 'cancelar', id: sat.id, cancelado_por_nome: userName }) })
-    setSelectedSat(null)
-    await carregar()
+    setCancelando(true)
+    try {
+      const res = await fetch('/api/sat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acao: 'cancelar', id: sat.id, cancelado_por_nome: userName }) })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setSelectedSat(null)
+      await carregar()
+    } catch (e) {
+      console.error(e)
+      alert('Não foi possível cancelar o SAT. Verifique a conexão e tente novamente.')
+    } finally {
+      setCancelando(false)
+    }
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ width: 42, height: 42, borderRadius: 12, background: '#FEF3C7', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+          <div style={{ width: 42, height: 42, borderRadius: 12, background: '#FEF3C7', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             <Headset size={22} color="#D97706" />
           </div>
-          <div>
+          <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 20, fontWeight: 800, color: colors.text }}>SAT Digital</div>
             <div style={{ fontSize: 12, color: colors.textMuted }}>Solicitações de atendimento</div>
           </div>
         </div>
         <button onClick={() => setShowModal(true)} style={{
-          display: 'flex', alignItems: 'center', gap: 5, padding: '9px 14px', borderRadius: 10,
-          border: 'none', background: '#1E3A5F', color: '#fff', fontSize: 12, fontWeight: 700,
+          display: 'flex', alignItems: 'center', gap: 5, padding: '10px 16px', borderRadius: 10, minHeight: 44, flexShrink: 0,
+          border: 'none', background: '#1E3A5F', color: '#fff', fontSize: 14, fontWeight: 700,
         }}>
           <Plus size={15} /> Novo
         </button>
@@ -124,7 +161,7 @@ export default function SatDigital({ userId, userName }: Props) {
           const count = counts[key]
           return (
             <button key={key} onClick={() => setTab(key)} style={{
-              flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', fontSize: 10, fontWeight: 700,
+              flex: 1, minWidth: 0, padding: '8px 2px', minHeight: 44, borderRadius: 8, border: 'none', fontSize: 10, fontWeight: 700,
               background: tab === key ? cfg.cor : 'transparent',
               color: tab === key ? '#fff' : colors.textMuted,
               display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, transition: 'all .15s',
@@ -139,12 +176,27 @@ export default function SatDigital({ userId, userName }: Props) {
       {/* Loading */}
       {loading && <div style={{ padding: 30, textAlign: 'center' }}><Loader2 size={24} className="spinner" color="#1E3A5F" /></div>}
 
+      {/* Erro de rede: não fingir "Nenhum SAT" */}
+      {!loading && erroCarga && sats.length === 0 && (
+        <div style={{ textAlign: 'center', padding: 28, background: colors.surface, borderRadius: 14, border: `1px solid ${colors.border}` }}>
+          <WifiOff size={30} color={colors.textSubtle} style={{ margin: '0 auto 10px', display: 'block' }} />
+          <div style={{ fontSize: 14, fontWeight: 700, color: colors.text, marginBottom: 4 }}>Não consegui carregar os SATs</div>
+          <div style={{ fontSize: 12, color: colors.textMuted, marginBottom: 14 }}>Verifique a conexão e tente de novo.</div>
+          <button onClick={() => carregar(true)} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 20px', borderRadius: 12,
+            border: 'none', background: '#1E3A5F', color: '#fff', fontSize: 14, fontWeight: 700,
+          }}>
+            <RefreshCw size={15} /> Tentar de novo
+          </button>
+        </div>
+      )}
+
       {/* Cards */}
-      {!loading && (
+      {!loading && !(erroCarga && sats.length === 0) && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {filtrados.length === 0 && (
             <div style={{ textAlign: 'center', padding: 30, color: colors.textSubtle, fontSize: 12, background: colors.surfaceAlt, borderRadius: 12, border: `1px solid ${colors.border}` }}>
-              Nenhum SAT {STATUS_CONFIG[tab].label.toLowerCase()}
+              Nenhum SAT {statusCfg(tab).label.toLowerCase()}
             </div>
           )}
 
@@ -158,7 +210,7 @@ export default function SatDigital({ userId, userName }: Props) {
                 background: colors.surface, borderRadius: 14, padding: '14px',
                 border: `1px solid ${atrasado ? '#FCA5A5' : colors.border}`,
                 boxShadow: shadow.sm, cursor: 'pointer',
-                borderLeft: `4px solid ${STATUS_CONFIG[sat.status].cor}`,
+                borderLeft: `4px solid ${statusCfg(sat.status).cor}`,
               }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
                   <div style={{
@@ -217,28 +269,28 @@ export default function SatDigital({ userId, userName }: Props) {
           <div style={{
             position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 2000,
             background: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20,
-            boxShadow: '0 -4px 20px rgba(0,0,0,0.15)', maxHeight: '70vh', overflowY: 'auto',
-            padding: '12px 16px 28px',
+            boxShadow: '0 -4px 20px rgba(0,0,0,0.15)', maxHeight: '80vh', overflowY: 'auto', overscrollBehavior: 'contain',
+            padding: '12px 16px calc(28px + env(safe-area-inset-bottom, 0px))',
           }}>
             <div style={{ width: 36, height: 4, borderRadius: 2, background: '#D1D5DB', margin: '0 auto 14px' }} />
 
             {/* Header */}
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
               <div style={{
-                width: 44, height: 44, borderRadius: 12,
+                width: 44, height: 44, borderRadius: 12, flexShrink: 0,
                 background: (TIPOS[selectedSat.tipo]?.cor || '#6B7280') + '15',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
                 {(() => { const Icon = TIPOS[selectedSat.tipo]?.icon || Wrench; return <Icon size={22} color={TIPOS[selectedSat.tipo]?.cor || '#6B7280'} /> })()}
               </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 16, fontWeight: 800, color: colors.text }}>{selectedSat.cliente_nome}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 16, fontWeight: 800, color: colors.text, overflowWrap: 'anywhere' }}>{selectedSat.cliente_nome}</div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 3 }}>
                   <span style={{
                     fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 5,
-                    background: STATUS_CONFIG[selectedSat.status].cor + '15',
-                    color: STATUS_CONFIG[selectedSat.status].cor,
-                  }}>{STATUS_CONFIG[selectedSat.status].label}</span>
+                    background: statusCfg(selectedSat.status).cor + '15',
+                    color: statusCfg(selectedSat.status).cor,
+                  }}>{statusCfg(selectedSat.status).label}</span>
                   <span style={{
                     fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 5,
                     background: (TIPOS[selectedSat.tipo]?.cor || '#6B7280') + '15',
@@ -246,8 +298,8 @@ export default function SatDigital({ userId, userName }: Props) {
                   }}>{TIPOS[selectedSat.tipo]?.label || selectedSat.tipo}</span>
                 </div>
               </div>
-              <button onClick={() => setSelectedSat(null)} style={{ background: 'none', border: 'none', padding: 4 }}>
-                <X size={18} color="#9CA3AF" />
+              <button onClick={() => setSelectedSat(null)} aria-label="Fechar" style={{ background: 'none', border: 'none', width: 44, height: 44, margin: -10, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <X size={20} color="#9CA3AF" />
               </button>
             </div>
 
@@ -285,12 +337,13 @@ export default function SatDigital({ userId, userName }: Props) {
 
             {/* Cancel button - only for creator, only if not concluded/cancelled */}
             {selectedSat.criado_por === userId && (selectedSat.status === 'aberto' || selectedSat.status === 'andamento') && (
-              <button onClick={() => cancelar(selectedSat)} style={{
+              <button onClick={() => cancelar(selectedSat)} disabled={cancelando} style={{
+                opacity: cancelando ? 0.6 : 1,
                 width: '100%', padding: 14, borderRadius: 12, border: `1px solid ${colors.dangerBorder}`,
                 background: colors.surface, fontSize: 13, fontWeight: 700, color: colors.danger,
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
               }}>
-                <X size={15} /> Cancelar SAT
+                {cancelando ? <Loader2 size={15} className="spinner" /> : <X size={15} />} {cancelando ? 'Cancelando...' : 'Cancelar SAT'}
               </button>
             )}
 
@@ -318,9 +371,9 @@ export default function SatDigital({ userId, userName }: Props) {
 
 function DetailRow({ label, value, highlight }: { label: string; value: string; highlight?: boolean }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12 }}>
-      <span style={{ color: colors.textSubtle, fontWeight: 600 }}>{label}</span>
-      <span style={{ color: highlight ? '#DC2626' : colors.text, fontWeight: 600 }}>{value}</span>
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: 12 }}>
+      <span style={{ color: colors.textSubtle, fontWeight: 600, flexShrink: 0 }}>{label}</span>
+      <span style={{ color: highlight ? '#DC2626' : colors.text, fontWeight: 600, textAlign: 'right', minWidth: 0, overflowWrap: 'anywhere' }}>{value}</span>
     </div>
   )
 }
@@ -339,7 +392,12 @@ function CriarSatModal({ userId, userName, onClose, onCreated }: {
   const [buscando, setBuscando] = useState(false)
   const [salvando, setSalvando] = useState(false)
   const [showResults, setShowResults] = useState(false)
-  const debounceRef = useRef<any>(null)
+  const [erro, setErro] = useState('')
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const buscaSeqRef = useRef(0)
+  const salvandoRef = useRef(false)
+
+  useEffect(() => () => { if (debounceRef.current) clearTimeout(debounceRef.current) }, [])
 
   const buscarClientes = (termo: string) => {
     setClienteNome(termo)
@@ -347,13 +405,15 @@ function CriarSatModal({ userId, userName, onClose, onCreated }: {
     if (debounceRef.current) clearTimeout(debounceRef.current)
     if (termo.length < 2) { setResultados([]); return }
     debounceRef.current = setTimeout(async () => {
+      // Resposta lenta de uma busca antiga não pode sobrescrever a mais nova
+      const seq = ++buscaSeqRef.current
       setBuscando(true)
       try {
         const res = await fetch(`/api/sat?busca=${encodeURIComponent(termo)}`)
-        const data = await res.json()
-        setResultados(Array.isArray(data) ? data : [])
-      } catch { setResultados([]) }
-      setBuscando(false)
+        const data = res.ok ? await res.json() : []
+        if (seq === buscaSeqRef.current) setResultados(Array.isArray(data) ? data : [])
+      } catch { if (seq === buscaSeqRef.current) setResultados([]) }
+      if (seq === buscaSeqRef.current) setBuscando(false)
     }, 300)
   }
 
@@ -366,21 +426,34 @@ function CriarSatModal({ userId, userName, onClose, onCreated }: {
   }
 
   const salvar = async () => {
-    if (!clienteNome || !tipo) return
+    if (!clienteNome || !tipo || salvandoRef.current) return
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setErro('Sem conexão. Os dados continuam aqui — tente quando o sinal voltar.')
+      return
+    }
+    salvandoRef.current = true
     setSalvando(true)
+    setErro('')
     try {
-      await fetch('/api/sat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await fetch('/api/sat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           acao: 'criar', cliente_nome: clienteNome, cliente_endereco: clienteEndereco,
           cliente_cnpj: clienteCnpj, tipo, descricao, data_limite: dataLimite || null,
           criado_por: userId, criado_por_nome: userName,
         }) })
+      // Antes fechava o modal mesmo com erro do servidor → SAT perdido sem aviso
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       onCreated()
-    } catch (e) { console.error(e) }
-    setSalvando(false)
+    } catch (e) {
+      console.error(e)
+      setErro('Não foi possível abrir o SAT. Verifique a conexão e tente novamente.')
+    } finally {
+      salvandoRef.current = false
+      setSalvando(false)
+    }
   }
 
-  const hoje = new Date().toISOString().slice(0, 10)
+  const hoje = dataLocalISO()
 
   return (
     <>
@@ -390,8 +463,8 @@ function CriarSatModal({ userId, userName, onClose, onCreated }: {
       <div style={{
         position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 2000,
         background: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20,
-        boxShadow: '0 -4px 20px rgba(0,0,0,0.15)', maxHeight: '85vh', overflowY: 'auto',
-        padding: '12px 16px 28px',
+        boxShadow: '0 -4px 20px rgba(0,0,0,0.15)', maxHeight: '85vh', overflowY: 'auto', overscrollBehavior: 'contain',
+        padding: '12px 16px calc(28px + env(safe-area-inset-bottom, 0px))',
       }}>
         <div style={{ width: 36, height: 4, borderRadius: 2, background: '#D1D5DB', margin: '0 auto 14px' }} />
         <div style={{ fontSize: 18, fontWeight: 800, color: colors.text, marginBottom: 16 }}>Novo SAT</div>
@@ -404,7 +477,7 @@ function CriarSatModal({ userId, userName, onClose, onCreated }: {
             <input value={clienteNome} onChange={e => buscarClientes(e.target.value)}
               placeholder="Buscar cliente por nome ou CNPJ..."
               style={{
-                width: '100%', padding: '11px 14px 11px 36px', borderRadius: 10, fontSize: 14,
+                width: '100%', padding: '11px 36px 11px 36px', borderRadius: 10, fontSize: 16,
                 border: `1px solid ${colors.borderStrong}`, background: '#FAFAFA',
                 boxSizing: 'border-box', fontFamily: 'inherit',
               }} />
@@ -417,7 +490,7 @@ function CriarSatModal({ userId, userName, onClose, onCreated }: {
             }}>
               {resultados.map(c => (
                 <div key={c.id} onClick={() => selecionarCliente(c)} style={{
-                  padding: '10px 14px', cursor: 'pointer', borderBottom: `1px solid ${colors.border}`,
+                  padding: '12px 14px', cursor: 'pointer', borderBottom: `1px solid ${colors.border}`,
                 }}>
                   <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>{c.nome}</div>
                   <div style={{ fontSize: 10, color: colors.textSubtle }}>{c.cnpj}{c.cidade ? ` · ${c.cidade}` : ''}</div>
@@ -456,9 +529,9 @@ function CriarSatModal({ userId, userName, onClose, onCreated }: {
           <label style={{ fontSize: 11, fontWeight: 700, color: colors.textSubtle, textTransform: 'uppercase', display: 'block', marginBottom: 4 }}>Data limite</label>
           <input type="date" value={dataLimite} min={hoje} onChange={e => setDataLimite(e.target.value)}
             style={{
-              width: '100%', padding: '11px 14px', borderRadius: 10, fontSize: 14,
+              width: '100%', padding: '11px 14px', borderRadius: 10, fontSize: 16,
               border: `1px solid ${colors.borderStrong}`, background: '#FAFAFA',
-              boxSizing: 'border-box', fontFamily: 'inherit',
+              boxSizing: 'border-box', fontFamily: 'inherit', minHeight: 46,
             }} />
         </div>
 
@@ -468,11 +541,15 @@ function CriarSatModal({ userId, userName, onClose, onCreated }: {
           <textarea value={descricao} onChange={e => setDescricao(e.target.value)}
             rows={3} placeholder="Descreva o serviço solicitado..."
             style={{
-              width: '100%', padding: '11px 14px', borderRadius: 10, fontSize: 14,
+              width: '100%', padding: '11px 14px', borderRadius: 10, fontSize: 16,
               border: `1px solid ${colors.borderStrong}`, background: '#FAFAFA',
               boxSizing: 'border-box', fontFamily: 'inherit', resize: 'vertical',
             }} />
         </div>
+
+        {erro && (
+          <div style={{ fontSize: 12, color: colors.danger, fontWeight: 600, marginBottom: 12 }}>{erro}</div>
+        )}
 
         {/* Actions */}
         <div style={{ display: 'flex', gap: 8 }}>

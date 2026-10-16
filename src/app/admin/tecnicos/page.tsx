@@ -1,6 +1,6 @@
 'use client'
-import { useState, useEffect, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { supabase, authHeaders } from '@/lib/supabase'
 import { useAdmin } from '@/hooks/useAdmin'
 import { colors, shadow } from '@/lib/ui'
 import {
@@ -81,45 +81,62 @@ export default function TecnicosPage() {
     return meses
   }
 
-  const carregarLista = useCallback(async () => {
-    setLoading(true)
+  const [erro, setErro] = useState<string | null>(null)
+  // Evita duplo clique nas ações de alerta/ocorrência
+  const [acaoEmAndamento, setAcaoEmAndamento] = useState(false)
+
+  const carregarLista = useCallback(async (silencioso = false) => {
+    if (!silencioso) setLoading(true)
+    setErro(null)
     try {
-      const res = await fetch('/api/mecanicos')
+      const res = await fetch('/api/mecanicos', { headers: await authHeaders() })
       if (!res.ok) throw new Error('Erro')
       const data = await res.json()
       setMecanicos(data?.mecanicos ? data.mecanicos : Array.isArray(data) ? data : [])
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      console.error(e)
+      if (!silencioso) setErro('Não foi possível carregar os mecânicos. Verifique a conexão e tente novamente.')
+    }
     setLoading(false)
   }, [])
 
-  const carregarDetalhe = useCallback(async (nome: string) => {
-    setLoading(true)
-    setMesesAnteriores({})
-    setMesExpandido(null)
+  const carregarDetalhe = useCallback(async (nome: string, silencioso = false) => {
+    if (!silencioso) {
+      setLoading(true)
+      setMesesAnteriores({})
+      setMesExpandido(null)
+    }
+    setErro(null)
     try {
-      const res = await fetch(`/api/mecanicos?nome=${encodeURIComponent(nome)}`)
+      const res = await fetch(`/api/mecanicos?nome=${encodeURIComponent(nome)}`, { headers: await authHeaders() })
       if (!res.ok) throw new Error('Erro')
       const data = await res.json()
+      if (!data) throw new Error('Mecânico não encontrado')
       setDetalhe(data)
-      setSecao('servicos')
-    } catch (e) { console.error(e) }
+      if (!silencioso) setSecao('servicos')
+    } catch (e) {
+      console.error(e)
+      if (!silencioso) setErro('Não foi possível carregar os dados do mecânico. Tente novamente.')
+    }
     setLoading(false)
   }, [])
 
   const carregarMesAnterior = async (nome: string, mes: string) => {
-    if (mesesAnteriores[mes] && mesesAnteriores[mes] !== 'loading') {
+    if (mesesAnteriores[mes] === 'loading') return
+    if (mesesAnteriores[mes]) {
       setMesExpandido(mesExpandido === mes ? null : mes)
       return
     }
     setMesExpandido(mes)
     setMesesAnteriores(prev => ({ ...prev, [mes]: 'loading' }))
     try {
-      const res = await fetch(`/api/mecanicos?nome=${encodeURIComponent(nome)}&mes=${mes}`)
-      if (res.ok) {
-        const data = await res.json()
-        setMesesAnteriores(prev => ({ ...prev, [mes]: data }))
-      }
+      const res = await fetch(`/api/mecanicos?nome=${encodeURIComponent(nome)}&mes=${mes}`, { headers: await authHeaders() })
+      if (!res.ok) throw new Error('Erro')
+      const data = await res.json()
+      if (!data) throw new Error('Sem dados')
+      setMesesAnteriores(prev => ({ ...prev, [mes]: data }))
     } catch {
+      // Antes um !res.ok deixava o mês preso em "Carregando..." para sempre
       setMesesAnteriores(prev => { const n = { ...prev }; delete n[mes]; return n })
       setMesExpandido(null)
     }
@@ -127,37 +144,76 @@ export default function TecnicosPage() {
 
   useEffect(() => { carregarLista() }, [carregarLista])
 
+  // Ref para o realtime não recriar o canal a cada mudança de `detalhe`
+  // e recarregar em silêncio (sem spinner de página inteira), com debounce
+  // para rajadas de eventos (ex.: vários alertas inseridos de uma vez).
+  const detalheNomeRef = useRef<string | null>(null)
+  useEffect(() => { detalheNomeRef.current = detalhe?.tecnico_nome || null }, [detalhe])
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const recarregar = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        const nome = detalheNomeRef.current
+        if (nome) carregarDetalhe(nome, true)
+        else carregarLista(true)
+      }, 800)
+    }
     const ch = supabase.channel('mecanicos-admin-rt')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mecanico_alertas' }, () => { if (detalhe) carregarDetalhe(detalhe.tecnico_nome); else carregarLista() })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'mecanico_ocorrencias' }, () => { if (detalhe) carregarDetalhe(detalhe.tecnico_nome); else carregarLista() })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mecanico_alertas' }, recarregar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'mecanico_ocorrencias' }, recarregar)
       .subscribe()
-    return () => { supabase.removeChannel(ch) }
-  }, [detalhe, carregarDetalhe, carregarLista])
+    return () => { if (timer) clearTimeout(timer); supabase.removeChannel(ch) }
+  }, [carregarDetalhe, carregarLista])
+
+  const postMecanicos = async (payload: Record<string, unknown>): Promise<boolean> => {
+    try {
+      const res = await fetch('/api/mecanicos', { method: 'POST', headers: { ...(await authHeaders()), 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      if (!res.ok) {
+        const j = await res.json().catch(() => null)
+        alert(`Erro: ${j?.error || res.status}`)
+        return false
+      }
+      return true
+    } catch {
+      alert('Erro de conexão. Tente novamente.')
+      return false
+    }
+  }
 
   const criarOcorrencia = async () => {
-    if (!detalhe || !novaOc.titulo.trim() || !admin) return
+    if (!detalhe || !novaOc.titulo.trim() || !admin || salvando) return
     setSalvando(true)
-    await fetch('/api/mecanicos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'criar_ocorrencia', tecnico_nome: detalhe.tecnico_nome, tipo: novaOc.tipo, titulo: novaOc.titulo, descricao: novaOc.descricao, criado_por: admin.tecnico_nome || 'admin' }) })
+    const ok = await postMecanicos({ acao: 'criar_ocorrencia', tecnico_nome: detalhe.tecnico_nome, tipo: novaOc.tipo, titulo: novaOc.titulo, descricao: novaOc.descricao, criado_por: admin.tecnico_nome || 'admin' })
+    setSalvando(false)
+    if (!ok) return
     setNovaOc({ tipo: 'geral', titulo: '', descricao: '' })
     setShowNovaOc(false)
-    setSalvando(false)
-    carregarDetalhe(detalhe.tecnico_nome)
+    carregarDetalhe(detalhe.tecnico_nome, true)
+  }
+
+  const executarAcao = async (payload: Record<string, unknown>) => {
+    if (acaoEmAndamento) return
+    setAcaoEmAndamento(true)
+    try {
+      const ok = await postMecanicos(payload)
+      if (ok && detalhe) await carregarDetalhe(detalhe.tecnico_nome, true)
+    } finally {
+      setAcaoEmAndamento(false)
+    }
   }
 
   const justificarAlerta = async (id: number) => {
+    if (acaoEmAndamento) return
     const motivo = prompt('Motivo da justificativa:')
     if (motivo === null) return
-    await fetch('/api/mecanicos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'justificar_alerta', id, admin_comentario: motivo, admin_nome: admin?.tecnico_nome || 'admin' }) })
-    if (detalhe) carregarDetalhe(detalhe.tecnico_nome)
+    await executarAcao({ acao: 'justificar_alerta', id, admin_comentario: motivo, admin_nome: admin?.tecnico_nome || 'admin' })
   }
   const alertaParaOcorrencia = async (id: number) => {
-    await fetch('/api/mecanicos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'alerta_para_ocorrencia', id, admin_nome: admin?.tecnico_nome || 'admin' }) })
-    if (detalhe) carregarDetalhe(detalhe.tecnico_nome)
+    await executarAcao({ acao: 'alerta_para_ocorrencia', id, admin_nome: admin?.tecnico_nome || 'admin' })
   }
   const atualizarOcorrencia = async (id: number, status: string) => {
-    await fetch('/api/mecanicos', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'atualizar_ocorrencia', id, status }) })
-    if (detalhe) carregarDetalhe(detalhe.tecnico_nome)
+    await executarAcao({ acao: 'atualizar_ocorrencia', id, status })
   }
 
   const toggleOs = (osNum: string) => setExpandedOs(prev => { const n = new Set(prev); n.has(osNum) ? n.delete(osNum) : n.add(osNum); return n })
@@ -356,8 +412,8 @@ export default function TecnicosPage() {
                         )}
                         {isPendente && (
                           <div style={{ display: 'flex', gap: 6 }}>
-                            <BtnOutline color="#059669" onClick={() => justificarAlerta(a.id)}><CheckCircle size={11} /> Justificar</BtnOutline>
-                            <BtnOutline color="#DC2626" onClick={() => alertaParaOcorrencia(a.id)}><AlertTriangle size={11} /> Virar Ocorrência</BtnOutline>
+                            <BtnOutline color="#059669" disabled={acaoEmAndamento} onClick={() => justificarAlerta(a.id)}><CheckCircle size={11} /> Justificar</BtnOutline>
+                            <BtnOutline color="#DC2626" disabled={acaoEmAndamento} onClick={() => alertaParaOcorrencia(a.id)}><AlertTriangle size={11} /> Virar Ocorrência</BtnOutline>
                           </div>
                         )}
                       </div>
@@ -415,9 +471,9 @@ export default function TecnicosPage() {
                     <div style={{ fontSize: 13, fontWeight: 500, color: colors.text }}>{oc.descricao}</div>
                     {statusLabel === 'pendente' && (
                       <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
-                        <BtnOutline color="#059669" onClick={() => atualizarOcorrencia(oc.id, 'resolvida')}><CheckCircle size={11} /> Resolver</BtnOutline>
-                        <BtnOutline color="#2563EB" onClick={() => atualizarOcorrencia(oc.id, 'justificada')}><FileText size={11} /> Justificar</BtnOutline>
-                        <BtnOutline color="#6B7280" onClick={() => atualizarOcorrencia(oc.id, 'cancelada')}><XCircle size={11} /> Cancelar</BtnOutline>
+                        <BtnOutline color="#059669" disabled={acaoEmAndamento} onClick={() => atualizarOcorrencia(oc.id, 'resolvida')}><CheckCircle size={11} /> Resolver</BtnOutline>
+                        <BtnOutline color="#2563EB" disabled={acaoEmAndamento} onClick={() => atualizarOcorrencia(oc.id, 'justificada')}><FileText size={11} /> Justificar</BtnOutline>
+                        <BtnOutline color="#6B7280" disabled={acaoEmAndamento} onClick={() => atualizarOcorrencia(oc.id, 'cancelada')}><XCircle size={11} /> Cancelar</BtnOutline>
                       </div>
                     )}
                   </div>
@@ -525,12 +581,20 @@ export default function TecnicosPage() {
         </div>
       </div>
 
+      {erro && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 10, color: '#991B1B', fontSize: 12, fontWeight: 500 }}>
+          <AlertTriangle size={14} style={{ flexShrink: 0 }} />
+          <span style={{ flex: 1 }}>{erro}</span>
+          <button onClick={() => carregarLista()} style={{ padding: '5px 10px', borderRadius: 6, border: '1px solid #FCA5A5', background: '#fff', color: '#991B1B', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>Tentar novamente</button>
+        </div>
+      )}
+
       {mecanicos.length === 0 ? (
         <EmptyState text="Nenhum mecânico cadastrado" />
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {mecanicos.map(m => {
-            const initials = m.nome.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase()
+            const initials = (m.nome || '').split(' ').map(n => n[0] || '').join('').slice(0, 2).toUpperCase()
             const pendentes = m.alertas_pendentes + m.ocorrencias_pendentes
             return (
               <div key={m.id} onClick={() => carregarDetalhe(m.tecnico_nome)} style={{
@@ -596,11 +660,11 @@ function TextBlock({ label, text, bg, border }: { label: string; text: string; b
   )
 }
 
-function BtnOutline({ color, onClick, children }: { color: string; onClick: () => void; children: React.ReactNode }) {
+function BtnOutline({ color, onClick, disabled, children }: { color: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
   return (
-    <button onClick={e => { e.stopPropagation(); onClick() }} style={{
+    <button disabled={disabled} onClick={e => { e.stopPropagation(); if (!disabled) onClick() }} style={{
       padding: '5px 10px', borderRadius: 6, border: `1px solid ${color}40`, background: `${color}08`,
-      color, fontSize: 11, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+      color, fontSize: 11, fontWeight: 600, cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.5 : 1, display: 'flex', alignItems: 'center', gap: 4,
     }}>
       {children}
     </button>

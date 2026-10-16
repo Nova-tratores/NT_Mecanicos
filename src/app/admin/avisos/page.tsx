@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabase, fetchAll, authHeaders } from '@/lib/supabase'
 import { useAdmin } from '@/hooks/useAdmin'
 import { colors, shadow } from '@/lib/ui'
 import {
@@ -64,16 +64,20 @@ export default function AvisosPage() {
   const carregar = useCallback(async () => {
     if (!admin) return
     setLoading(true)
+    try {
 
     const { data: avisosData } = await supabase.from('portal_avisos').select('*').order('created_at', { ascending: false })
     if (!avisosData) { setLoading(false); return }
 
     const ids = avisosData.map(a => a.id)
 
-    const [{ data: anexosData }, { data: lidosData }] = await Promise.all([
-      ids.length ? supabase.from('portal_avisos_anexos').select('*').in('aviso_id', ids) : { data: [] },
-      ids.length ? supabase.from('portal_avisos_lidos').select('aviso_id, user_id, lido_at').in('aviso_id', ids) : { data: [] },
-    ])
+    // Sem .in(ids) (URL gigante com muitos avisos) e paginado (limite de 1000 linhas)
+    const [anexosData, lidosData] = ids.length
+      ? await Promise.all([
+        fetchAll<Anexo>('portal_avisos_anexos', { select: '*' }),
+        fetchAll<{ aviso_id: string; user_id: string; lido_at: string }>('portal_avisos_lidos', { select: 'aviso_id, user_id, lido_at' }),
+      ])
+      : [[], []]
 
     // Nomes dos users que confirmaram
     const userIds = [...new Set((lidosData || []).map((l: any) => l.user_id))]
@@ -84,8 +88,9 @@ export default function AvisosPage() {
     ;(usersData || []).forEach((u: any) => { userNomeMap[u.id] = u.nome })
 
     // Confirmações dos mecânicos
-    const { data: mecConfData } = await supabase
-      .from('avisos_gerais_confirmados').select('aviso_id, tecnico_nome, confirmado_at').order('confirmado_at')
+    const mecConfData = await fetchAll<{ aviso_id: number; tecnico_nome: string; confirmado_at: string }>('avisos_gerais_confirmados', {
+      select: 'aviso_id, tecnico_nome, confirmado_at', order: { column: 'confirmado_at' },
+    })
 
     // Mapear portal_avisos -> avisos_gerais pelo titulo
     const { data: avisosGeraisData } = await supabase.from('avisos_gerais').select('id, titulo').eq('ativo', true)
@@ -113,7 +118,11 @@ export default function AvisosPage() {
       confs.sort((x, y) => new Date(x.quando).getTime() - new Date(y.quando).getTime())
       return { ...a, anexos: anexosMap[a.id] || [], lidos_count: confs.length, confirmacoes: confs }
     }))
-    setLoading(false)
+    } catch (e) {
+      console.error('[avisos]', e)
+    } finally {
+      setLoading(false)
+    }
   }, [admin])
 
   useEffect(() => { carregar() }, [carregar])
@@ -126,20 +135,25 @@ export default function AvisosPage() {
   }, [carregar])
 
   const enviarAviso = async () => {
-    if (!titulo.trim() || !conteudo.trim() || !admin) return
+    if (!titulo.trim() || !conteudo.trim() || !admin || enviando) return
     setEnviando(true)
+    try {
 
     const { data: aviso, error } = await supabase.from('portal_avisos').insert({
       titulo: titulo.trim(), conteudo: conteudo.trim(), prioridade,
       criado_por: admin.id, criado_por_nome: admin.tecnico_nome || 'Admin',
     }).select().single()
 
-    if (error || !aviso) { setEnviando(false); return }
+    if (error || !aviso) { alert('Erro ao publicar o aviso. Tente novamente.'); return }
 
+    const falhas: string[] = []
     for (const file of arquivos) {
-      const path = `avisos/${aviso.id}/${Date.now()}_${file.name}`
+      // Nome com acento/espaço/símbolo é rejeitado pelo Storage (anexo sumia sem aviso)
+      const nomeSeguro = file.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9._-]/g, '_')
+      const path = `avisos/${aviso.id}/${Date.now()}_${nomeSeguro}`
       const { error: upErr } = await supabase.storage.from('anexos').upload(path, file)
-      if (!upErr) {
+      if (upErr) falhas.push(file.name)
+      else {
         const { data: urlData } = supabase.storage.from('anexos').getPublicUrl(path)
         await supabase.from('portal_avisos_anexos').insert({
           aviso_id: aviso.id, nome_arquivo: file.name, url: urlData.publicUrl,
@@ -178,7 +192,7 @@ export default function AvisosPage() {
     // Push notification pra todos (inclusive admins)
     fetch('/api/push/send-all', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
       body: JSON.stringify({
         titulo: `Aviso: ${titulo.trim()}`,
         descricao: conteudo.trim().slice(0, 120),
@@ -186,18 +200,27 @@ export default function AvisosPage() {
       }),
     }).catch(() => {})
 
-    setTitulo(''); setConteudo(''); setPrioridade('normal'); setArquivos([]); setShowModal(false); setEnviando(false)
+    setTitulo(''); setConteudo(''); setPrioridade('normal'); setArquivos([]); setShowModal(false)
+    if (falhas.length) alert(`Aviso publicado, mas estes anexos falharam: ${falhas.join(', ')}`)
     carregar()
+    } catch (e) {
+      console.error('[avisos] enviar', e)
+      alert('Erro de conexão ao publicar o aviso.')
+    } finally {
+      setEnviando(false)
+    }
   }
 
   const toggleAtivo = async (aviso: Aviso) => {
-    await supabase.from('portal_avisos').update({ ativo: !aviso.ativo, updated_at: new Date().toISOString() }).eq('id', aviso.id)
+    const { error } = await supabase.from('portal_avisos').update({ ativo: !aviso.ativo, updated_at: new Date().toISOString() }).eq('id', aviso.id)
+    if (error) alert('Erro ao atualizar o aviso.')
     carregar()
   }
 
   const excluirAviso = async (id: string) => {
     if (!confirm('Excluir este aviso?')) return
-    await supabase.from('portal_avisos').delete().eq('id', id)
+    const { error } = await supabase.from('portal_avisos').delete().eq('id', id)
+    if (error) alert('Erro ao excluir o aviso.')
     carregar()
   }
 

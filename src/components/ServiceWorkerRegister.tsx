@@ -1,48 +1,11 @@
 'use client';
 
 import { useEffect } from 'react';
-import { useCurrentUser } from '@/hooks/useCurrentUser';
 
-const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '';
-
-function urlBase64ToUint8Array(base64String: string) {
-  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
-  const raw = atob(base64);
-  const arr = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
-  return arr;
-}
-
-async function subscribePush(reg: ServiceWorkerRegistration, tecnicoNome: string) {
-  try {
-    const permission = await Notification.requestPermission();
-    if (permission !== 'granted') return;
-
-    let sub = await reg.pushManager.getSubscription();
-    if (!sub) {
-      sub = await reg.pushManager.subscribe({
-        userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
-      });
-    }
-
-    await fetch('/api/push/subscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        tecnico_nome: tecnicoNome,
-        subscription: sub.toJSON(),
-      }),
-    });
-  } catch (err) {
-    console.warn('Push subscription failed:', err);
-  }
-}
-
+// A inscricao de notificacoes fica no PushPermissionBanner (layout do tecnico)
+// e no AdminLayoutInner. Aqui NAO usamos useCurrentUser: este componente roda
+// em todas as paginas e o hook redireciona admin para /admin.
 export default function ServiceWorkerRegister() {
-  const { user } = useCurrentUser();
-
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return;
 
@@ -59,55 +22,28 @@ export default function ServiceWorkerRegister() {
       return;
     }
 
-    // Quando um SW novo assume o controle, recarrega UMA vez para pegar a versao
-    // nova na hora (evita ficar preso na versao antiga em cache). So recarrega se
-    // ja havia um controller antes (nao no primeiro registro).
-    const jaTinhaController = !!navigator.serviceWorker.controller;
-    let recarregando = false;
-    const onControllerChange = () => {
-      if (recarregando || !jaTinhaController) return;
-      recarregando = true;
-      window.location.reload();
-    };
-    navigator.serviceWorker.addEventListener('controllerchange', onControllerChange);
-
+    // A versao nova e baixada em segundo plano e passa a valer na proxima vez
+    // que o app abrir. Nao recarregamos a tela no meio do uso (o tecnico pode
+    // estar preenchendo uma OS).
+    let intervalo: ReturnType<typeof setInterval> | undefined;
     navigator.serviceWorker
-      .register('/sw.js')
+      .register('/sw.js', { updateViaCache: 'none' })
       .then((reg) => {
-        reg.update();
-        setInterval(() => reg.update(), 60 * 60 * 1000);
+        intervalo = setInterval(() => { if (navigator.onLine) reg.update().catch(() => {}); }, 60 * 60 * 1000);
 
-        reg.addEventListener('updatefound', () => {
-          const newWorker = reg.installing;
-          if (newWorker) {
-            newWorker.addEventListener('statechange', () => {
-              if (newWorker.state === 'activated' && navigator.serviceWorker.controller) {
-                console.log('[SW] Nova versão ativada. Será usada no próximo acesso.');
-              }
-            });
-          }
-        });
-
-        const pushNome = user?.nome_pos || user?.tecnico_nome
-        if (pushNome && pushNome !== 'Usuário' && VAPID_PUBLIC_KEY) {
-          subscribePush(reg, pushNome);
-        }
-
-        // Periodic Background Sync — atualiza dados mesmo com app fechado
+        // Periodic Background Sync — atualiza dados mesmo com app fechado (Android)
         if ('periodicSync' in reg) {
-          (reg as any).periodicSync.register('bg-prefetch', {
-            minInterval: 2 * 60 * 60 * 1000, // a cada 2 horas
-          }).catch(() => { /* browser pode negar */ });
+          (reg as unknown as { periodicSync: { register: (tag: string, o: object) => Promise<void> } })
+            .periodicSync.register('bg-prefetch', { minInterval: 2 * 60 * 60 * 1000 })
+            .catch(() => { /* browser pode negar */ });
         }
       })
       .catch((err) => {
         console.error('SW registration failed:', err);
       });
 
-    return () => {
-      navigator.serviceWorker.removeEventListener('controllerchange', onControllerChange);
-    };
-  }, [user]);
+    return () => { if (intervalo) clearInterval(intervalo); };
+  }, []);
 
   return null;
 }

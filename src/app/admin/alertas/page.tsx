@@ -18,6 +18,11 @@ const SEV_STYLE: Record<AlertaSeveridade, { bg: string; color: string; label: st
   baixa: { bg: '#F3F4F6', color: '#374151', label: 'Baixa' },
 }
 
+// Data local (YYYY-MM-DD). toISOString() usa UTC e após 21h já é o dia seguinte
+function hojeLocal(d: Date = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export default function AlertasPage() {
   const { admin } = useAdmin()
   const [aba, setAba] = useState<Aba>('alertas')
@@ -38,11 +43,14 @@ export default function AlertasPage() {
   // Form manual
   const [mostrarFormManual, setMostrarFormManual] = useState(false)
   const [manual, setManual] = useState({
-    tecnico_nome: '', descricao: '', pontos: 3, data_referencia: new Date().toISOString().split('T')[0], id_ordem: '',
+    tecnico_nome: '', descricao: '', pontos: 3, data_referencia: hojeLocal(), id_ordem: '',
   })
+
+  const [salvando, setSalvando] = useState(false)
 
   const carregar = useCallback(async () => {
     setLoading(true)
+    try {
     const [{ data: alertaData }, { data: histData }, { data: tecData }] = await Promise.all([
       supabase.from('mecanico_alertas').select('*').eq('status', 'pendente').order('created_at', { ascending: false }),
       supabase.from('mecanico_alertas').select('*').eq('status', 'ignorado').order('resolvido_em', { ascending: false }).limit(200),
@@ -51,13 +59,18 @@ export default function AlertasPage() {
     setAlertas((alertaData || []) as MecanicoAlerta[])
     setHistorico((histData || []) as MecanicoAlerta[])
     setTecnicos((tecData || []).map(t => t.tecnico_nome))
-    setLoading(false)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
   }, [])
 
   const carregarOcorrencias = useCallback(async () => {
     const [ano, mes] = filtroMes.split('-').map(Number)
     const inicio = `${ano}-${String(mes).padStart(2, '0')}-01`
-    const fim = `${ano}-${String(mes + 1 > 12 ? 1 : mes + 1).padStart(2, '0')}-01`
+    // Dezembro: o fim é 01/01 do ANO SEGUINTE (antes usava o mesmo ano → lista vazia)
+    const fim = mes === 12 ? `${ano + 1}-01-01` : `${ano}-${String(mes + 1).padStart(2, '0')}-01`
     let q = supabase.from('mecanico_ocorrencias').select('*')
       .gte('data_referencia', inicio).lt('data_referencia', fim)
       .order('created_at', { ascending: false })
@@ -70,30 +83,38 @@ export default function AlertasPage() {
   useEffect(() => { if (aba === 'ocorrencias') carregarOcorrencias() }, [aba, carregarOcorrencias])
 
   const executarVarredura = async () => {
+    if (varrendo) return
     setVarrendo(true)
-    const hoje = new Date()
-    const inicio = new Date(hoje)
-    inicio.setDate(inicio.getDate() - 7)
-    const novos = await varrerAlertas(
-      inicio.toISOString().split('T')[0],
-      hoje.toISOString().split('T')[0]
-    )
-    await carregar()
-    setVarrendo(false)
-    alert(`Varredura concluída: ${novos} novo(s) alerta(s) encontrado(s)`)
+    try {
+      const hoje = new Date()
+      const inicio = new Date(hoje)
+      inicio.setDate(inicio.getDate() - 7)
+      const novos = await varrerAlertas(hojeLocal(inicio), hojeLocal(hoje))
+      await carregar()
+      alert(`Varredura concluída: ${novos} novo(s) alerta(s) encontrado(s)`)
+    } catch (e) {
+      console.error(e)
+      alert('Erro na varredura. Tente novamente.')
+    } finally {
+      setVarrendo(false)
+    }
   }
 
   const resolverAlerta = async (alerta: MecanicoAlerta, virarOcorrencia: boolean) => {
+    if (salvando) return
+    setSalvando(true)
+    try {
     const novoStatus = virarOcorrencia ? 'ocorrencia' : 'ignorado'
-    await supabase.from('mecanico_alertas').update({
+    const { error: updErr } = await supabase.from('mecanico_alertas').update({
       status: novoStatus,
       admin_nome: admin?.tecnico_nome || 'Admin',
       admin_comentario: comentario || null,
       resolvido_em: new Date().toISOString(),
     }).eq('id', alerta.id)
+    if (updErr) throw updErr
 
     if (virarOcorrencia) {
-      await supabase.from('mecanico_ocorrencias').insert({
+      const { error: insErr } = await supabase.from('mecanico_ocorrencias').insert({
         tecnico_nome: alerta.tecnico_nome,
         tipo: alerta.tipo,
         descricao: alerta.descricao + (comentario ? ` | Admin: ${comentario}` : ''),
@@ -103,12 +124,19 @@ export default function AlertasPage() {
         id_alerta: alerta.id,
         admin_nome: admin?.tecnico_nome || 'Admin',
       })
+      if (insErr) throw insErr
     }
 
     setExpandido(null)
     setComentario('')
     await carregar()
     if (aba === 'ocorrencias') await carregarOcorrencias()
+    } catch (e) {
+      console.error(e)
+      alert('Erro ao salvar. Tente novamente.')
+    } finally {
+      setSalvando(false)
+    }
   }
 
   const criarManual = async () => {
@@ -116,7 +144,9 @@ export default function AlertasPage() {
       alert('Preencha técnico e descrição')
       return
     }
-    await supabase.from('mecanico_ocorrencias').insert({
+    if (salvando) return
+    setSalvando(true)
+    const { error } = await supabase.from('mecanico_ocorrencias').insert({
       tecnico_nome: manual.tecnico_nome,
       tipo: 'manual',
       descricao: manual.descricao,
@@ -126,7 +156,9 @@ export default function AlertasPage() {
       id_alerta: null,
       admin_nome: admin?.tecnico_nome || 'Admin',
     })
-    setManual({ tecnico_nome: '', descricao: '', pontos: 3, data_referencia: new Date().toISOString().split('T')[0], id_ordem: '' })
+    setSalvando(false)
+    if (error) { alert('Erro ao registrar ocorrência.'); return }
+    setManual({ tecnico_nome: '', descricao: '', pontos: 3, data_referencia: hojeLocal(), id_ordem: '' })
     setMostrarFormManual(false)
     await carregarOcorrencias()
   }
@@ -266,7 +298,7 @@ export default function AlertasPage() {
                         />
 
                         <div style={{ display: 'flex', gap: 8 }}>
-                          <button onClick={() => resolverAlerta(a, true)} style={{
+                          <button onClick={() => resolverAlerta(a, true)} disabled={salvando} style={{ opacity: salvando ? 0.6 : 1,
                             flex: 1, padding: '10px 0', borderRadius: 10,
                             background: '#DC2626', color: '#fff', border: 'none',
                             fontSize: 13, fontWeight: 700, cursor: 'pointer',
@@ -274,7 +306,7 @@ export default function AlertasPage() {
                           }}>
                             <Shield size={14} /> Virar Ocorrencia (-{a.pontos} pts)
                           </button>
-                          <button onClick={() => resolverAlerta(a, false)} style={{
+                          <button onClick={() => resolverAlerta(a, false)} disabled={salvando} style={{ opacity: salvando ? 0.6 : 1,
                             flex: 1, padding: '10px 0', borderRadius: 10,
                             background: '#6B7280', color: '#fff', border: 'none',
                             fontSize: 13, fontWeight: 700, cursor: 'pointer',
@@ -360,7 +392,7 @@ export default function AlertasPage() {
                       placeholder="OS-001" style={inputStyle} />
                   </div>
                 </div>
-                <button onClick={criarManual} style={{
+                <button onClick={criarManual} disabled={salvando} style={{ opacity: salvando ? 0.6 : 1,
                   padding: '12px 0', borderRadius: 10, background: '#C41E2A', color: '#fff',
                   border: 'none', fontSize: 14, fontWeight: 700, cursor: 'pointer',
                 }}>

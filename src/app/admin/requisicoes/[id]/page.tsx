@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
+import { supabase, authHeaders } from '@/lib/supabase'
 import { STATUS_REQUISICAO } from '@/lib/constants'
 import type { MecanicoRequisicao } from '@/lib/types'
 import { ArrowLeft, Check, X, User, AlertTriangle, Unlink } from 'lucide-react'
@@ -17,45 +17,51 @@ export default function RequisicaoDetailPage() {
   useEffect(() => {
     if (!id) return
     const carregar = async () => {
-      const { data } = await supabase
-        .from('mecanico_requisicoes')
-        .select('*')
-        .eq('id', id)
-        .single()
-      setReq(data as MecanicoRequisicao)
-      setLoading(false)
+      try {
+        const { data } = await supabase
+          .from('mecanico_requisicoes')
+          .select('*')
+          .eq('id', id)
+          .maybeSingle()
+        setReq(data as MecanicoRequisicao | null)
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setLoading(false)
+      }
     }
     carregar()
   }, [id])
 
   const atualizarStatus = async (novoStatus: 'aprovada' | 'recusada') => {
-    if (!req) return
+    if (!req || saving) return
     setSaving(true)
     try {
-      await supabase
+      const { error: updErr } = await supabase
         .from('mecanico_requisicoes')
         .update({
           status: novoStatus,
           data_aprovacao: novoStatus === 'aprovada' ? new Date().toISOString() : null,
         })
         .eq('id', req.id)
+      if (updErr) throw updErr
 
       await supabase.from('mecanico_notificacoes').insert({
         tecnico_nome: req.tecnico_nome,
         tipo: 'requisicao_' + novoStatus,
         titulo: `Requisição #${req.id} ${novoStatus}`,
-        descricao: req.material_solicitado.substring(0, 100),
+        descricao: (req.material_solicitado || '').substring(0, 100),
         link: `/requisicoes/${req.id}`,
         lida: false,
       })
 
       fetch('/api/push/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tecnico_nome: req.tecnico_nome,
           titulo: `Requisição #${req.id} ${novoStatus}`,
-          descricao: req.material_solicitado.substring(0, 100),
+          descricao: (req.material_solicitado || '').substring(0, 100),
           link: `/requisicoes/${req.id}`,
         }),
       }).catch(() => {})
@@ -71,17 +77,18 @@ export default function RequisicaoDetailPage() {
   }
 
   const aprovarCancelamento = async () => {
-    if (!req) return
+    if (!req || saving) return
     setSaving(true)
     try {
       // Atualizar status da requisição para cancelada
-      await supabase
+      const { error: updErr } = await supabase
         .from('mecanico_requisicoes')
         .update({
           cancelamento_status: 'aprovado',
           status: 'cancelada',
         })
         .eq('id', req.id)
+      if (updErr) throw updErr
 
       // Desvincular da tabela Requisicao do POS (limpar ordem_servico)
       if (req.id_ordem) {
@@ -90,7 +97,7 @@ export default function RequisicaoDetailPage() {
           .from('Requisicao')
           .select('id, obs')
           .eq('ordem_servico', req.id_ordem)
-          .ilike('titulo', `%${req.material_solicitado.substring(0, 30)}%`)
+          .ilike('titulo', `%${(req.material_solicitado || '').substring(0, 30)}%`)
 
         if (reqPOS && reqPOS.length > 0) {
           await supabase
@@ -111,7 +118,7 @@ export default function RequisicaoDetailPage() {
 
       fetch('/api/push/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tecnico_nome: req.tecnico_nome,
           titulo: `Cancelamento aprovado - Req #${req.id}`,
@@ -131,13 +138,14 @@ export default function RequisicaoDetailPage() {
   }
 
   const recusarCancelamento = async () => {
-    if (!req) return
+    if (!req || saving) return
     setSaving(true)
     try {
-      await supabase
+      const { error: updErr } = await supabase
         .from('mecanico_requisicoes')
         .update({ cancelamento_status: 'recusado' })
         .eq('id', req.id)
+      if (updErr) throw updErr
 
       await supabase.from('mecanico_notificacoes').insert({
         tecnico_nome: req.tecnico_nome,
@@ -150,7 +158,7 @@ export default function RequisicaoDetailPage() {
 
       fetch('/api/push/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...(await authHeaders()), 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tecnico_nome: req.tecnico_nome,
           titulo: `Cancelamento recusado - Req #${req.id}`,

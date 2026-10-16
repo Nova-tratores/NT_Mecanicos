@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { requireUser } from '@/app/api/_lib/auth'
 
 const API_URL = process.env.ROTAEXATA_API_URL || 'https://api.rotaexata.com.br'
 const EMAIL = process.env.ROTAEXATA_EMAIL || ''
@@ -38,6 +39,10 @@ async function getToken(): Promise<string> {
  * placa vem no formato "MONTANA - FHY8D25" ou "FHY8D25"
  */
 export async function POST(req: NextRequest) {
+  // Usa as credenciais da Rota Exata do servidor: só para usuário logado
+  const auth = await requireUser(req)
+  if (auth instanceof NextResponse) return auth
+
   try {
     const { tecnico_nome, placa: placaRaw } = await req.json()
     if (!tecnico_nome || !placaRaw) {

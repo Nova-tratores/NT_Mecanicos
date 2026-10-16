@@ -1,12 +1,17 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { enviarPushPara } from '@/lib/push-server'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
 )
 
-export async function POST(req: NextRequest) {
+/**
+ * Rede de segurança chamada quando o app abre. O envio principal das OS novas
+ * é feito pelo Portal (servidor) ao criar/atribuir a OS — funciona com o app fechado.
+ */
+export async function POST() {
   try {
     const ontem = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
@@ -20,17 +25,17 @@ export async function POST(req: NextRequest) {
 
     if (!recentOS?.length) return NextResponse.json({ notified: 0 })
 
-    const links = recentOS.map(os => `/os/${os.Id_Ordem}`)
+    // O trigger antigo do banco grava o link com /preencher — considera os dois
+    const links = recentOS.flatMap(os => [`/os/${os.Id_Ordem}`, `/os/${os.Id_Ordem}/preencher`])
     const { data: existing } = await supabase
       .from('mecanico_notificacoes')
       .select('tecnico_nome, link')
       .eq('tipo', 'nova_os')
       .in('link', links)
 
-    const notifiedSet = new Set((existing || []).map(n => `${n.tecnico_nome}::${n.link}`))
+    const notifiedSet = new Set((existing || []).map(n => `${n.tecnico_nome}::${String(n.link).replace(/\/preencher$/, '')}`))
 
     let count = 0
-    const baseUrl = new URL(req.url).origin
 
     for (const os of recentOS) {
       const tecnicos = [os.Os_Tecnico, os.Os_Tecnico2].filter(Boolean)
@@ -48,15 +53,12 @@ export async function POST(req: NextRequest) {
           lida: false,
         })
 
-        fetch(`${baseUrl}/api/push/send`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tecnico_nome: tec,
-            titulo: `Nova OS #${os.Id_Ordem}`,
-            descricao: `Cliente: ${cliente}`,
-            link: `/os/${os.Id_Ordem}`,
-          }),
+        // Mesma tag do webhook: o celular mostra um aviso só, mesmo se os dois enviarem
+        await enviarPushPara([tec], {
+          titulo: `Nova OS #${os.Id_Ordem}`,
+          descricao: `Cliente: ${cliente}`,
+          link: `/os/${os.Id_Ordem}`,
+          tag: `nova-os-${os.Id_Ordem}`,
         }).catch(() => {})
 
         count++

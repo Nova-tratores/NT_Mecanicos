@@ -27,6 +27,24 @@ interface MovimentacaoPPV {
   TipoMovimento: string
 }
 
+// Valores vêm como texto ('150,00', 'R$ 1.234,56'): Number() dava NaN → somava 0
+function numBR(v: unknown): number {
+  if (typeof v === 'number') return isFinite(v) ? v : 0
+  let s = String(v ?? '').replace(/[^\d,.-]/g, '')
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.')
+  const n = parseFloat(s)
+  return isFinite(n) ? n : 0
+}
+
+// 'YYYY-MM-DD' puro é lido como UTC → em -03:00 mostrava o dia anterior
+function fmtDataBR(v: string | null | undefined): string {
+  if (!v) return '-'
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v)
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`
+  const d = new Date(v)
+  return isNaN(d.getTime()) ? v : d.toLocaleDateString('pt-BR')
+}
+
 export default function OSDetailPage() {
   const { id } = useParams<{ id: string }>()
   const [os, setOs] = useState<OrdemServico | null>(null)
@@ -40,14 +58,18 @@ export default function OSDetailPage() {
   useEffect(() => {
     if (!id) return
     const carregar = async () => {
-      const [{ data: osData }, { data: execData }, { data: osTec }, { data: reqData }] = await Promise.all([
+     try {
+      const [{ data: osData }, { data: execData }, { data: osTecRows }, { data: reqData }] = await Promise.all([
         supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single(),
         supabase.from('os_tecnico_execucao').select('*').eq('id_ordem', id).order('created_at', { ascending: false }),
-        supabase.from('Ordem_Servico_Tecnicos').select('JustificativaAtraso, Status, TemAlmoco, ValorAlmoco, FotoAlmoco, Fazenda, Cidade, FotoHorimetro, FotoChassis, FotoFrente, FotoDireita, FotoEsquerda, FotoTraseira, FotoVolante, FotoFalha1, FotoFalha2, FotoFalha3, FotoFalha4, FotoPecaNova1, FotoPecaNova2, FotoPecaInstalada1, FotoPecaInstalada2').eq('Ordem_Servico', id).maybeSingle(),
+        supabase.from('Ordem_Servico_Tecnicos').select('JustificativaAtraso, Status, TemAlmoco, ValorAlmoco, FotoAlmoco, Fazenda, Cidade, FotoHorimetro, FotoChassis, FotoFrente, FotoDireita, FotoEsquerda, FotoTraseira, FotoVolante, FotoFalha1, FotoFalha2, FotoFalha3, FotoFalha4, FotoPecaNova1, FotoPecaNova2, FotoPecaInstalada1, FotoPecaInstalada2').eq('Ordem_Servico', id),
         supabase.from('Requisicao').select('id, titulo, tipo, solicitante, data, status, valor_despeza, Chassis_Modelo, ordem_servico').eq('ordem_servico', id).order('data', { ascending: false }),
       ])
       setOs(osData)
       setExecucoes(execData || [])
+      // Pode haver mais de uma linha por OS (maybeSingle dava erro e escondia tudo): prioriza a enviada
+      const tecRows = (osTecRows || []) as Record<string, unknown>[]
+      const osTec = tecRows.find(r => r.Status === 'enviado') || tecRows[0] || null
       if (osTec) setOsTecnica(osTec)
       setRequisicoes((reqData || []) as RequisicaoOS[])
 
@@ -59,8 +81,11 @@ export default function OSDetailPage() {
           .eq('Id_PPV', osData.ID_PPV)
         setPecasPPV((movs || []) as MovimentacaoPPV[])
       }
-
+     } catch (e) {
+      console.error('[admin/os/id]', e)
+     } finally {
       setLoading(false)
+     }
     }
     carregar()
   }, [id])
@@ -70,10 +95,11 @@ export default function OSDetailPage() {
     setDesvinculando(reqId)
     try {
       // Desvincular no POS
-      await supabase
+      const { error } = await supabase
         .from('Requisicao')
         .update({ ordem_servico: null })
         .eq('id', reqId)
+      if (error) throw error
 
       // Remover da lista local
       setRequisicoes(prev => prev.filter(r => r.id !== reqId))
@@ -170,7 +196,7 @@ export default function OSDetailPage() {
       {(() => {
         const valorOS = Number(os.Valor_Total || 0)
         const valorPPV = pecasPPV.reduce((acc, p) => acc + (Number(p.Preco) || 0) * (Number(p.Qtde) || 1), 0)
-        const valorReq = requisicoes.reduce((acc, r) => acc + (Number(r.valor_despeza) || 0), 0)
+        const valorReq = requisicoes.reduce((acc, r) => acc + numBR(r.valor_despeza), 0)
         const valorTotal = valorOS + valorPPV + valorReq
         return (
           <div style={{
@@ -282,16 +308,16 @@ export default function OSDetailPage() {
                 </div>
                 <div style={{ fontSize: 14, fontWeight: 600, color: '#1F2937' }}>{r.titulo}</div>
                 <div style={{ fontSize: 12, color: '#6B7280', marginTop: 4 }}>
-                  {r.tipo} • {r.solicitante} • {new Date(r.data).toLocaleDateString('pt-BR')}
+                  {r.tipo} • {r.solicitante} • {fmtDataBR(r.data)}
                 </div>
                 {r.Chassis_Modelo && (
                   <div style={{ fontSize: 12, color: '#6B7280', marginTop: 2 }}>
                     Chassis/Modelo: {r.Chassis_Modelo}
                   </div>
                 )}
-                {r.valor_despeza && Number(r.valor_despeza) > 0 && (
+                {r.valor_despeza && numBR(r.valor_despeza) > 0 && (
                   <div style={{ fontSize: 13, fontWeight: 700, color: '#7C3AED', marginTop: 4 }}>
-                    R$ {Number(r.valor_despeza).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                    R$ {numBR(r.valor_despeza).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                   </div>
                 )}
               </div>
@@ -321,7 +347,7 @@ export default function OSDetailPage() {
                   {ex.tecnico_nome}
                 </span>
                 <span style={{ fontSize: 11, color: '#6B7280' }}>
-                  {new Date(ex.data_execucao).toLocaleDateString('pt-BR')}
+                  {fmtDataBR(ex.data_execucao)}
                 </span>
               </div>
               <div style={{ fontSize: 12, color: '#374151' }}>

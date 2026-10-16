@@ -24,9 +24,10 @@ export default function PerfilPage() {
   const initials = (admin?.tecnico_nome || 'A').split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase()
 
   const trocarFoto = async (file: File) => {
-    if (!admin) return
+    if (!admin || uploading) return
     setUploading(true)
     setMsg(null)
+    try {
 
     const ext = file.name.split('.').pop() || 'jpg'
     const path = `avatars/${admin.id}/${Date.now()}.${ext}`
@@ -34,7 +35,6 @@ export default function PerfilPage() {
     const { error: upErr } = await supabase.storage.from('anexos').upload(path, file, { upsert: true })
     if (upErr) {
       setMsg({ tipo: 'err', texto: 'Erro no upload: ' + upErr.message })
-      setUploading(false)
       return
     }
 
@@ -52,15 +52,20 @@ export default function PerfilPage() {
       setAvatarUrl(publicUrl)
       setMsg({ tipo: 'ok', texto: 'Foto atualizada!' })
     }
-    setUploading(false)
+    } catch {
+      setMsg({ tipo: 'err', texto: 'Erro de conexão ao enviar a foto.' })
+    } finally {
+      setUploading(false)
+    }
   }
 
   const trocarSenha = async () => {
     if (novaSenha.length < 6) { setMsg({ tipo: 'err', texto: 'Senha deve ter no mínimo 6 caracteres' }); return }
     if (novaSenha !== confirmSenha) { setMsg({ tipo: 'err', texto: 'As senhas não conferem' }); return }
+    if (salvandoSenha) return
     setSalvandoSenha(true)
     setMsg(null)
-    const { error } = await supabase.auth.updateUser({ password: novaSenha })
+    const { error } = await supabase.auth.updateUser({ password: novaSenha }).catch((e: Error) => ({ error: e }))
     if (error) {
       setMsg({ tipo: 'err', texto: 'Erro: ' + error.message })
     } else {

@@ -1,4 +1,5 @@
 'use client'
+import { authHeaders } from '@/lib/supabase'
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
@@ -42,6 +43,36 @@ interface PontoRota {
   dt_posicao: string
 }
 
+// Centro padrão (região de atuação) quando não há veículo para enquadrar
+const CENTRO_PADRAO: [number, number] = [-22.3, -49.5]
+
+function coordValida(lat: unknown, lng: unknown): boolean {
+  return typeof lat === 'number' && typeof lng === 'number' && Number.isFinite(lat) && Number.isFinite(lng)
+    && !(lat === 0 && lng === 0)
+}
+
+/** Escapa texto vindo do banco antes de injetar em HTML de tooltip do Leaflet. */
+function esc(s: unknown): string {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string))
+}
+
+function horaBR(iso: string | null | undefined): string {
+  if (!iso) return '--'
+  const d = new Date(iso)
+  return Number.isNaN(d.getTime()) ? '--' : d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+}
+
+/** fetch com timeout — em sinal fraco o fetch pode ficar pendurado indefinidamente. */
+async function fetchTimeout(url: string, ms = 15000): Promise<Response> {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), ms)
+  try {
+    return await fetch(url, { signal: ctrl.signal, headers: await authHeaders() })
+  } finally {
+    clearTimeout(t)
+  }
+}
+
 export default function MapaPage() {
   const { user } = useCurrentUser()
   const [veiculos, setVeiculos] = useState<Veiculo[]>([])
@@ -72,6 +103,11 @@ export default function MapaPage() {
   const leafletRef = useRef<any>(null)
   const infracaoMarkerRef = useRef<any>(null)
   const rotaHistoricaRef = useRef<any>(null)
+  const fittedRef = useRef(false)
+  const rotaReqRef = useRef<number | null>(null)
+  // Incrementa a cada criação do mapa Leaflet (é criado de forma assíncrona) — os efeitos
+  // de clientes/deep-link dependem disso em vez de `veiculos`.
+  const [mapVersao, setMapVersao] = useState(0)
 
   // Deep-link: ?placa=X&data=YYYY-MM-DD&infracao=lat,lng — vem do relatório
   const searchParams = useSearchParams()
@@ -94,26 +130,32 @@ export default function MapaPage() {
     else setRefreshing(true)
 
     try {
-      const res = await fetch('/api/veiculos-mapa')
-      if (!res.ok) throw new Error('Erro ao buscar')
+      const res = await fetchTimeout('/api/veiculos-mapa')
+      if (!res.ok) throw new Error('http')
       const data = await res.json()
-      if (Array.isArray(data)) setVeiculos(data)
+      if (Array.isArray(data)) {
+        const validos = (data as Veiculo[]).filter(v => v && coordValida(v.lat, v.lng))
+        setVeiculos(validos)
+        // Mantém o painel do veículo selecionado com os dados atualizados
+        setSelectedVeiculo(sel => sel ? (validos.find(x => x.id === sel.id) || sel) : sel)
+      }
       setErro('')
-    } catch (e: any) {
-      setErro(e.message || 'Erro ao carregar veiculos')
+    } catch {
+      setErro('Não foi possível atualizar os veículos. Verifique sua conexão.')
+    } finally {
+      setLoading(false)
+      setRefreshing(false)
     }
-    setLoading(false)
-    setRefreshing(false)
   }, [])
 
   // Carregar clientes do mapeamento
   const carregarClientes = useCallback(async () => {
     if (!navigator.onLine) return
     try {
-      const res = await fetch('/api/clientes-mapa')
+      const res = await fetchTimeout('/api/clientes-mapa', 20000)
       if (!res.ok) return
       const data = await res.json()
-      if (Array.isArray(data)) setClientes(data)
+      if (Array.isArray(data)) setClientes((data as ClienteMapa[]).filter(c => c && coordValida(c.lat, c.lng)))
     } catch { /* silent */ }
   }, [])
 
@@ -151,19 +193,25 @@ export default function MapaPage() {
   const carregarRota = useCallback(async (v: Veiculo) => {
     if (rotaVeiculoId === v.id) {
       // Toggle off
+      rotaReqRef.current = null
       if (rotaLayerRef.current) { rotaLayerRef.current.remove(); rotaLayerRef.current = null }
       setRotaVeiculoId(null)
+      setLoadingRota(false)
       return
     }
 
+    rotaReqRef.current = v.id
     setLoadingRota(true)
     setRotaVeiculoId(v.id)
     if (rotaLayerRef.current) { rotaLayerRef.current.remove(); rotaLayerRef.current = null }
 
     try {
-      const res = await fetch(`/api/veiculos-mapa/rota?adesaoId=${v.id}`)
-      if (!res.ok) throw new Error('Erro')
-      const pontos: PontoRota[] = await res.json()
+      const res = await fetchTimeout(`/api/veiculos-mapa/rota?adesaoId=${v.id}`)
+      if (!res.ok) throw new Error('http')
+      const json = await res.json()
+      // Usuário já pediu outra rota (ou ocultou) enquanto esta carregava
+      if (rotaReqRef.current !== v.id) return
+      const pontos: PontoRota[] = Array.isArray(json) ? json.filter((p: PontoRota) => p && coordValida(p.lat, p.lng)) : []
 
       if (pontos.length > 1 && mapInstanceRef.current && leafletRef.current) {
         const L = leafletRef.current
@@ -181,7 +229,7 @@ export default function MapaPage() {
         L.circleMarker([primeiro.lat, primeiro.lng], {
           radius: 7, fillColor: '#22C55E', fillOpacity: 1, color: '#fff', weight: 2,
         }).addTo(group).bindTooltip(
-          `Inicio: ${new Date(primeiro.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+          `Início: ${horaBR(primeiro.dt_posicao)}`,
           { permanent: false, direction: 'top' },
         )
 
@@ -190,7 +238,7 @@ export default function MapaPage() {
         L.circleMarker([ultimo.lat, ultimo.lng], {
           radius: 7, fillColor: '#DC2626', fillOpacity: 1, color: '#fff', weight: 2,
         }).addTo(group).bindTooltip(
-          `Atual: ${new Date(ultimo.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+          `Atual: ${horaBR(ultimo.dt_posicao)}`,
           { permanent: false, direction: 'top' },
         )
 
@@ -200,26 +248,56 @@ export default function MapaPage() {
         // Ajustar zoom para a rota
         map.fitBounds(L.latLngBounds(latlngs), { padding: [50, 50] })
       }
-    } catch { /* ignore */ }
-
-    setLoadingRota(false)
+    } catch {
+      if (rotaReqRef.current === v.id) {
+        rotaReqRef.current = null
+        setRotaVeiculoId(null)
+        setErro('Não foi possível carregar a rota. Verifique sua conexão.')
+      }
+    } finally {
+      if (rotaReqRef.current === v.id || rotaReqRef.current === null) setLoadingRota(false)
+    }
   }, [rotaVeiculoId])
 
   // Renderizar mapa
   useEffect(() => {
-    if (!mapRef.current || veiculos.length === 0) return
+    // Cria o mapa mesmo sem veículos (senão clientes e deep-link nunca aparecem)
+    if (loading || !mapRef.current) return
+    let cancelado = false
 
     import('leaflet').then((L) => {
-      if (!mapRef.current) return
+      const container = mapRef.current
+      if (cancelado || !container) return
       leafletRef.current = L
 
+      // O <div> do mapa é desmontado durante loading/offline; se o mapa existente
+      // aponta para um container antigo, descarta e recria no atual.
+      if (mapInstanceRef.current && mapInstanceRef.current.getContainer() !== container) {
+        try { mapInstanceRef.current.remove() } catch { /* container já removido */ }
+        mapInstanceRef.current = null
+        markersRef.current = []
+        clienteMarkersRef.current = []
+        rotaLayerRef.current = null
+        infracaoMarkerRef.current = null
+        rotaHistoricaRef.current = null
+        fittedRef.current = false
+        setRotaVeiculoId(null)
+      }
+
       if (!mapInstanceRef.current) {
-        const map = L.map(mapRef.current, { zoomControl: false })
+        // Evita "Map container is already initialized" em remount do mesmo nó
+        const cont = container as HTMLDivElement & { _leaflet_id?: number }
+        if (cont._leaflet_id) cont._leaflet_id = undefined
+        const map = L.map(container, { zoomControl: false })
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '&copy; OSM',
         }).addTo(map)
         L.control.zoom({ position: 'bottomright' }).addTo(map)
+        // Leaflet precisa de uma view antes de receber markers
+        if (deeplink) map.setView([deeplink.lat, deeplink.lng], 15)
+        else if (veiculos.length === 0) map.setView(CENTRO_PADRAO, 7)
         mapInstanceRef.current = map
+        setMapVersao(n => n + 1) // re-dispara efeitos de clientes/deep-link no mapa novo
       }
 
       const map = mapInstanceRef.current
@@ -243,7 +321,7 @@ export default function MapaPage() {
             box-shadow:0 2px 8px rgba(0,0,0,0.3);
             display:flex;align-items:center;justify-content:center;
             font-size:10px;font-weight:800;color:#fff;
-          ">${v.placa.slice(-4)}</div>`,
+          ">${esc((v.placa || '').slice(-4))}</div>`,
         })
 
         const marker = L.marker([v.lat, v.lng], { icon })
@@ -253,31 +331,37 @@ export default function MapaPage() {
             setPainelAberto(false)
           })
 
-        const tempoAtras = v.dt_posicao
-          ? Math.round((Date.now() - new Date(v.dt_posicao).getTime()) / 60000) : null
+        const msPos = v.dt_posicao ? new Date(v.dt_posicao).getTime() : NaN
+        const tempoAtras = Number.isNaN(msPos) ? null : Math.round((Date.now() - msPos) / 60000)
 
         const tooltipLines = [
-          `<b>${v.placa}</b>`,
-          v.motorista ? `<span style="color:#1E3A5F">${v.motorista}</span>` : '',
-          v.cliente ? `<small>${v.cliente}</small>` : '',
-          isOn ? (isMoving ? `${v.velocidade} km/h` : 'Parado (ligado)') : 'Desligado',
-          tempoAtras !== null ? `<small>${tempoAtras < 2 ? 'Agora' : `${tempoAtras}min atras`}</small>` : '',
+          `<b>${esc(v.placa)}</b>`,
+          v.motorista ? `<span style="color:#1E3A5F">${esc(v.motorista)}</span>` : '',
+          v.cliente ? `<small>${esc(v.cliente)}</small>` : '',
+          isOn ? (isMoving ? `${esc(v.velocidade)} km/h` : 'Parado (ligado)') : 'Desligado',
+          tempoAtras !== null ? `<small>${tempoAtras < 2 ? 'Agora' : `${tempoAtras}min atrás`}</small>` : '',
         ].filter(Boolean)
 
         marker.bindTooltip(tooltipLines.join('<br/>'), { direction: 'top', offset: [0, -20] })
         markersRef.current.push(marker)
       })
 
-      if (bounds.length > 0 && !(markersRef.current as any)._fitted) {
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 })
-        ;(markersRef.current as any)._fitted = true
+      // Enquadra só na primeira carga — antes `_fitted` ficava no array que é
+      // recriado a cada atualização, e o mapa "pulava" de volta a cada 60s.
+      // Com deep-link de infração o foco é o ponto da infração, não a frota.
+      if (bounds.length > 0 && !fittedRef.current) {
+        if (!deeplink) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 })
+        fittedRef.current = true
       }
+    }).catch(() => {
+      if (!cancelado) setErro('Não foi possível carregar o mapa. Verifique sua conexão.')
     })
-  }, [veiculos, rotaVeiculoId])
+    return () => { cancelado = true }
+  }, [veiculos, rotaVeiculoId, loading, offline, deeplink])
 
   // Renderizar clientes no mapa
   useEffect(() => {
-    if (!mapInstanceRef.current || !leafletRef.current) return
+    if (!mapVersao || !mapInstanceRef.current || !leafletRef.current) return
 
     // Limpar markers anteriores
     clienteMarkersRef.current.forEach((m) => m.remove())
@@ -303,23 +387,26 @@ export default function MapaPage() {
       const marker = L.marker([c.lat, c.lng], { icon, zIndexOffset: -100 })
         .addTo(map)
         .bindTooltip(
-          `<b>${c.nome}</b><br/><small>${c.cidade}${c.estado ? ` - ${c.estado}` : ''}</small>`,
+          `<b>${esc(c.nome)}</b><br/><small>${esc(c.cidade)}${c.estado ? ` - ${esc(c.estado)}` : ''}</small>`,
           { direction: 'top', offset: [0, -8] }
         )
 
       clienteMarkersRef.current.push(marker)
     })
-  }, [clientes, showClientes])
+  }, [clientes, showClientes, mapVersao])
 
   useEffect(() => {
     return () => {
-      if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null }
+      if (mapInstanceRef.current) {
+        try { mapInstanceRef.current.remove() } catch { /* já removido */ }
+        mapInstanceRef.current = null
+      }
     }
   }, [])
 
   // Deep-link de infração: foca no ponto + marker pulsante vermelho
   useEffect(() => {
-    if (!deeplink || !mapInstanceRef.current || !leafletRef.current) return
+    if (!deeplink || !mapVersao || !mapInstanceRef.current || !leafletRef.current) return
     const L = leafletRef.current
     const map = mapInstanceRef.current
 
@@ -350,19 +437,24 @@ export default function MapaPage() {
     infracaoMarkerRef.current = marker
 
     // Foca com zoom alto e atrasa pra dar tempo dos tiles carregarem
-    setTimeout(() => map.setView([deeplink.lat, deeplink.lng], 17, { animate: true }), 200)
+    const timer = setTimeout(() => {
+      try { map.setView([deeplink.lat, deeplink.lng], 17, { animate: true }) } catch { /* mapa removido */ }
+    }, 200)
 
     return () => {
+      clearTimeout(timer)
       if (infracaoMarkerRef.current) {
         infracaoMarkerRef.current.remove()
         infracaoMarkerRef.current = null
       }
     }
-  }, [deeplink, veiculos])
+    // Só quando o deep-link ou o mapa mudam — antes dependia de `veiculos` e
+    // re-centralizava (zoom 17) a cada atualização automática de 60s.
+  }, [deeplink, mapVersao])
 
   // Deep-link com placa + data: carrega rota histórica + todas as infrações do dia
   useEffect(() => {
-    if (!deeplink?.placa || !deeplink?.data || !mapInstanceRef.current || !leafletRef.current) return
+    if (!deeplink?.placa || !deeplink?.data || !mapVersao || !mapInstanceRef.current || !leafletRef.current) return
     const L = leafletRef.current
     const map = mapInstanceRef.current
     let cancelled = false
@@ -375,16 +467,20 @@ export default function MapaPage() {
       }
 
       // Busca em paralelo: rota do dia + infrações do dia
+      const dataQ = encodeURIComponent(deeplink.data)
       const [rotaRes, infRes] = await Promise.all([
-        fetch(`/api/rota-historica?placa=${encodeURIComponent(deeplink.placa)}&data=${deeplink.data}`),
-        fetch(`/api/infracoes?placa=${encodeURIComponent(deeplink.placa)}&dataInicio=${deeplink.data}&dataFim=${deeplink.data}`),
+        fetchTimeout(`/api/rota-historica?placa=${encodeURIComponent(deeplink.placa)}&data=${dataQ}`, 20000),
+        fetchTimeout(`/api/infracoes?placa=${encodeURIComponent(deeplink.placa)}&dataInicio=${dataQ}&dataFim=${dataQ}`, 20000),
       ])
       if (cancelled) return
 
-      const rotaJson = rotaRes.ok ? await rotaRes.json() : { pontos: [] }
-      const infJson = infRes.ok ? await infRes.json() : { infracoes: [] }
-      const pontos = (rotaJson.pontos || []) as { lat: number; lng: number; velocidade: number; ignicao: number; dt_posicao: string }[]
-      const infracoes = (infJson.infracoes || []) as { lat: number; lng: number; velocidade: number; maxspeed: number; excesso: number; via: string; hora: string }[]
+      const rotaJson = rotaRes.ok ? await rotaRes.json().catch(() => ({ pontos: [] })) : { pontos: [] }
+      const infJson = infRes.ok ? await infRes.json().catch(() => ({ infracoes: [] })) : { infracoes: [] }
+      if (cancelled) return
+      const pontos = ((Array.isArray(rotaJson?.pontos) ? rotaJson.pontos : []) as { lat: number; lng: number; velocidade: number; ignicao: number; dt_posicao: string }[])
+        .filter(p => p && coordValida(p.lat, p.lng))
+      const infracoes = ((Array.isArray(infJson?.infracoes) ? infJson.infracoes : []) as { lat: number; lng: number; velocidade: number; maxspeed: number; excesso: number; via: string; hora: string }[])
+        .filter(i => i && coordValida(i.lat, i.lng))
 
       if (pontos.length < 2) return
 
@@ -399,7 +495,7 @@ export default function MapaPage() {
       L.circleMarker([ini.lat, ini.lng], {
         radius: 7, fillColor: '#22C55E', fillOpacity: 1, color: '#fff', weight: 2,
       }).addTo(group).bindTooltip(
-        `Início ${new Date(ini.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+        `Início ${horaBR(ini.dt_posicao)}`,
         { permanent: false, direction: 'top' },
       )
 
@@ -408,7 +504,7 @@ export default function MapaPage() {
       L.circleMarker([fim.lat, fim.lng], {
         radius: 7, fillColor: '#374151', fillOpacity: 1, color: '#fff', weight: 2,
       }).addTo(group).bindTooltip(
-        `Fim ${new Date(fim.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`,
+        `Fim ${horaBR(fim.dt_posicao)}`,
         { permanent: false, direction: 'top' },
       )
 
@@ -421,7 +517,7 @@ export default function MapaPage() {
         L.circleMarker([inf.lat, inf.lng], {
           radius: 5, fillColor: '#DC2626', fillOpacity: 0.85, color: '#fff', weight: 1.5,
         }).addTo(group).bindTooltip(
-          `${inf.hora} — ${inf.velocidade}/${inf.maxspeed} km/h (+${inf.excesso}) · ${inf.via}`,
+          `${esc(inf.hora)} — ${esc(inf.velocidade)}/${esc(inf.maxspeed)} km/h (+${esc(inf.excesso)}) · ${esc(inf.via)}`,
           { direction: 'top' },
         )
       }
@@ -435,7 +531,9 @@ export default function MapaPage() {
       // ao redor; pra ver a rota inteira é só dar zoom-out manual.
     }
 
-    carregar()
+    carregar().catch(() => {
+      if (!cancelled) setErro('Não foi possível carregar a rota do dia. Verifique sua conexão.')
+    })
 
     return () => {
       cancelled = true
@@ -444,30 +542,23 @@ export default function MapaPage() {
         rotaHistoricaRef.current = null
       }
     }
-  }, [deeplink, veiculos])
+  }, [deeplink, mapVersao])
 
   // Listas filtradas
   const tecnicos = [...new Map(
     veiculos.filter(v => v.motorista).map(v => [v.motorista, v])
   ).values()]
 
-  const buscaLower = busca.toLowerCase()
-  const tecnicosFiltrados = tecnicos.filter(v =>
-    v.motorista.toLowerCase().includes(buscaLower) ||
-    v.placa.toLowerCase().includes(buscaLower) ||
-    v.cliente.toLowerCase().includes(buscaLower)
-  )
-  const veiculosFiltrados = veiculos.filter(v =>
-    v.placa.toLowerCase().includes(buscaLower) ||
-    v.motorista.toLowerCase().includes(buscaLower) ||
-    (v.descricao || v.modelo).toLowerCase().includes(buscaLower)
-  )
-  const clientesFiltrados = clientes.filter(c =>
-    c.nome.toLowerCase().includes(buscaLower) ||
-    c.cidade.toLowerCase().includes(buscaLower)
-  )
+  // Campos podem vir nulos da API — `(x || '')` evita crash no filtro
+  const buscaLower = busca.trim().toLowerCase()
+  const inc = (x: string | null | undefined) => (x || '').toLowerCase().includes(buscaLower)
+  const tecnicosFiltrados = tecnicos.filter(v => inc(v.motorista) || inc(v.placa) || inc(v.cliente))
+  const veiculosFiltrados = veiculos.filter(v => inc(v.placa) || inc(v.motorista) || inc(v.descricao || v.modelo))
+  const clientesFiltrados = clientes.filter(c => inc(c.nome) || inc(c.cidade))
 
-  if (offline) {
+  // Sem internet e sem nada carregado: tela cheia. Se já há veículos na tela,
+  // mantém o mapa e mostra só um aviso (não desmonta o mapa).
+  if (offline && veiculos.length === 0) {
     return (
       <div style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center',
@@ -476,7 +567,7 @@ export default function MapaPage() {
         <div style={{ width: 72, height: 72, borderRadius: '50%', background: colors.warningBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <WifiOff size={32} color={colors.warning} />
         </div>
-        <div style={{ fontSize: 18, fontWeight: 700, color: colors.text }}>Sem conexao</div>
+        <div style={{ fontSize: 18, fontWeight: 700, color: colors.text }}>Sem conexão</div>
         <div style={{ fontSize: 14, color: colors.textMuted, lineHeight: 1.6 }}>O mapa precisa de internet.</div>
         <button onClick={() => carregarVeiculos()} style={{
           marginTop: 8, padding: '12px 24px', borderRadius: 12,
@@ -496,30 +587,30 @@ export default function MapaPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 0, margin: -16 }}>
       {/* Header */}
       <div style={{
-        padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
         background: colors.surface, borderBottom: `1px solid ${colors.border}`, zIndex: 500,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Link href="/" style={{
-            width: 34, height: 34, borderRadius: 10,
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0, flex: 1 }}>
+          <Link href="/" aria-label="Voltar" style={{
+            width: 40, height: 40, borderRadius: 10, flexShrink: 0,
             background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: colors.textSubtle, textDecoration: 'none',
           }}>
             <ArrowLeft size={16} />
           </Link>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>Mapa de Veiculos</div>
-            <div style={{ fontSize: 10, color: colors.textMuted }}>
-              {veiculos.length} veiculo{veiculos.length !== 1 ? 's' : ''} · {tecnicos.length} tecnico{tecnicos.length !== 1 ? 's' : ''} · {clientes.length} cliente{clientes.length !== 1 ? 's' : ''}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>Mapa de Veículos</div>
+            <div style={{ fontSize: 10, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {veiculos.length} veículo{veiculos.length !== 1 ? 's' : ''} · {tecnicos.length} técnico{tecnicos.length !== 1 ? 's' : ''} · {clientes.length} cliente{clientes.length !== 1 ? 's' : ''}
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={() => setShowClientes(!showClientes)} style={{
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+          <button onClick={() => setShowClientes(!showClientes)} aria-pressed={showClientes} style={{
             background: showClientes ? '#3B82F6' : colors.surfaceAlt,
             border: `1px solid ${showClientes ? '#3B82F6' : colors.border}`,
-            borderRadius: 10, padding: '7px 10px', cursor: 'pointer',
+            borderRadius: 10, padding: '7px 10px', minHeight: 40, cursor: 'pointer',
             display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600,
             color: showClientes ? '#fff' : colors.textSubtle,
           }}>
@@ -528,23 +619,29 @@ export default function MapaPage() {
           <button onClick={() => { setPainelAberto(!painelAberto); setSelectedVeiculo(null) }} style={{
             background: painelAberto ? colors.primary : colors.surfaceAlt,
             border: `1px solid ${painelAberto ? colors.primary : colors.border}`,
-            borderRadius: 10, padding: '7px 10px', cursor: 'pointer',
+            borderRadius: 10, padding: '7px 10px', minHeight: 40, cursor: 'pointer',
             display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600,
             color: painelAberto ? '#fff' : colors.textSubtle,
           }}>
             <Search size={14} /> Buscar
           </button>
-          <button onClick={() => carregarVeiculos(true)} disabled={refreshing} style={{
+          <button onClick={() => carregarVeiculos(true)} disabled={refreshing} aria-label="Atualizar" style={{
             background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
-            borderRadius: 10, padding: '7px 10px', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', fontSize: 12, fontWeight: 600, color: colors.textSubtle,
+            borderRadius: 10, padding: 0, width: 40, height: 40, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 600, color: colors.textSubtle,
           }}>
             <RefreshCw size={14} className={refreshing ? 'spinner' : ''} />
           </button>
         </div>
       </div>
 
-      {erro && (
+      {offline && (
+        <div style={{ padding: '8px 16px', background: colors.warningBg, color: colors.warning, fontSize: 12, fontWeight: 600, textAlign: 'center' }}>
+          Sem conexão — mostrando as últimas posições carregadas.
+        </div>
+      )}
+
+      {erro && !offline && (
         <div style={{ padding: '8px 16px', background: colors.dangerBg, color: colors.danger, fontSize: 12, fontWeight: 600, textAlign: 'center' }}>
           {erro}
         </div>
@@ -608,20 +705,22 @@ export default function MapaPage() {
 
             {/* Busca */}
             <div style={{ position: 'relative', marginBottom: 8 }}>
-              <Search size={14} color={colors.textSubtle} style={{ position: 'absolute', left: 12, top: 10 }} />
+              <Search size={14} color={colors.textSubtle} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)' }} />
               <input
                 value={busca}
                 onChange={(e) => setBusca(e.target.value)}
-                placeholder={abaAtiva === 'tecnicos' ? 'Buscar tecnico...' : 'Buscar placa...'}
+                placeholder={abaAtiva === 'tecnicos' ? 'Buscar técnico...' : abaAtiva === 'clientes' ? 'Buscar cliente ou cidade...' : 'Buscar placa...'}
                 style={{
-                  width: '100%', padding: '9px 12px 9px 34px', borderRadius: 10,
-                  border: `1.5px solid ${colors.border}`, fontSize: 13, outline: 'none',
+                  width: '100%', padding: '9px 40px 9px 34px', borderRadius: 10,
+                  border: `1.5px solid ${colors.border}`, fontSize: 16, outline: 'none',
                   background: '#FAFAFA', boxSizing: 'border-box',
                 }}
               />
               {busca && (
-                <button onClick={() => setBusca('')} style={{
-                  position: 'absolute', right: 10, top: 8, background: 'none', border: 'none', cursor: 'pointer',
+                <button onClick={() => setBusca('')} aria-label="Limpar busca" style={{
+                  position: 'absolute', right: 2, top: '50%', transform: 'translateY(-50%)', width: 36, height: 36,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: 'none', border: 'none', cursor: 'pointer',
                 }}>
                   <X size={14} color={colors.textSubtle} />
                 </button>
@@ -630,7 +729,7 @@ export default function MapaPage() {
           </div>
 
           {/* Lista */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '0 12px 16px' }}>
+          <div style={{ flex: 1, overflow: 'auto', padding: '0 12px calc(16px + env(safe-area-inset-bottom, 0px))' }}>
             {abaAtiva === 'clientes' ? (
               clientesFiltrados.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 13 }}>
@@ -674,7 +773,7 @@ export default function MapaPage() {
             ) : abaAtiva === 'tecnicos' ? (
               tecnicosFiltrados.length === 0 ? (
                 <div style={{ textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 13 }}>
-                  {tecnicos.length === 0 ? 'Nenhum tecnico com check-in hoje' : 'Nenhum resultado'}
+                  {tecnicos.length === 0 ? 'Nenhum técnico com check-in hoje' : 'Nenhum resultado'}
                 </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -694,11 +793,11 @@ export default function MapaPage() {
                           <User size={18} color={colors.accent} />
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>{v.motorista}</div>
-                          <div style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                            <Car size={11} /> {v.placa}
+                          <div style={{ fontSize: 14, fontWeight: 700, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.motorista}</div>
+                          <div style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6, marginTop: 2, minWidth: 0 }}>
+                            <Car size={11} style={{ flexShrink: 0 }} /> <span style={{ flexShrink: 0 }}>{v.placa}</span>
                             <span style={{ color: colors.border }}>|</span>
-                            {v.cliente || 'Sem destino'}
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{v.cliente || 'Sem destino'}</span>
                           </div>
                         </div>
                         <div style={{
@@ -726,7 +825,7 @@ export default function MapaPage() {
                         border: `1px solid ${temRota ? colors.accent : colors.border}`,
                       }}>
                         <button onClick={() => focarVeiculo(v)} style={{
-                          display: 'flex', alignItems: 'center', gap: 10, flex: 1,
+                          display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0,
                           background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0,
                         }}>
                           <div style={{
@@ -745,7 +844,7 @@ export default function MapaPage() {
                           </div>
                         </button>
                         <button onClick={() => carregarRota(v)} disabled={loadingRota && rotaVeiculoId !== v.id} style={{
-                          padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                          padding: '6px 10px', minHeight: 36, borderRadius: 8, border: 'none', cursor: 'pointer',
                           background: temRota ? colors.accent : colors.surfaceAlt,
                           color: temRota ? '#fff' : colors.textSubtle,
                           fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
@@ -770,37 +869,38 @@ export default function MapaPage() {
       {selectedVeiculo && !painelAberto && (
         <div style={{
           position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 1000,
-          background: '#fff', borderRadius: '16px 16px 0 0', padding: '14px 20px 22px',
+          background: '#fff', borderRadius: '16px 16px 0 0', padding: '14px 20px calc(22px + env(safe-area-inset-bottom, 0px))',
           boxShadow: '0 -4px 20px rgba(0,0,0,0.15)',
         }}>
           <div style={{ width: 36, height: 4, borderRadius: 2, background: '#D1D5DB', margin: '0 auto 10px' }} />
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
               <div style={{
-                width: 44, height: 44, borderRadius: 14,
+                width: 44, height: 44, borderRadius: 14, flexShrink: 0,
                 background: selectedVeiculo.ignicao ? (selectedVeiculo.velocidade > 0 ? colors.successBg : colors.warningBg) : colors.surfaceAlt,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
                 <Car size={22} color={selectedVeiculo.ignicao ? (selectedVeiculo.velocidade > 0 ? colors.success : colors.warning) : colors.textSubtle} />
               </div>
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 16, fontWeight: 800, color: colors.text }}>{selectedVeiculo.placa}</div>
-                <div style={{ fontSize: 11, color: colors.textMuted }}>{selectedVeiculo.descricao || selectedVeiculo.modelo}</div>
+                <div style={{ fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedVeiculo.descricao || selectedVeiculo.modelo}</div>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
-              <button onClick={() => carregarRota(selectedVeiculo)} style={{
-                padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+              <button onClick={() => carregarRota(selectedVeiculo)} disabled={loadingRota && rotaVeiculoId !== selectedVeiculo.id} style={{
+                padding: '6px 10px', minHeight: 36, borderRadius: 8, border: 'none', cursor: 'pointer',
                 background: rotaVeiculoId === selectedVeiculo.id ? colors.accent : colors.surfaceAlt,
                 color: rotaVeiculoId === selectedVeiculo.id ? '#fff' : colors.textSubtle,
                 fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4,
               }}>
-                {loadingRota ? <Loader2 size={12} className="spinner" /> : <Route size={12} />}
+                {loadingRota && rotaVeiculoId === selectedVeiculo.id ? <Loader2 size={12} className="spinner" /> : <Route size={12} />}
                 {rotaVeiculoId === selectedVeiculo.id ? 'Ocultar rota' : 'Ver rota'}
               </button>
-              <button onClick={() => setSelectedVeiculo(null)} style={{
-                background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: colors.textSubtle, padding: 4,
-              }}>x</button>
+              <button onClick={() => setSelectedVeiculo(null)} aria-label="Fechar" style={{
+                background: 'none', border: 'none', cursor: 'pointer', color: colors.textSubtle, padding: 0,
+                width: 40, height: 40, display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}><X size={20} /></button>
             </div>
           </div>
 
@@ -832,7 +932,7 @@ export default function MapaPage() {
               <div style={{ fontSize: 16, fontWeight: 800, color: selectedVeiculo.ignicao ? colors.success : colors.textSubtle }}>
                 {selectedVeiculo.ignicao ? 'Ligado' : 'Desligado'}
               </div>
-              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Ignicao</div>
+              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Ignição</div>
             </div>
             <div style={{
               flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '8px 10px',
@@ -848,11 +948,9 @@ export default function MapaPage() {
               textAlign: 'center', border: `1px solid ${colors.border}`,
             }}>
               <div style={{ fontSize: 14, fontWeight: 800, color: colors.textSubtle }}>
-                {selectedVeiculo.dt_posicao
-                  ? new Date(selectedVeiculo.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
-                  : '--'}
+                {horaBR(selectedVeiculo.dt_posicao)}
               </div>
-              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Ultima pos.</div>
+              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Última pos.</div>
             </div>
           </div>
         </div>

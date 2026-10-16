@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import type { MecanicoNotificacao } from '@/lib/types'
 import { colors } from '@/lib/ui'
 
@@ -34,7 +35,10 @@ function estiloTipo(tipo: string): { icon: typeof Bell; color: string } {
 }
 
 function tempoRelativo(iso: string): string {
-  const ms = Date.now() - new Date(iso).getTime()
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  if (isNaN(t)) return ''
+  const ms = Date.now() - t
   const min = Math.floor(ms / 60000)
   if (min < 1) return 'agora'
   if (min < 60) return `há ${min} min`
@@ -66,9 +70,9 @@ function NotifCard({ n, onClick }: { n: MecanicoNotificacao; onClick?: () => voi
         <Icon size={19} color="#fff" strokeWidth={2.2} />
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: n.lida ? 500 : 600, color: colors.text }}>{n.titulo}</div>
+        <div style={{ fontSize: 13, fontWeight: n.lida ? 500 : 600, color: colors.text, overflowWrap: 'anywhere' }}>{n.titulo}</div>
         {n.descricao && (
-          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2, lineHeight: 1.4 }}>{n.descricao}</div>
+          <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2, lineHeight: 1.4, overflowWrap: 'anywhere' }}>{n.descricao}</div>
         )}
         <div style={{ fontSize: 10, color: colors.textSubtle, marginTop: 5 }}>{tempoRelativo(n.created_at)}</div>
       </div>
@@ -88,6 +92,16 @@ export default function HeaderMobile({
   avatarUrl, userName,
 }: HeaderMobileProps) {
   const [showNotifs, setShowNotifs] = useState(false)
+  const router = useRouter()
+
+  // Links internos navegam pelo router (window.location recarregava o app
+  // inteiro — sem sinal, a página podia nem abrir). Externos seguem normais.
+  const abrirLink = (link: string) => {
+    setShowNotifs(false)
+    onFecharHistorico()
+    if (link.startsWith('/')) router.push(link)
+    else window.location.assign(link)
+  }
 
   const abrirPainel = () => {
     setShowNotifs(true)
@@ -100,7 +114,8 @@ export default function HeaderMobile({
         position: 'sticky', top: 0, zIndex: 40,
         background: '#C41E2A', color: '#fff',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 16px', height: 64,
+        padding: 'env(safe-area-inset-top, 0px) 16px 0',
+        height: 'calc(64px + env(safe-area-inset-top, 0px))', boxSizing: 'border-box',
         boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -123,21 +138,22 @@ export default function HeaderMobile({
           </Link>
         </div>
 
-        <button onClick={abrirPainel} style={{
+        <button onClick={abrirPainel} aria-label="Notificações" style={{
           position: 'relative', background: 'none', border: 'none',
-          color: '#fff', cursor: 'pointer', padding: 8,
+          color: '#fff', cursor: 'pointer', width: 44, height: 44, marginRight: -8,
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
         }}>
           <Bell size={22} />
           {naoLidas > 0 && (
             <span style={{
-              position: 'absolute', top: 2, right: 2,
+              position: 'absolute', top: 4, right: 4,
               background: '#EF4444', color: '#fff', fontSize: 9,
               fontWeight: 700, borderRadius: 10, minWidth: 16,
               height: 16, display: 'flex', alignItems: 'center',
               justifyContent: 'center', padding: '0 4px',
               border: '1.5px solid #C41E2A',
             }}>
-              {naoLidas}
+              {naoLidas > 99 ? '99+' : naoLidas}
             </span>
           )}
         </button>
@@ -160,7 +176,7 @@ export default function HeaderMobile({
           >
             {/* Header */}
             <div style={{
-              padding: '18px 18px 14px', background: '#fff',
+              padding: 'calc(18px + env(safe-area-inset-top, 0px)) 18px 14px', background: '#fff',
               borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -188,8 +204,8 @@ export default function HeaderMobile({
                     </div>
                   </div>
                 </div>
-                <button onClick={() => { setShowNotifs(false); onFecharHistorico() }} style={{
-                  width: 32, height: 32, borderRadius: 10, border: 'none', cursor: 'pointer',
+                <button onClick={() => { setShowNotifs(false); onFecharHistorico() }} aria-label="Fechar" style={{
+                  width: 40, height: 40, borderRadius: 10, flexShrink: 0, border: 'none', cursor: 'pointer',
                   background: colors.surfaceAlt, display: 'flex', alignItems: 'center', justifyContent: 'center',
                 }}>
                   <X size={18} color={colors.textMuted} />
@@ -210,7 +226,7 @@ export default function HeaderMobile({
                     <button onClick={onAbrirHistorico} style={{
                       flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                       background: colors.surfaceAlt, border: `1px solid ${colors.border}`, color: colors.text,
-                      fontSize: 12, fontWeight: 600, padding: '9px 10px', borderRadius: 10, cursor: 'pointer',
+                      fontSize: 12, fontWeight: 600, padding: '9px 10px', minHeight: 40, borderRadius: 10, cursor: 'pointer',
                     }}>
                       <History size={14} /> Histórico
                     </button>
@@ -218,7 +234,7 @@ export default function HeaderMobile({
                       <button onClick={onLimparTodas} style={{
                         flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                         background: colors.dangerBg, border: `1px solid ${colors.dangerBorder}`, color: colors.danger,
-                        fontSize: 12, fontWeight: 600, padding: '9px 10px', borderRadius: 10, cursor: 'pointer',
+                        fontSize: 12, fontWeight: 600, padding: '9px 10px', minHeight: 40, borderRadius: 10, cursor: 'pointer',
                       }}>
                         <Trash2 size={14} /> Limpar
                       </button>
@@ -229,7 +245,7 @@ export default function HeaderMobile({
             </div>
 
             {/* Lista */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ flex: 1, overflowY: 'auto', overscrollBehavior: 'contain', padding: '12px 12px calc(12px + env(safe-area-inset-bottom, 0px))', display: 'flex', flexDirection: 'column', gap: 8 }}>
               {historicoAberto ? (
                 historico.length === 0 ? (
                   <div style={{
@@ -248,7 +264,7 @@ export default function HeaderMobile({
                   <NotifCard
                     key={n.id}
                     n={{ ...n, lida: true }}
-                    onClick={n.link && n.link !== '/' ? () => { window.location.href = n.link! } : undefined}
+                    onClick={n.link && n.link !== '/' ? () => abrirLink(n.link!) : undefined}
                   />
                 ))
               ) : notificacoes.length === 0 ? (
@@ -274,7 +290,7 @@ export default function HeaderMobile({
                 <NotifCard
                   key={n.id}
                   n={n}
-                  onClick={n.link && n.link !== '/' ? () => { window.location.href = n.link! } : undefined}
+                  onClick={n.link && n.link !== '/' ? () => abrirLink(n.link!) : undefined}
                 />
               ))}
             </div>

@@ -1,6 +1,6 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { supabase } from '@/lib/supabase'
+import { supabase, fetchAll } from '@/lib/supabase'
 import { STATUS_REQUISICAO } from '@/lib/constants'
 import type { MecanicoRequisicao } from '@/lib/types'
 import { AlertTriangle, Package, User, Trash2 } from 'lucide-react'
@@ -15,16 +15,20 @@ export default function RequisicoesPage() {
 
   useEffect(() => {
     const carregar = async () => {
-      const { data } = await supabase
-        .from('mecanico_requisicoes')
-        .select('*')
-        .order('created_at', { ascending: false })
-      const list = data || []
-      setItems(list)
+      try {
+        // Paginado (limite de 1000 linhas do PostgREST)
+        const list = await fetchAll<MecanicoRequisicao>('mecanico_requisicoes', {
+          order: { column: 'created_at', ascending: false },
+        })
+        setItems(list)
 
-      const nomes = [...new Set(list.map((r) => r.tecnico_nome))].sort()
-      setTecnicos(nomes)
-      setLoading(false)
+        const nomes = [...new Set(list.map((r) => r.tecnico_nome).filter(Boolean))].sort()
+        setTecnicos(nomes)
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setLoading(false)
+      }
     }
     carregar()
 

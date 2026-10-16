@@ -4,7 +4,7 @@
  */
 
 import { supabase } from './supabase'
-import { offlineSet, offlineGet } from './offlineCache'
+import { offlineSet, offlineGet, getQueue } from './offlineCache'
 
 const PREFETCH_KEY = 'nt-prefetch-timestamp'
 const MIN_INTERVAL = 15 * 60_000 // 15 min entre prefetches
@@ -31,7 +31,7 @@ export async function prefetchAll(
 
   try {
     // 1. Todas as OS do técnico (ativas)
-    const { data: osList } = await supabase
+    const { data: osList, error: osListErr } = await supabase
       .from('Ordem_Servico')
       .select('*')
       .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
@@ -55,7 +55,17 @@ export async function prefetchAll(
         .in('Ordem_Servico', ids)
 
       if (tecEntries) {
-        await Promise.all(tecEntries.map((entry) => offlineSet(`prefetch:os-tec:${entry.Ordem_Servico}`, entry)))
+        // Não sobrescreve o cache de relatórios que ainda estão na fila de sync:
+        // o cache local (gravado no envio offline) é mais novo que o servidor, e
+        // reabrir a OS com o dado velho faria o técnico reenviar por cima.
+        const fila = await getQueue()
+        const naFila = new Set(
+          fila.filter(i => !i.failed && i.table === 'Ordem_Servico_Tecnicos')
+            .map(i => String(i.data?.Ordem_Servico ?? i.match?.Ordem_Servico ?? '')),
+        )
+        await Promise.all(tecEntries
+          .filter((entry) => !naFila.has(String(entry.Ordem_Servico)))
+          .map((entry) => offlineSet(`prefetch:os-tec:${entry.Ordem_Servico}`, entry)))
       }
 
       // 3. Clientes (cidade + coordenadas + nome — necessario p/ jornada/check-in offline)
@@ -297,6 +307,13 @@ export async function prefetchAll(
       tecnicoNomeReal: tecnicoNome,
     })
 
+    // Se a lista de OS não veio (sinal fraco), não marca como feito — senão o
+    // próximo prefetch só rodaria daqui a 15 min e as OS não abririam offline.
+    if (osListErr) {
+      console.warn('[prefetch] Lista de OS falhou, tentará de novo:', osListErr.message)
+      onProgress?.('')
+      return false
+    }
     localStorage.setItem(PREFETCH_KEY, String(Date.now()))
     console.log('[prefetch] Dados offline carregados com sucesso')
     onProgress?.('')

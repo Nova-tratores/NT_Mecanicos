@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
-import { supabase } from '@/lib/supabase'
+import { supabase, authHeaders } from '@/lib/supabase'
 import type { OrdemServico } from '@/lib/types'
 import {
   FileText, ChevronRight, User, Megaphone,
@@ -14,6 +14,7 @@ import {
 import Link from 'next/link'
 import { PageSpinner } from '@/components/ui'
 import { colors, radius, shadow } from '@/lib/ui'
+import { dataLocalISO, enviarAvatar } from '@/lib/tecnico-utils'
 
 interface AvisoGeral {
   id: number
@@ -38,7 +39,7 @@ interface DashboardData {
 }
 
 async function fetchDashboardData(nome: string, tecnicoNome: string): Promise<DashboardData> {
-  const hoje = new Date().toISOString().split('T')[0]
+  const hoje = dataLocalISO()
 
   const [osRes, reqPendRes, reqEnvRes, avisosRes] = await Promise.all([
     supabase
@@ -331,26 +332,31 @@ export default function TecnicoHome() {
 
   useEffect(() => {
     if (!user) return
-    const salvo = localStorage.getItem(`mec_personagem_${user.id}`)
+    let salvo: string | null = null
+    try { salvo = localStorage.getItem(`mec_personagem_${user.id}`) } catch {}
     setPersonagem(salvo || '🧑‍🔧')
   }, [user])
 
   useEffect(() => {
     if (!nome) return
+    let cancelado = false
     ;(async () => {
       try {
         const res = await fetch('/api/veiculo-info', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
           body: JSON.stringify({ tecnico_nome: nome, cpf: user?.cpf, user_id: user?.id }),
         })
-        if (res.ok) {
+        if (res.ok && !cancelado) {
           const info = await res.json()
-          setVeiculoInfo(info)
-          const placaDisplay = info.veiculo?.placa || ''
-          setVeiculo({ placa: placaDisplay, descricao: '' })
+          // Sem veículo vinculado: não mostra o card (evita modal "carregando" infinito)
+          if (info?.veiculo && !cancelado) {
+            setVeiculoInfo(info)
+            setVeiculo({ placa: info.veiculo.placa || '', descricao: '' })
+          }
         }
       } catch {}
+      if (cancelado) return
       // Check checklist status
       try {
         const res = await fetch('/api/checklist-veiculo', {
@@ -358,48 +364,21 @@ export default function TecnicoHome() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ action: 'verificar', tecnico_nome: nome }),
         })
-        if (res.ok) {
+        if (res.ok && !cancelado) {
           const { pendente } = await res.json()
-          setChecklistPendente(pendente)
+          setChecklistPendente(!!pendente)
         }
       } catch {}
     })()
-  }, [nome, user?.cpf])
+    return () => { cancelado = true }
+  }, [nome, user?.cpf, user?.id])
 
   const salvarPersonagem = (p: string) => {
     if (!user) return
-    localStorage.setItem(`mec_personagem_${user.id}`, p)
+    try { localStorage.setItem(`mec_personagem_${user.id}`, p) } catch {}
     setPersonagem(p)
     setEscolherPersonagem(false)
     setPerfilModal(false)
-  }
-
-  const resizeImage = (file: File, maxSize: number): Promise<Blob> => {
-    return new Promise((resolve, reject) => {
-      const img = new window.Image()
-      const url = URL.createObjectURL(file)
-      img.onload = () => {
-        URL.revokeObjectURL(url)
-        let { width, height } = img
-        if (width > maxSize || height > maxSize) {
-          const ratio = Math.min(maxSize / width, maxSize / height)
-          width = Math.round(width * ratio)
-          height = Math.round(height * ratio)
-        }
-        const canvas = document.createElement('canvas')
-        canvas.width = width
-        canvas.height = height
-        const ctx = canvas.getContext('2d')!
-        ctx.drawImage(img, 0, 0, width, height)
-        canvas.toBlob(
-          blob => blob ? resolve(blob) : reject(new Error('Falha ao comprimir')),
-          'image/jpeg',
-          0.8,
-        )
-      }
-      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Imagem invalida')) }
-      img.src = url
-    })
   }
 
   const handleFoto = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -411,29 +390,18 @@ export default function TecnicoHome() {
   }
 
   const confirmarFoto = async () => {
-    if (!fotoPreview || !user) return
+    if (!fotoPreview || !user || uploading) return
     setUploading(true)
     try {
-      const compressed = await resizeImage(fotoPreview.file, 512)
-      const fd = new FormData()
-      fd.append('file', new File([compressed], 'avatar.jpg', { type: 'image/jpeg' }))
-      fd.append('userId', user.id)
-      const res = await fetch('/api/avatar', { method: 'POST', body: fd })
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error || 'Erro ao enviar')
-      setAvatarLocal(json.avatar_url)
-      try {
-        const cached = JSON.parse(localStorage.getItem('nt-mecanicos-profile') || '{}')
-        cached.avatar_url = json.avatar_url
-        localStorage.setItem('nt-mecanicos-profile', JSON.stringify(cached))
-      } catch {}
+      const novaUrl = await enviarAvatar(fotoPreview.file, user.id)
+      setAvatarLocal(novaUrl)
       if (refresh) refresh()
       URL.revokeObjectURL(fotoPreview.url)
       setFotoPreview(null)
       setPerfilModal(false)
-    } catch (err: any) {
+    } catch (err) {
       console.error('Erro ao enviar foto:', err)
-      alert(err?.message || 'Erro ao enviar foto. Tente novamente.')
+      alert(err instanceof Error ? err.message : 'Não foi possível enviar a foto. Tente novamente.')
     } finally {
       setUploading(false)
     }
@@ -562,10 +530,10 @@ export default function TecnicoHome() {
         >
           <div style={{ fontSize: 11, color: 'rgba(255,255,255,0.6)' }}>{saudacao()},</div>
           <div style={{ fontSize: 18, fontWeight: 800, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {user?.tecnico_nome?.split(' ')[0] || 'Tecnico'}
+            {user?.tecnico_nome?.split(' ')[0] || 'Técnico'}
           </div>
           <div style={{ fontSize: 10, color: 'rgba(255,255,255,0.65)', marginTop: 1 }}>
-            {user?.role === 'admin' ? 'Administrador' : 'Tecnico de campo'}
+            {user?.role === 'admin' ? 'Administrador' : 'Técnico de campo'}
           </div>
         </div>
 
@@ -621,7 +589,7 @@ export default function TecnicoHome() {
           <FileText size={26} color="#fff" strokeWidth={2.2} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 17, fontWeight: 600, color: colors.text }}>Ordens de Servico</div>
+          <div style={{ fontSize: 17, fontWeight: 600, color: colors.text }}>Ordens de Serviço</div>
           <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>Abertas e enviadas</div>
         </div>
         <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
@@ -753,8 +721,8 @@ export default function TecnicoHome() {
             <MapPin size={22} color={colors.accent} strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={blocoTitulo}>Mapa de Veiculos</div>
-            <div style={blocoSub}>Ver quem esta perto</div>
+            <div style={blocoTitulo}>Mapa de Veículos</div>
+            <div style={blocoSub}>Ver quem está perto</div>
           </div>
           <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
         </Link>
@@ -842,7 +810,7 @@ export default function TecnicoHome() {
             <BarChart3 size={22} color={colors.success} strokeWidth={2.2} />
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={blocoTitulo}>Relatorios</div>
+            <div style={blocoTitulo}>Relatórios</div>
             <div style={blocoSub}>Faturamento e custos</div>
           </div>
           <ChevronRight size={20} color={colors.textSubtle} style={{ flexShrink: 0 }} />
@@ -883,7 +851,8 @@ export default function TecnicoHome() {
               </div>
               <button
                 onClick={() => setAvisosModal(false)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, lineHeight: 0 }}
+                aria-label="Fechar"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', width: 44, height: 44, margin: -10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >
                 <X size={20} color={colors.textMuted} />
               </button>
@@ -939,7 +908,7 @@ export default function TecnicoHome() {
                     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                   }}>
                     <Clock size={13} />
-                    {showHistorico ? 'Ocultar historico' : `Ver historico (${avisosHistorico.length})`}
+                    {showHistorico ? 'Ocultar histórico' : `Ver histórico (${avisosHistorico.length})`}
                   </button>
                   {showHistorico && (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
@@ -996,7 +965,8 @@ export default function TecnicoHome() {
               </div>
               <button
                 onClick={() => fotoPreview ? cancelarPreview() : escolherPersonagem ? setEscolherPersonagem(false) : setPerfilModal(false)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, lineHeight: 0 }}
+                aria-label="Fechar"
+                style={{ background: 'none', border: 'none', cursor: 'pointer', width: 44, height: 44, margin: -10, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
               >
                 <X size={20} color={colors.textMuted} />
               </button>
@@ -1116,7 +1086,7 @@ export default function TecnicoHome() {
           <button
             onClick={() => setFotoFullscreen(false)}
             style={{
-              position: 'absolute', top: 16, right: 16,
+              position: 'absolute', top: 'calc(env(safe-area-inset-top, 0px) + 16px)', right: 16,
               background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
               borderRadius: 12, padding: '8px 16px',
               fontSize: 14, fontWeight: 700, color: '#fff', cursor: 'pointer',
@@ -1146,8 +1116,8 @@ export default function TecnicoHome() {
         const nomeModelo = v ? [v.marca, v.modelo].filter(Boolean).join(' ') : (partes.length > 1 ? partes.slice(0, -1).join(' - ') : veiculo.descricao || '')
         const placaNum = partes[partes.length - 1]
         const placaFmt = placaNum.length >= 7 ? placaNum.slice(0, 3) + '-' + placaNum.slice(3) : placaNum
-        const fmtDate = (d: string | null) => d ? new Date(d + 'T12:00:00').toLocaleDateString('pt-BR') : ''
-        const fmtMoney = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
+        const fmtDate = (d: string | null) => d ? new Date(String(d).slice(0, 10) + 'T12:00:00').toLocaleDateString('pt-BR') : ''
+        const fmtMoney = (n: number) => (Number(n) || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })
         const row = (label: string, val: string | number | null | undefined) => (
           val != null && val !== '' ? (
             <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
@@ -1190,7 +1160,7 @@ export default function TecnicoHome() {
                   )}
                 </div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>{nomeModelo || 'Veiculo'}</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>{nomeModelo || 'Veículo'}</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
                     <span style={{
                       fontSize: 12, fontWeight: 700, color: '#333', background: '#fff',
@@ -1203,7 +1173,8 @@ export default function TecnicoHome() {
                 </div>
                 <button
                   onClick={() => setVeiculoModal(false)}
-                  style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, lineHeight: 0, flexShrink: 0 }}
+                  aria-label="Fechar"
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', width: 44, height: 44, margin: -10, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
                 >
                   <X size={20} color={colors.textMuted} />
                 </button>
@@ -1226,23 +1197,25 @@ export default function TecnicoHome() {
               </div>
 
               {/* Conteudo scrollavel */}
-              <div style={{ overflowY: 'auto', padding: '16px 20px 20px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+              <div style={{ overflowY: 'auto', padding: '16px 20px calc(20px + env(safe-area-inset-bottom, 0px))', display: 'flex', flexDirection: 'column', gap: 16 }}>
                 {!vi || !v ? (
                   <div style={{ textAlign: 'center', padding: 24, color: colors.textMuted, fontSize: 13 }}>
                     <div className="spinner" style={{ width: 24, height: 24, margin: '0 auto 8px' }} />
-                    Carregando informacoes...
+                    Carregando informações...
                   </div>
                 ) : veiculoTab === 'docs' ? (
                   /* ── ABA: DOCUMENTOS ── */
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
                     {(vi.documentos || []).length > 0 ? (vi.documentos || []).map((doc) => {
-                      const vencido = doc.vigencia_fim ? new Date(doc.vigencia_fim) < new Date() : false
-                      const diasRestantes = doc.vigencia_fim ? Math.ceil((new Date(doc.vigencia_fim).getTime() - Date.now()) / 86400000) : null
+                      // vigencia_fim é data pura (YYYY-MM-DD): new Date() a trata como UTC e cai no dia anterior no Brasil
+                      const fimDate = doc.vigencia_fim ? new Date(doc.vigencia_fim.slice(0, 10) + 'T23:59:59') : null
+                      const vencido = fimDate ? fimDate < new Date() : false
+                      const diasRestantes = fimDate ? Math.ceil((fimDate.getTime() - Date.now()) / 86400000) : null
                       const corValidade = vencido ? colors.danger : (diasRestantes !== null && diasRestantes <= 30) ? colors.warning : colors.success
                       return (
                         <a
                           key={doc.id}
-                          href={doc.url || '#'}
+                          href={doc.url || undefined}
                           target="_blank"
                           rel="noopener noreferrer"
                           style={{
@@ -1269,7 +1242,7 @@ export default function TecnicoHome() {
                                 {vencido ? 'Vencido' : diasRestantes !== null && diasRestantes <= 30 ? `${diasRestantes}d` : 'Vigente'}
                               </div>
                               <div style={{ fontSize: 10, color: colors.textMuted }}>
-                                {new Date(doc.vigencia_fim).toLocaleDateString('pt-BR')}
+                                {fmtDate(doc.vigencia_fim.slice(0, 10))}
                               </div>
                             </div>
                           )}
@@ -1307,13 +1280,13 @@ export default function TecnicoHome() {
                 ) : (
                   <>
                     {/* Pendencias */}
-                    {vi.multas.abertas > 0 && (
+                    {(vi.multas?.abertas ?? 0) > 0 && (
                       <div style={{
                         background: colors.warningBg, borderRadius: 12, padding: '10px 14px',
                         border: `1px solid ${colors.warningBorder}`,
                       }}>
                         <div style={{ fontSize: 12, fontWeight: 700, color: colors.warning, display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <AlertCircle size={14} /> PENDENCIAS
+                          <AlertCircle size={14} /> PENDÊNCIAS
                         </div>
                         <div style={{ fontSize: 11, color: colors.text, marginTop: 4 }}>
                           {vi.multas.abertas} multa{vi.multas.abertas > 1 ? 's' : ''} em aberto ({fmtMoney(vi.multas.valor)})
@@ -1324,30 +1297,30 @@ export default function TecnicoHome() {
                     {/* Identificacao */}
                     <div>
                       <div style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <Info size={13} /> IDENTIFICACAO
+                        <Info size={13} /> IDENTIFICAÇÃO
                       </div>
                       <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: '4px 12px', border: `1px solid ${colors.border}` }}>
                         {row('Marca / Modelo', nomeModelo)}
                         {row('Ano', v.ano_modelo ? `${v.ano || v.ano_modelo}/${v.ano_modelo}` : v.ano)}
                         {row('Cor', v.cor)}
-                        {row('Combustivel', v.combustivel)}
+                        {row('Combustível', v.combustivel)}
                         {row('Chassi', v.chassi)}
                         {row('RENAVAM', v.renavam)}
                         {row('Tipo', v.tipo_veiculo)}
                         {row('Categoria', v.categoria)}
                         {row('Status', v.status)}
-                        {row('Proprietario', v.proprietario)}
-                        {row('Documento (exercicio)', v.exercicio_crlv ? String(v.exercicio_crlv) : null)}
-                        {row('Hodometro (rastreador)', v.hodometro != null ? `${v.hodometro.toLocaleString('pt-BR')} km` : null)}
+                        {row('Proprietário', v.proprietario)}
+                        {row('Documento (exercício)', v.exercicio_crlv ? String(v.exercicio_crlv) : null)}
+                        {row('Hodômetro (rastreador)', v.hodometro != null ? `${v.hodometro.toLocaleString('pt-BR')} km` : null)}
                         {row('Tanque', v.capacidade_tanque ? `${v.capacidade_tanque} L` : null)}
                         {v.senha_cartao_veloe && (
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0', borderBottom: `1px solid ${colors.border}` }}>
-                            <span style={{ fontSize: 12, color: colors.textMuted, flexShrink: 0 }}>Senha cartao Veloe</span>
+                            <span style={{ fontSize: 12, color: colors.textMuted, flexShrink: 0 }}>Senha cartão Veloe</span>
                             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12, fontWeight: 700, color: colors.text }}>
                               {verSenhaVeloe ? v.senha_cartao_veloe : '••••••'}
                               <button
                                 onClick={() => setVerSenhaVeloe((s) => !s)}
-                                style={{ background: 'none', border: 'none', color: colors.primary, fontSize: 11, fontWeight: 700, padding: 0, cursor: 'pointer' }}
+                                style={{ background: 'none', border: 'none', color: colors.primary, fontSize: 11, fontWeight: 700, padding: '10px 6px', margin: '-10px 0', cursor: 'pointer' }}
                               >
                                 {verSenhaVeloe ? 'ocultar' : 'mostrar'}
                               </button>
@@ -1373,7 +1346,7 @@ export default function TecnicoHome() {
                     {/* Responsavel */}
                     <div>
                       <div style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-                        <User size={13} /> RESPONSAVEL
+                        <User size={13} /> RESPONSÁVEL
                       </div>
                       <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: 12, border: `1px solid ${colors.border}` }}>
                         {vi.responsavel ? (
@@ -1384,16 +1357,16 @@ export default function TecnicoHome() {
                             </div>
                           </>
                         ) : (
-                          <div style={{ fontSize: 12, color: colors.textMuted }}>Sem responsavel atribuido</div>
+                          <div style={{ fontSize: 12, color: colors.textMuted }}>Sem responsável atribuído</div>
                         )}
                       </div>
                     </div>
 
                     {/* Historico */}
-                    {vi.historico.length > 0 && (
+                    {(vi.historico?.length ?? 0) > 0 && (
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Clock size={13} /> HISTORICO
+                          <Clock size={13} /> HISTÓRICO
                         </div>
                         <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: '4px 12px', border: `1px solid ${colors.border}` }}>
                           {vi.historico.map((h, i) => (
@@ -1412,13 +1385,13 @@ export default function TecnicoHome() {
                     )}
 
                     {/* Custos */}
-                    {Object.keys(vi.custos).length > 0 && (
+                    {Object.keys(vi.custos || {}).length > 0 && (
                       <div>
                         <div style={{ fontSize: 12, fontWeight: 700, color: colors.textSubtle, marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <Fuel size={13} /> CUSTOS (ULTIMOS 12 MESES)
+                          <Fuel size={13} /> CUSTOS (ÚLTIMOS 12 MESES)
                         </div>
                         <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: '4px 12px', border: `1px solid ${colors.border}` }}>
-                          {Object.entries(vi.custos).sort((a, b) => b[1] - a[1]).map(([tipo, valor], i, arr) => (
+                          {Object.entries(vi.custos || {}).sort((a, b) => b[1] - a[1]).map(([tipo, valor], i, arr) => (
                             <div key={tipo} style={{
                               display: 'flex', justifyContent: 'space-between', gap: 8, padding: '6px 0',
                               borderBottom: i < arr.length - 1 ? `1px solid ${colors.border}` : 'none',

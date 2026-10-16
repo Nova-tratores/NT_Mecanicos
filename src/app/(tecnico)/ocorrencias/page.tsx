@@ -8,6 +8,7 @@ import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { supabase } from '@/lib/supabase'
 import { colors, shadow } from '@/lib/ui'
 import { PageSpinner } from '@/components/ui'
+import { mesLocalISO } from '@/lib/tecnico-utils'
 import {
   AlertTriangle, X, Camera, Image as ImageIcon, Film, Clock, CheckCircle2,
   MapPin, ShieldQuestion, Hourglass, XCircle, WifiOff, RefreshCw,
@@ -105,7 +106,7 @@ function aindaVale(o: Ocorrencia): boolean {
 }
 
 export default function OcorrenciasTecnicoPage() {
-  const { user } = useCurrentUser()
+  const { user, loading: userLoading } = useCurrentUser()
   const [ocorrencias, setOcorrencias] = useState<Ocorrencia[]>([])
   const [loading, setLoading] = useState(true)
   const [erroCarga, setErroCarga] = useState(false)
@@ -117,6 +118,7 @@ export default function OcorrenciasTecnicoPage() {
   const [justArquivos, setJustArquivos] = useState<File[]>([])
   const [justEnviando, setJustEnviando] = useState(false)
   const [justErro, setJustErro] = useState('')
+  const enviandoRef = useRef(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   // URLs de preview memoizadas: criar no render faria o <video> recarregar a
@@ -132,7 +134,11 @@ export default function OcorrenciasTecnicoPage() {
   const filtroNomes = nomes.map(n => `tecnico_nome.ilike.${n}`).join(',')
 
   const carregar = useCallback(async () => {
-    if (!filtroNomes) return
+    if (!filtroNomes) {
+      // Perfil carregado mas sem nome vinculado: não prende no spinner
+      if (!userLoading) setLoading(false)
+      return
+    }
     // Erro NÃO pode virar "nenhuma ocorrência" — num sistema disciplinar um
     // falso "tudo certo" contradiz o banner vermelho. Timeout de 8s (padrão
     // do app) pra rede pendurada não prender o spinner.
@@ -151,9 +157,13 @@ export default function OcorrenciasTecnicoPage() {
     } finally {
       setLoading(false)
     }
-  }, [filtroNomes])
+  }, [filtroNomes, userLoading])
 
   useEffect(() => { carregar() }, [carregar])
+
+  // Ref p/ listeners de longa duração (realtime) sempre chamarem a versão atual
+  const carregarRef = useRef(carregar)
+  useEffect(() => { carregarRef.current = carregar }, [carregar])
 
   // Voltou a rede → recarrega sozinho
   useEffect(() => {
@@ -162,18 +172,21 @@ export default function OcorrenciasTecnicoPage() {
     return () => window.removeEventListener('online', onOnline)
   }, [carregar])
 
-  // Realtime: nova ocorrência ou avaliação da defesa atualiza a tela
+  // Realtime: nova ocorrência ou avaliação da defesa atualiza a tela.
+  // Inscreve UMA vez: recriar o canal com o mesmo nome enquanto o anterior
+  // ainda está saindo (removeChannel é assíncrono) reaproveita o canal antigo
+  // e o .subscribe() duplicado quebra o realtime.
   useEffect(() => {
     const chs = [
       supabase.channel('oc_tec_rt')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_ocorrencias' }, () => carregar())
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_ocorrencias' }, () => carregarRef.current())
         .subscribe(),
       supabase.channel('oc_just_rt')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_justificativas' }, () => carregar())
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_justificativas' }, () => carregarRef.current())
         .subscribe(),
     ]
     return () => { chs.forEach(c => supabase.removeChannel(c)) }
-  }, [carregar])
+  }, [])
 
   // Catálogo remoto (labels/pontos vivos do Portal), com cache local
   useEffect(() => {
@@ -188,7 +201,7 @@ export default function OcorrenciasTecnicoPage() {
       .then(j => {
         if (j?.catalogo) {
           setCatRemoto(j)
-          localStorage.setItem(CATALOGO_CACHE_KEY, JSON.stringify(j))
+          try { localStorage.setItem(CATALOGO_CACHE_KEY, JSON.stringify(j)) } catch {}
         }
       })
       .catch(() => {})
@@ -220,9 +233,15 @@ export default function OcorrenciasTecnicoPage() {
   }
 
   const enviarJustificativa = async (o: Ocorrencia) => {
+    if (enviandoRef.current) return
     if (!justTexto.trim()) { setJustErro('Escreva a sua justificativa.'); return }
     const errArq = validarArquivos(justArquivos)
     if (errArq) { setJustErro(errArq); return }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      setJustErro('Sem conexão. Sua justificativa continua aqui — envie quando o sinal voltar.')
+      return
+    }
+    enviandoRef.current = true
     setJustEnviando(true)
     setJustErro('')
     try {
@@ -241,8 +260,11 @@ export default function OcorrenciasTecnicoPage() {
           tamanho: f.size,
         })
       }
-      if (justArquivos.length > 0 && anexos.length === 0) {
-        setJustErro('Falha ao enviar os anexos. Tente de novo.')
+      if (anexos.length < justArquivos.length) {
+        // Não envia a defesa sem parte das provas — o técnico acharia que foram todas
+        setJustErro(anexos.length === 0
+          ? 'Falha ao enviar os anexos. Verifique a conexão e tente de novo.'
+          : `Só ${anexos.length} de ${justArquivos.length} anexos foram enviados. Verifique a conexão e tente de novo.`)
         setJustEnviando(false)
         return
       }
@@ -255,7 +277,11 @@ export default function OcorrenciasTecnicoPage() {
         status: 'pendente',
         anexos,
       })
-      if (error) { setJustErro(error.message); setJustEnviando(false); return }
+      if (error) {
+        console.error('[ocorrencias] erro ao enviar justificativa:', error)
+        setJustErro('Não foi possível enviar a justificativa. Tente de novo.')
+        return
+      }
 
       // Avisa os admins do painel (respeitando módulos silenciados)
       try {
@@ -281,7 +307,11 @@ export default function OcorrenciasTecnicoPage() {
 
       setJustTexto(''); setJustArquivos([]); setJustAberta(null)
       carregar()
+    } catch (err) {
+      console.error('[ocorrencias] erro ao enviar justificativa:', err)
+      setJustErro('Não foi possível enviar a justificativa. Verifique a conexão e tente de novo.')
     } finally {
+      enviandoRef.current = false
       setJustEnviando(false)
     }
   }
@@ -320,9 +350,17 @@ export default function OcorrenciasTecnicoPage() {
 
   const pendentes = ocorrencias.filter(o => (o.tecnico_justificativas || []).length === 0)
   const historico = ocorrencias.filter(o => (o.tecnico_justificativas || []).length > 0)
-  const mesAtual = new Date().toISOString().slice(0, 7)
+  // Mês no fuso local: created_at é UTC (ocorrência de 22h do dia 31 cairia no mês seguinte)
+  const mesAtual = mesLocalISO()
+  const mesDa = (o: Ocorrencia) => {
+    if (o.data && o.data.length <= 10) return o.data.slice(0, 7)
+    const iso = o.data || o.created_at
+    if (!iso) return ''
+    const d = new Date(iso)
+    return isNaN(d.getTime()) ? iso.slice(0, 7) : mesLocalISO(d)
+  }
   const pontosMes = ocorrencias
-    .filter(o => aindaVale(o) && (o.data || o.created_at || '').slice(0, 7) === mesAtual)
+    .filter(o => aindaVale(o) && mesDa(o) === mesAtual)
     .reduce((s, o) => s + (o.pontos_descontados || 0), 0)
 
   const thumbAnexo = (a: Anexo, i: number) => (
@@ -362,7 +400,7 @@ export default function OcorrenciasTecnicoPage() {
         <div style={{ width: 46, height: 46, borderRadius: 14, background: colors.dangerBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <AlertTriangle size={24} color={colors.danger} />
         </div>
-        <div style={{ flex: 1 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 20, fontWeight: 800, color: colors.text }}>Ocorrências</div>
           <div style={{ fontSize: 12, color: colors.textMuted }}>Pontos e justificativas</div>
         </div>
@@ -414,7 +452,7 @@ export default function OcorrenciasTecnicoPage() {
                 {o.origem === 'auto' && (
                   <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: '#111', color: '#fff' }}>AUTO</span>
                 )}
-                <span style={{ fontSize: 15, fontWeight: 800, color: '#7F1D1D', flex: 1 }}>{r.label}</span>
+                <span style={{ fontSize: 15, fontWeight: 800, color: '#7F1D1D', flex: 1, minWidth: 120, overflowWrap: 'anywhere' }}>{r.label}</span>
                 <span style={{ fontSize: 14, fontWeight: 900, padding: '4px 10px', borderRadius: 8, background: '#DC2626', color: '#fff', flexShrink: 0 }}>
                   −{o.pontos_descontados} pts
                 </span>
@@ -454,7 +492,7 @@ export default function OcorrenciasTecnicoPage() {
                     onChange={e => setJustTexto(e.target.value)}
                     placeholder="Explique o que aconteceu..."
                     rows={3}
-                    style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.border}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA', resize: 'vertical', fontFamily: 'inherit' }}
+                    style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.border}`, fontSize: 16, boxSizing: 'border-box', background: '#FAFAFA', resize: 'vertical', fontFamily: 'inherit' }}
                   />
                   <input
                     ref={fileRef} type="file" accept="image/*,video/*" multiple
@@ -475,7 +513,7 @@ export default function OcorrenciasTecnicoPage() {
                         return (
                           <div key={i} style={{ position: 'relative', width: 72, height: 72, borderRadius: 8, overflow: 'hidden', border: `1px solid ${colors.border}`, background: '#000' }}>
                             {isVideo ? <video src={url} muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <img src={url} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-                            <button onClick={() => setJustArquivos(prev => prev.filter((_, idx) => idx !== i))} style={{ position: 'absolute', top: 3, right: 3, background: 'rgba(0,0,0,0.6)', border: 'none', width: 20, height: 20, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <button aria-label="Remover anexo" disabled={justEnviando} onClick={() => setJustArquivos(prev => prev.filter((_, idx) => idx !== i))} style={{ position: 'absolute', top: 2, right: 2, background: 'rgba(0,0,0,0.6)', border: 'none', width: 28, height: 28, borderRadius: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                               <X size={12} color="#fff" />
                             </button>
                           </div>
@@ -485,7 +523,7 @@ export default function OcorrenciasTecnicoPage() {
                   )}
                   {justErro && <div style={{ fontSize: 12, color: colors.danger, fontWeight: 600, marginTop: 8 }}>{justErro}</div>}
                   <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-                    <button onClick={() => setJustAberta(null)} style={{ flex: 1, padding: 12, borderRadius: 10, fontSize: 13, fontWeight: 700, background: colors.surfaceAlt, color: colors.textMuted, border: 'none' }}>Cancelar</button>
+                    <button onClick={() => setJustAberta(null)} disabled={justEnviando} style={{ flex: 1, padding: 12, borderRadius: 10, fontSize: 13, fontWeight: 700, background: colors.surfaceAlt, color: colors.textMuted, border: 'none' }}>Cancelar</button>
                     <button onClick={() => enviarJustificativa(o)} disabled={justEnviando || !justTexto.trim()} style={{
                       flex: 2, padding: 12, borderRadius: 10, fontSize: 13, fontWeight: 700, background: '#DC2626', color: '#fff', border: 'none',
                       opacity: (justEnviando || !justTexto.trim()) ? 0.5 : 1,
@@ -522,7 +560,7 @@ export default function OcorrenciasTecnicoPage() {
                 {o.origem === 'auto' && (
                   <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: '#111', color: '#fff' }}>AUTO</span>
                 )}
-                <span style={{ fontSize: 14, fontWeight: 700, color: colors.text, flex: 1 }}>{r.label}</span>
+                <span style={{ fontSize: 14, fontWeight: 700, color: colors.text, flex: 1, minWidth: 120, overflowWrap: 'anywhere' }}>{r.label}</span>
                 <span style={{
                   fontSize: 13, fontWeight: 900, flexShrink: 0,
                   color: vale ? colors.danger : colors.textSubtle,

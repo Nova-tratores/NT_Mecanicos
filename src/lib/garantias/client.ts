@@ -68,8 +68,10 @@ export async function listarMinhasGarantias(tecnicoNome: string): Promise<Garant
     .ilike('tecnico_nome', tecnicoNome)
     .order('created_at', { ascending: false })
   if (error) {
+    // Lança para a tela cair no cache offline em vez de mostrar
+    // "nenhuma garantia" quando o sinal falha.
     console.error('[garantias] listarMinhasGarantias:', error.message)
-    return []
+    throw new Error(error.message)
   }
   return (data as GarantiaResumo[]) || []
 }
@@ -352,31 +354,39 @@ function sanitize(name: string) {
 
 export async function responderPendencia(
   input: ResponderPendenciaInput,
-): Promise<{ ok: boolean; erro?: string }> {
+): Promise<{ ok: boolean; erro?: string; enviados?: File[] }> {
   const { garantiaId, pendenciaId, texto, imagens, tecnicoNome } = input
   if (!texto.trim() && imagens.length === 0) {
     return { ok: false, erro: 'Responda com um texto ou anexe ao menos uma foto/vídeo.' }
   }
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { ok: false, erro: 'Sem conexão. Sua resposta continua aqui — envie quando tiver sinal.' }
+  }
+  const erroRede = 'Não foi possível falar com o servidor (sinal fraco?). Tente de novo.'
 
   // Carrega pendência e garantia para validar e definir transição
-  const { data: pend } = await supabase
+  const { data: pend, error: pendLoadErr } = await supabase
     .from('garantia_pendencias')
     .select('*')
     .eq('id', pendenciaId)
     .eq('garantia_id', garantiaId)
     .maybeSingle()
+  if (pendLoadErr) return { ok: false, erro: erroRede }
   if (!pend) return { ok: false, erro: 'Pendência não encontrada.' }
   if ((pend as any).status !== 'aberta') return { ok: false, erro: 'Esta pendência já foi respondida.' }
 
-  const { data: g } = await supabase
+  const { data: g, error: gLoadErr } = await supabase
     .from('garantias')
     .select('id, numero, id_ordem')
     .eq('id', garantiaId)
     .maybeSingle()
+  if (gLoadErr) return { ok: false, erro: erroRede }
   if (!g) return { ok: false, erro: 'Garantia não encontrada.' }
 
   // Upload de imagens -> bucket garantias -> grava em garantia_anexos
   const anexoIds: string[] = []
+  const enviados: File[] = []
+  const falhas: string[] = []
   for (const img of imagens) {
     try {
       const ext = img.name.split('.').pop() || 'jpg'
@@ -386,6 +396,7 @@ export async function responderPendencia(
         .upload(path, img, { contentType: img.type || 'image/jpeg', upsert: true })
       if (upErr) {
         console.error('[garantias] upload erro:', upErr.message)
+        falhas.push(img.name)
         continue
       }
       const { data: pub } = supabase.storage.from(BUCKET_GARANTIAS).getPublicUrl(path)
@@ -402,9 +413,26 @@ export async function responderPendencia(
         })
         .select()
         .single()
-      if (anexo) anexoIds.push((anexo as any).id)
+      if (anexo) {
+        anexoIds.push((anexo as any).id)
+        enviados.push(img)
+      } else {
+        falhas.push(img.name)
+      }
     } catch (err) {
       console.error('[garantias] falha ao enviar imagem:', err)
+      falhas.push(img.name)
+    }
+  }
+
+  // Não fecha a pendência se algum anexo não subiu — antes a resposta era
+  // gravada "sem as fotos" em silêncio e o garantista não via a evidência.
+  // `enviados` permite à tela tirar da seleção o que já subiu (evita duplicar).
+  if (falhas.length > 0) {
+    return {
+      ok: false,
+      enviados,
+      erro: `Não foi possível enviar ${falhas.length} arquivo(s): ${falhas.join(', ')}. Verifique o sinal e toque em enviar de novo.`,
     }
   }
 
@@ -421,7 +449,11 @@ export async function responderPendencia(
     })
     .eq('id', pendenciaId)
     .select('id')
-  if (pendErr || !pendUpd?.length) {
+  if (pendErr && !pendUpd) {
+    console.error('[garantias] fechar pendência:', pendErr.message)
+    return { ok: false, erro: erroRede }
+  }
+  if (!pendUpd?.length) {
     return { ok: false, erro: 'Falha ao salvar a resposta (sem permissão de escrita — avise o garantista).' }
   }
 

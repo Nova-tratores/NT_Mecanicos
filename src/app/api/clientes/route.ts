@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { requireAdmin } from '../_lib/auth'
 
 async function fetchAll<T>(table: string, select: string, filters?: (q: any) => any): Promise<T[]> {
   const all: T[] = []
@@ -19,6 +20,8 @@ async function fetchAll<T>(table: string, select: string, filters?: (q: any) => 
 }
 
 export async function GET(req: NextRequest) {
+  const auth = await requireAdmin(req)
+  if (auth instanceof NextResponse) return auth
   try {
     const sp = req.nextUrl.searchParams
     const codCli = sp.get('codCli')
@@ -42,7 +45,7 @@ export async function GET(req: NextRequest) {
         .select('*')
         .eq('cod_cli', codCli)
         .eq('empresa', empresa)
-        .single()
+        .maybeSingle()
 
       const ordens = await fetchAll<any>('portal_nt_clientes_os',
         'num_os,cod_os,empresa,cod_cli,cliente_nome,etapa,data_previsao,data_inclusao,data_faturamento,valor_total,status,cancelada,faturada,num_pedido_cli,vendedor,cidade,contrato,projeto,num_nf,link_nf,servicos,obs,dados_adic',
@@ -71,6 +74,7 @@ export async function GET(req: NextRequest) {
         .from('portal_nt_clientes_pv')
         .select('*')
         .eq('cod_cli', codCli)
+        .eq('empresa', empresa) // cod_cli do Omie é por empresa — sem isso misturava PVs de outra empresa
 
       // Merge and deduplicate
       const seen = new Set(pedidos.map((p: any) => `${p.num_pedido}|${p.empresa}`))
@@ -96,10 +100,10 @@ export async function GET(req: NextRequest) {
     }
 
     // Projects
-    const { data: projetos } = await supabase
-      .from('portal_nt_projetos_PRINCIPAL')
-      .select('codigo,empresa,nome,cod_cli_ultimo,cliente_nome_ultimo')
-      .not('cod_cli_ultimo', 'is', null)
+    // Paginado: a tabela de projetos pode passar de 1000 linhas
+    const projetos = await fetchAll<any>('portal_nt_projetos_PRINCIPAL',
+      'codigo,empresa,nome,cod_cli_ultimo,cliente_nome_ultimo',
+      q => q.not('cod_cli_ultimo', 'is', null))
 
     const projMap: Record<string, any[]> = {}
     for (const p of (projetos || [])) {
@@ -128,7 +132,7 @@ export async function GET(req: NextRequest) {
 
     // Tags
     const { data: etiquetas } = await supabase.from('cliente_etiquetas').select('*')
-    const { data: etiquetasMapa } = await supabase.from('cliente_etiqueta_map').select('*')
+    const etiquetasMapa = await fetchAll<any>('cliente_etiqueta_map', '*')
 
     return NextResponse.json({ clientes: result, etiquetas: etiquetas || [], etiquetasMapa: etiquetasMapa || [] })
   } catch (err: any) {
@@ -138,6 +142,8 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const auth = await requireAdmin(req)
+  if (auth instanceof NextResponse) return auth
   try {
     const body = await req.json()
     const { acao } = body

@@ -15,10 +15,11 @@ interface UseCachedResult<T> {
 const FETCH_TIMEOUT = 8000
 
 function withTimeout<T>(p: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
   return Promise.race([
     p,
-    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), FETCH_TIMEOUT)),
-  ])
+    new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('timeout')), FETCH_TIMEOUT) }),
+  ]).finally(() => clearTimeout(timer))
 }
 
 export function useCached<T>(
@@ -43,18 +44,21 @@ export function useCached<T>(
     if (!background) setLoading(true)
     else setRefreshing(true)
 
+    // Key do momento da busca: se a key mudar no meio, o resultado não pode
+    // ser gravado/mostrado como se fosse da key nova
+    const k = keyRef.current
     try {
       const result = await withTimeout(fetcherRef.current())
       // Só persiste se estiver online — evita sobrescrever cache offline com dados vazios
       if (navigator.onLine) {
-        cacheSet(keyRef.current, result)
+        cacheSet(k, result)
       }
-      setData(result)
+      if (keyRef.current === k) setData(result)
     } catch (e) {
-      console.error(`[cache] Erro ao buscar ${keyRef.current}:`, e)
+      console.error(`[cache] Erro ao buscar ${k}:`, e)
       // Se falhou (offline), tenta IndexedDB
-      const persisted = await cacheGetPersisted<T>(keyRef.current)
-      if (persisted) setData(persisted)
+      const persisted = await cacheGetPersisted<T>(k)
+      if (persisted && keyRef.current === k) setData(persisted)
     } finally {
       setLoading(false)
       setRefreshing(false)
