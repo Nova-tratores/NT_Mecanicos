@@ -8,6 +8,7 @@ import {
 import Link from 'next/link'
 import { PageSpinner } from '@/components/ui'
 import { useSearchParams } from 'next/navigation'
+import { supabase } from '@/lib/supabase'
 
 interface ChecklistData {
   checklist: {
@@ -33,17 +34,22 @@ function ChecklistVerContent() {
 
   useEffect(() => {
     if (!token) { setError('Token não informado'); setLoading(false); return }
-    fetch('/api/checklist-veiculo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'carregar', token }),
-    })
+    // ver checklist exige login (as fotos ficam em pasta privada)
+    supabase.auth.getSession()
+      .then(({ data: { session } }) => {
+        if (!session) throw new Error('login')
+        return fetch('/api/checklist-veiculo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ action: 'carregar', token }),
+        })
+      })
       .then(r => r.json())
       .then(d => {
         if (d.error) setError(d.error)
         else setData(d)
       })
-      .catch(() => setError('Erro ao carregar'))
+      .catch((e) => setError(e?.message === 'login' ? 'Entre no app para ver o checklist.' : 'Erro ao carregar'))
       .finally(() => setLoading(false))
   }, [token])
 
@@ -55,6 +61,9 @@ function ChecklistVerContent() {
         <Shield size={48} color={colors.textMuted} style={{ margin: '0 auto 16px' }} />
         <div style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>Checklist não encontrado</div>
         <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 6 }}>{error || 'Token inválido'}</div>
+        {/login|Entre no app/i.test(error) && (
+          <Link href="/login" style={{ display: 'inline-block', marginTop: 12, fontSize: 14, fontWeight: 700, color: colors.primary }}>Entrar</Link>
+        )}
       </div>
     )
   }
