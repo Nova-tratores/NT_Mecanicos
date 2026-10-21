@@ -141,9 +141,10 @@ export default function ChecklistVeiculoPage() {
 
       // Carregar histórico
       try {
+        const { data: { session } } = await supabase.auth.getSession()
         const res = await fetch('/api/checklist-veiculo', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token || ''}` },
           body: JSON.stringify({ action: 'listar', tecnico_nome: nome }),
         })
         if (res.ok) {

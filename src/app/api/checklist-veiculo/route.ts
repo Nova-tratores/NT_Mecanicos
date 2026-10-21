@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
+import { assinarFotos, subirFotoChecklist, usuarioDoToken } from '@/lib/checklist-fotos'
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL || '',
@@ -151,13 +152,10 @@ export async function POST(req: NextRequest) {
         const buffer = Buffer.from(await foto.arrayBuffer())
         fotoTamanho = buffer.length
 
-        const { error: upErr } = await supabase.storage
-          .from('requisicoes')
-          .upload(path, buffer, { upsert: true, contentType: foto.type })
-        if (upErr) return NextResponse.json({ error: `Falha no upload da foto: ${upErr.message}` }, { status: 500 })
-
-        const { data: urlData } = supabase.storage.from('requisicoes').getPublicUrl(path)
-        fotoUrl = urlData.publicUrl
+        // pasta privada (antes: bucket público `requisicoes`, abria sem login)
+        const up = await subirFotoChecklist(supabase, path, buffer, foto.type || 'image/jpeg')
+        if ('erro' in up) return NextResponse.json({ error: `Falha no upload da foto: ${up.erro}` }, { status: 500 })
+        fotoUrl = up.ref
       }
 
       // Upsert item
@@ -169,9 +167,10 @@ export async function POST(req: NextRequest) {
         .maybeSingle()
 
       if (existing) {
+        // sem foto nova, mantém a foto que já estava (antes apagava)
         await supabase.from('veiculo_checklist_itens').update({
-          resposta, observacao, foto_url: fotoUrl, foto_tamanho: fotoTamanho,
-          respondido_em: new Date().toISOString(),
+          resposta, observacao, respondido_em: new Date().toISOString(),
+          ...(fotoUrl ? { foto_url: fotoUrl, foto_tamanho: fotoTamanho } : {}),
         }).eq('id', existing.id)
       } else {
         await supabase.from('veiculo_checklist_itens').insert({
@@ -187,7 +186,8 @@ export async function POST(req: NextRequest) {
         .eq('id', checklistId)
         .eq('status', 'pendente')
 
-      return NextResponse.json({ ok: true, foto_url: fotoUrl })
+      const [assinada] = await assinarFotos(supabase, [{ foto_url: fotoUrl }])
+      return NextResponse.json({ ok: true, foto_url: assinada.foto_url })
     }
 
     // JSON actions
@@ -252,7 +252,7 @@ export async function POST(req: NextRequest) {
           .select('*')
           .eq('checklist_id', existente.id)
           .order('created_at')
-        return NextResponse.json({ id: existente.id, itens: itens || [], items: CHECKLIST_ITEMS })
+        return NextResponse.json({ id: existente.id, itens: await assinarFotos(supabase, itens || []), items: CHECKLIST_ITEMS })
       }
 
       const insertData: Record<string, any> = {
@@ -341,6 +341,10 @@ export async function POST(req: NextRequest) {
 
     // Carregar (por id ou token)
     if (action === 'carregar') {
+      // ver checklist exige login (antes bastava o token do link e as fotos abriam para qualquer um)
+      if (!(await usuarioDoToken(supabase, req.headers.get('authorization')))) {
+        return NextResponse.json({ error: 'Entre no app para ver o checklist.', login: true }, { status: 401 })
+      }
       const { id, token } = body
       let query = supabase.from('veiculo_checklist').select('*')
       if (token) query = query.eq('share_token', token)
@@ -354,11 +358,14 @@ export async function POST(req: NextRequest) {
         .eq('checklist_id', checklist.id)
         .order('created_at')
 
-      return NextResponse.json({ checklist, itens: itens || [], items: CHECKLIST_ITEMS })
+      return NextResponse.json({ checklist, itens: await assinarFotos(supabase, itens || []), items: CHECKLIST_ITEMS })
     }
 
     // Listar do técnico
     if (action === 'listar') {
+      if (!(await usuarioDoToken(supabase, req.headers.get('authorization')))) {
+        return NextResponse.json({ error: 'Entre no app.', login: true }, { status: 401 })
+      }
       const { tecnico_nome } = body
       let { data, error } = await supabase
         .from('veiculo_checklist')
