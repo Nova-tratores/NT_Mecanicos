@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { exigirUsuario, ehDoUsuario, nomeDoUsuario, supabaseAdmin, type UsuarioApi } from '@/lib/apiAuth'
-import { randomUUID, createHash } from 'crypto'
+import { randomUUID } from 'crypto'
 import { hojeBR } from '@/lib/hoje'
+import { assinarFotos, subirFotoChecklist } from '@/lib/checklist-fotos'
 
 const CHECKLIST_ITEMS = [
   { key: 'crlv', cat: 'Documentação', titulo: 'CRLV', desc: 'Fotografe o documento CRLV do veículo e verifique a validade' },
@@ -165,14 +166,10 @@ export async function POST(req: NextRequest) {
         const buffer = Buffer.from(await foto.arrayBuffer())
         fotoTamanho = buffer.length
 
-        const { error: upErr } = await supabaseAdmin().storage
-          .from('requisicoes')
-          .upload(path, buffer, { upsert: true, contentType: foto.type })
-        if (upErr) return NextResponse.json({ error: `Falha no upload da foto: ${upErr.message}` }, { status: 500 })
-
-        const { data: urlData } = supabaseAdmin().storage.from('requisicoes').getPublicUrl(path)
-        // ?h= resumo dos bytes: acha foto repetida e não mostra a foto velha do cache (mesmo caminho)
-        fotoUrl = `${urlData.publicUrl}?h=${createHash('sha1').update(buffer).digest('hex').slice(0, 16)}`
+        // pasta privada (antes: bucket público `requisicoes`, abria sem login)
+        const up = await subirFotoChecklist(supabaseAdmin(), path, buffer, foto.type || 'image/jpeg')
+        if ('erro' in up) return NextResponse.json({ error: `Falha no upload da foto: ${up.erro}` }, { status: 500 })
+        fotoUrl = up.ref
       }
 
       // Upsert item
@@ -204,19 +201,22 @@ export async function POST(req: NextRequest) {
         .eq('id', checklistId)
         .eq('status', 'pendente')
 
-      return NextResponse.json({ ok: true, foto_url: fotoUrl })
+      const [assinada] = await assinarFotos(supabaseAdmin(), [{ foto_url: fotoUrl }])
+      return NextResponse.json({ ok: true, foto_url: assinada.foto_url })
     }
 
     // JSON actions
     const body = await req.json()
     const { action } = body
 
-    // link de compartilhar (/checklist-veiculo/ver?token=…) abre sem login, só pelo share_token
+    // link de compartilhar (/checklist-veiculo/ver?token=…): exige login (as fotos são privadas) e abre pelo share_token
     if (action === 'carregar' && body.token) {
+      const uv = await exigirUsuario(req)
+      if (uv instanceof NextResponse) return NextResponse.json({ error: 'Entre no app para ver o checklist.', login: true }, { status: 401 })
       const { data: checklist } = await supabaseAdmin().from('veiculo_checklist').select('*').eq('share_token', String(body.token)).maybeSingle()
       if (!checklist) return NextResponse.json({ error: 'Não encontrado' }, { status: 404 })
       const { data: itens } = await supabaseAdmin().from('veiculo_checklist_itens').select('*').eq('checklist_id', checklist.id).order('created_at')
-      return NextResponse.json({ checklist, itens: itens || [], items: CHECKLIST_ITEMS })
+      return NextResponse.json({ checklist, itens: await assinarFotos(supabaseAdmin(), itens || []), items: CHECKLIST_ITEMS })
     }
 
     // o resto exige login; o técnico vem do token (José, 23/10/2026)
@@ -280,7 +280,7 @@ export async function POST(req: NextRequest) {
           .select('*')
           .eq('checklist_id', existente.id)
           .order('created_at')
-        return NextResponse.json({ id: existente.id, itens: itens || [], items: CHECKLIST_ITEMS })
+        return NextResponse.json({ id: existente.id, itens: await assinarFotos(supabaseAdmin(), itens || []), items: CHECKLIST_ITEMS })
       }
 
       const insertData: Record<string, any> = {
@@ -378,12 +378,12 @@ export async function POST(req: NextRequest) {
         .eq('checklist_id', checklist.id)
         .order('created_at')
 
-      return NextResponse.json({ checklist, itens: itens || [], items: CHECKLIST_ITEMS })
+      return NextResponse.json({ checklist, itens: await assinarFotos(supabaseAdmin(), itens || []), items: CHECKLIST_ITEMS })
     }
 
     // Listar do técnico
     if (action === 'listar') {
-      const { tecnico_nome } = body
+      const tecnico_nome = nomeDoUsuario(u, body.tecnico_nome)
       let { data, error } = await supabaseAdmin()
         .from('veiculo_checklist')
         .select('id, mes_referencia, status, score_confianca, duracao_total_seg, placa, titulo, km, share_token, created_at')
