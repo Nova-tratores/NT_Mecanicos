@@ -1,14 +1,21 @@
 'use client'
+import { hojeBR } from '@/lib/hoje'
 import { useState, useEffect, useMemo } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
 import { useDebounce } from '@/hooks/useDebounce'
 import { supabase } from '@/lib/supabase'
+import { offlineGet } from '@/lib/offlineCache'
+import { primeiroNomeIlike } from '@/lib/prefetch'
 import type { OrdemServico } from '@/lib/types'
-import Link from 'next/link'
 import {
-  FileText, FileCheck, MapPin, CheckCircle2, Send, ChevronDown, ChevronRight,
+  FileText, FileCheck, Send, ChevronDown, AlertTriangle, ClipboardList, Wrench, Hourglass, Layers, ChevronRight,
+  Search, X, Globe, Users, Building2, type LucideIcon,
 } from 'lucide-react'
+import {
+  OsCard, FASES_ORCAMENTO, FASES_EXECUCAO, SITUACAO, situacaoOS, clarinho, nomeBonito, numeroOS,
+  semAcento, numeroBuscado, maquinaDaOS, ehInterna, tecnicoNoCampo,
+} from '@/components/OsCardTecnico'
 import {
   PageHeader, TabBar, EmptyState, PageSpinner,
   Section, SearchInput,
@@ -25,6 +32,26 @@ interface OsData {
   agendaMap: Record<string, string[]> // Id_Ordem → datas agendadas
 }
 
+/** tira o que quebra o filtro .or() do PostgREST (vírgula, parênteses) e os coringas do ilike */
+const limparBusca = (t: string) => t.replace(/[,()%*]/g, ' ').replace(/\s+/g, ' ').trim()
+
+/** só as letras do 1º nome — a consulta traz um pouco a mais e o filtro fino é o mesmoNome (José, 23/10/2026:
+ *  "ilike %nome%" pegava técnicos de nome parecido) */
+const primeiroNome = (nome: string) => primeiroNomeIlike(limparBusca(nome)) // vogais viram '_' (ilike não ignora acento)
+
+/** a OS é deste técnico? (Os_Tecnico ou Os_Tecnico2) */
+const ehMinha = (o: { Os_Tecnico?: unknown; Os_Tecnico2?: unknown }, nome: string) =>
+  tecnicoNoCampo(o.Os_Tecnico, nome) || tecnicoNoCampo(o.Os_Tecnico2, nome)
+
+const soDigitos = (s: unknown) => String(s ?? '').replace(/\D/g, '')
+
+/** datas da OS marcadas no POS: Dias_Execucao ("2026-10-21 08:00-12:00, …") — a mesma leitura do feed */
+function diasDaOS(o: Record<string, unknown>): string[] {
+  return String(o.Dias_Execucao || '').split(',')
+    .map((s) => /^(\d{4}-\d{2}-\d{2})/.exec(s.trim())?.[1])
+    .filter((d): d is string => !!d)
+}
+
 /* ═══ Fetch principal ═══ */
 async function fetchOsData(nome: string): Promise<OsData> {
   // Duas queries em paralelo:
@@ -34,24 +61,27 @@ async function fetchOsData(nome: string): Promise<OsData> {
   //     necessária pra o contador "Enviadas" bater com a sub-aba, que mostra
   //     TUDO que foi enviado ao longo da vida do técnico, não só o que ainda
   //     está ativo
+  const p1 = primeiroNome(nome)
+  const filtroTec = `Os_Tecnico.ilike.%${p1}%,Os_Tecnico2.ilike.%${p1}%`
   const [osAtivasRes, osTodasRes] = await Promise.all([
     supabase
       .from('Ordem_Servico')
       .select('*')
       .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
-      .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
+      .or(filtroTec)
       .order('Id_Ordem', { ascending: false }),
     supabase
       .from('Ordem_Servico')
-      .select('Id_Ordem, Status')
-      .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
-      .limit(2000),
+      .select('Id_Ordem, Status, Os_Tecnico, Os_Tecnico2')
+      .or(filtroTec)
+      .limit(3000),
   ])
 
   if (osAtivasRes.error) throw new Error(osAtivasRes.error.message)
 
-  const todas = (osAtivasRes.data || []) as OrdemServico[]
-  const todasGlobal = (osTodasRes.data || []) as { Id_Ordem: string; Status: string }[]
+  const todas = ((osAtivasRes.data || []) as OrdemServico[]).filter((o) => ehMinha(o as unknown as Record<string, unknown>, nome))
+  const todasGlobal = ((osTodasRes.data || []) as { Id_Ordem: string; Status: string; Os_Tecnico?: string; Os_Tecnico2?: string }[])
+    .filter((o) => ehMinha(o, nome))
 
   let preenchidas = new Set<string>()
   let enviadas = new Set<string>()
@@ -72,16 +102,21 @@ async function fetchOsData(nome: string): Promise<OsData> {
     const idsAtivas = todas.map(o => o.Id_Ordem)
     const idsAll = todasGlobal.map(o => String(o.Id_Ordem))
     const cnpjs = [...new Set(todas.map(o => o.Cnpj_Cliente).filter(Boolean))]
-    const [preenchRes, cliRes, agendaRes, enviadasAllRes] = await Promise.all([
+    const hoje = hojeBR()
+    const [preenchRes, cliRes, lousaRes, enviadasAllRes] = await Promise.all([
       supabase.from('Ordem_Servico_Tecnicos').select('Ordem_Servico, Status').in('Ordem_Servico', idsAtivas),
+      // cadastro de clientes do Omie no portal (a tabela "Clientes" não existe)
       cnpjs.length > 0
-        ? supabase.from('Clientes').select('cnpj_cpf, cidade').in('cnpj_cpf', cnpjs)
+        ? supabase.from('portal_nt_clientes_cadastro_omie').select('cnpj_cpf, cidade').in('cnpj_cpf', cnpjs)
         : Promise.resolve({ data: null }),
+      // agenda do técnico = Lousa (lousa_servicos, tipo 'servico'), de hoje em diante
       supabase
-        .from('agenda_tecnico')
-        .select('id_ordem, data_agendada')
-        .in('id_ordem', idsAtivas)
-        .not('status', 'eq', 'cancelado'),
+        .from('lousa_servicos')
+        .select('data, cliente_cnpj, cliente_nome, tecnico_nome, tecnico_acompanhante')
+        .eq('tipo', 'servico')
+        .gte('data', hoje)
+        .limit(1000)
+        .then((r) => r, () => ({ data: null })),
       // Conta registros 'enviado' em TODAS as OS do técnico (incluindo já
       // finalizadas). Sem isso o contador subestima — só conta OS ativas.
       idsAll.length > 0
@@ -107,13 +142,26 @@ async function fetchOsData(nome: string): Promise<OsData> {
         enviadas.add(String(o.Id_Ordem))
       }
     }
-    cliRes.data?.forEach((c: { cnpj_cpf: string; cidade: string | null }) => {
+    ;(cliRes.data as { cnpj_cpf: string; cidade: string | null }[] | null)?.forEach((c) => {
       if (c.cidade) cidadeMap[c.cnpj_cpf] = c.cidade
     })
-    agendaRes.data?.forEach((a: { id_ordem: string; data_agendada: string }) => {
-      if (!agendaMap[a.id_ordem]) agendaMap[a.id_ordem] = []
-      agendaMap[a.id_ordem].push(a.data_agendada)
-    })
+
+    // Datas agendadas: os dias marcados na própria OS (Dias_Execucao, como o feed) + os lançamentos da Lousa
+    // do mesmo cliente com este técnico (a Lousa não guarda o nº da OS: liga pelo CNPJ — ou nome — do cliente)
+    const lousa = ((lousaRes as { data: unknown }).data || []) as {
+      data: string; cliente_cnpj: string | null; cliente_nome: string | null; tecnico_nome: string | null; tecnico_acompanhante: string | null
+    }[]
+    const minhasLousa = lousa.filter((l) => tecnicoNoCampo(l.tecnico_nome, nome) || tecnicoNoCampo(l.tecnico_acompanhante, nome))
+    for (const o of todas) {
+      const datas = new Set(diasDaOS(o as unknown as Record<string, unknown>))
+      const cnpj = soDigitos(o.Cnpj_Cliente)
+      const cli = semAcento(o.Os_Cliente || '').trim()
+      for (const l of minhasLousa) {
+        const mesmoCliente = (cnpj && soDigitos(l.cliente_cnpj) === cnpj) || (!l.cliente_cnpj && !!cli && semAcento(l.cliente_nome || '').trim() === cli)
+        if (mesmoCliente && l.data) datas.add(String(l.data).slice(0, 10))
+      }
+      if (datas.size) agendaMap[o.Id_Ordem] = [...datas].sort()
+    }
   }
 
   return { ordens: todas, preenchidas, enviadas, cidadeMap, enviadasCount: enviadas.size, agendaMap }
@@ -121,7 +169,29 @@ async function fetchOsData(nome: string): Promise<OsData> {
 
 /* ═══ Helpers ═══ */
 function getHoje() {
-  return new Date().toISOString().split('T')[0]
+  return hojeBR()
+}
+
+/* ═══ Agrupar e buscar (José, 22/10/2026: "difícil achar as ordens") ═══ */
+type Agrupar = 'situacao' | 'cliente' | 'nenhum'
+const AGRUPAR_LS = 'nt-os-agrupar'
+interface Grupo { k: string; rot: string; icon: LucideIcon; cor: string; lista: OrdemServico[]; semContagem?: boolean }
+
+/** a OS bate com a busca? cliente, máquina (Projeto/modelo/chassi), nº da OS ("846", "0846", "OS-0846") e PPV —
+ *  sem acento e sem maiúscula */
+function casaBusca(o: OrdemServico, q: string): boolean {
+  const num = numeroBuscado(q)
+  if (num && String(o.Id_Ordem).replace(/\D/g, '').replace(/^0+/, '').includes(num)) return true
+  const t = semAcento(q).trim()
+  if (!t) return true
+  return [o.Os_Cliente, o.ID_PPV, o.Id_Ordem, maquinaDaOS(o as unknown as Record<string, unknown>)]
+    .some((c) => semAcento(c).includes(t))
+}
+
+/** "2026-10-21" ou ISO → "21/10/2026" (data pura sem cair no dia anterior pelo fuso) */
+function dataBR(d: string) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d.trim())
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : new Date(d).toLocaleDateString('pt-BR')
 }
 
 function formatarData(d: string) {
@@ -129,125 +199,8 @@ function formatarData(d: string) {
   return `${dia}/${mes}`
 }
 
-/* ═══ Helpers de fase ═══ */
-const FASES_ORCAMENTO = ['Orçamento', 'Orçamento enviado para o cliente e aguardando']
-const FASES_EXECUCAO = ['Execução', 'Execução Procurando peças', 'Execução aguardando peças (em transporte)']
-const FASES_AGUARDANDO = ['Aguardando outros', 'Aguardando ordem Técnico', 'Relatório Concluído', 'Executada aguardando comercial']
+/* Fases e cartão de OS: components/OsCardTecnico.tsx */
 
-function getFaseInfo(status: string): { label: string; color: string; bg: string } {
-  if (FASES_EXECUCAO.includes(status)) {
-    if (status.includes('peças')) return { label: 'Aguardando peças', color: colors.warning, bg: colors.warningBg }
-    return { label: 'Em execução', color: colors.info, bg: colors.infoBg }
-  }
-  if (status === 'Aguardando ordem Técnico') return { label: 'Aguard. ordem técnico', color: '#7C3AED', bg: '#F5F3FF' }
-  if (status === 'Relatório Concluído') return { label: 'Rel. Concluído', color: colors.warning, bg: colors.warningBg }
-  if (status === 'Executada aguardando comercial') return { label: 'Aguard. comercial', color: colors.warning, bg: colors.warningBg }
-  if (status === 'Aguardando outros') return { label: 'Aguardando', color: colors.textMuted, bg: colors.border }
-  if (status.includes('Orçamento')) return { label: 'Orçamento', color: colors.accent, bg: colors.accentBg }
-  return { label: status, color: colors.textMuted, bg: colors.border }
-}
-
-/* Extrai o texto que vem depois de "Solicitação do Cliente:" na descrição.
-   Ex.: "Modelo: Chassis: ... Solicitação do cliente: TRATOR AQUECENDO Serviço Realizado:"
-   → "TRATOR AQUECENDO". Se não achar, retorna vazio. */
-function extrairSolicitacao(serv?: string | null): string {
-  if (!serv) return ''
-  const txt = serv.replace(/\s+/g, ' ').trim()
-  const m = txt.match(/solicita[çc][ãa]o do cliente\s*:?\s*(.*)/i)
-  if (!m) return ''
-  // Corta no próximo rótulo conhecido (Serviço Realizado)
-  const val = m[1].split(/servi[çc]o\s+realizado/i)[0]
-  return val.trim()
-}
-
-/* ═══ Card de OS (estilo remap) ═══ */
-function OsCard({
-  os,
-  cidade,
-  preenchida,
-  index = 0,
-}: {
-  os: OrdemServico
-  cidade?: string
-  preenchida: boolean
-  index?: number
-}) {
-  const fase = getFaseInfo(os.Status)
-  const Icon = preenchida ? CheckCircle2 : FileText
-  const iconBg = preenchida ? colors.success : colors.warning
-  const solicitacao = extrairSolicitacao(os.Serv_Solicitado) || os.Tipo_Servico
-  // Atrasada para preencher: previsão de execução vencida (a lista Abertas já exclui enviadas)
-  const prev = os.Previsao_Execucao?.trim?.() || ''
-  const atrasada = !!prev && prev < getHoje()
-
-  return (
-    <Link
-      href={`/os/${os.Id_Ordem}`}
-      className="hb"
-      style={{
-        position: 'relative', overflow: 'hidden',
-        display: 'flex', alignItems: 'center', gap: 14, textDecoration: 'none',
-        background: colors.surface, borderRadius: 18, padding: 16,
-        border: `1px solid ${atrasada ? colors.dangerBorder : colors.border}`,
-        boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-        animationDelay: `${Math.min(index * 45, 300)}ms`,
-      }}
-    >
-      {atrasada && (
-        <span className="animate-pulse-alert" style={{
-          position: 'absolute', left: 0, top: 0, bottom: 0, width: 5, background: colors.danger,
-        }} />
-      )}
-      <div style={{
-        width: 50, height: 50, borderRadius: 15, flexShrink: 0, background: iconBg,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
-      }}>
-        <Icon size={24} color="#fff" strokeWidth={2.2} />
-      </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexWrap: 'wrap', marginBottom: 3 }}>
-          <span style={{ fontSize: 14, fontWeight: 700, color: colors.primary }}>{os.Id_Ordem}</span>
-          {atrasada && (
-            <span className="animate-pulse-alert" style={{
-              fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 6,
-              background: colors.danger, color: '#fff',
-            }}>
-              ATRASADA
-            </span>
-          )}
-          <span style={{
-            fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 6,
-            background: preenchida ? colors.successBg : colors.warningBg,
-            color: preenchida ? colors.success : colors.warning,
-          }}>
-            {preenchida ? 'Preenchida' : 'Pendente'}
-          </span>
-          <span style={{
-            fontSize: 10, fontWeight: 600, padding: '2px 7px', borderRadius: 6,
-            background: fase.bg, color: fase.color,
-          }}>
-            {fase.label}
-          </span>
-        </div>
-        <div style={{ fontSize: 15, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {os.Os_Cliente}
-        </div>
-        <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          {cidade && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 3, color: colors.accent }}>
-              <MapPin size={11} /> {cidade}
-            </span>
-          )}
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {solicitacao}{os.ID_PPV ? ` · ${os.ID_PPV}` : ''}
-          </span>
-        </div>
-      </div>
-      <ChevronRight size={18} color={colors.textSubtle} style={{ flexShrink: 0 }} />
-    </Link>
-  )
-}
 
 /* ═══ Página principal ═══ */
 export default function OrdensHub() {
@@ -266,6 +219,18 @@ export default function OrdensHub() {
   const [resultadoBusca, setResultadoBusca] = useState<OrdemServico[]>([])
   const [buscando, setBuscando] = useState(false)
   const [buscaCidadeMap, setBuscaCidadeMap] = useState<Record<string, string>>({})
+  // busca em todas as OS sem internet: avisa e procura no que está guardado no celular
+  const [buscaSemRede, setBuscaSemRede] = useState(false)
+  // busca no banco (todas as OS, não só as do técnico) só quando ele pede
+  const [buscarTodas, setBuscarTodas] = useState(false)
+  // como agrupar a lista (lembrado no aparelho)
+  const [agrupar, setAgruparState] = useState<Agrupar>(() => {
+    try { const v = localStorage.getItem(AGRUPAR_LS); return v === 'cliente' || v === 'nenhum' ? v : 'situacao' } catch { return 'situacao' }
+  })
+  const setAgrupar = (v: Agrupar) => { setAgruparState(v); try { localStorage.setItem(AGRUPAR_LS, v) } catch { /* sem espaço */ } }
+  const [fechados, setFechados] = useState<Set<string>>(() => new Set())
+  const alternarGrupo = (k: string) => setFechados((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n })
+  const mudarBusca = (v: string) => { setBusca(v); if (!v.trim()) setBuscarTodas(false) }
 
   // preenchidas/enviadas podem ser Set (online) ou Array (do IndexedDB serializado)
   const raw = data || {} as Partial<OsData>
@@ -340,120 +305,186 @@ export default function OrdensHub() {
     }
   }, [ordensRaw, enviadas, preenchidas, agendaMap, hoje])
 
-  // Busca com debounce
+  // Busca no banco, em TODAS as OS (botão "Buscar em todas as OS") — com debounce
   useEffect(() => {
-    if (!buscaDebounced.trim()) {
-      setResultadoBusca([])
-      return
-    }
+    // sem busca: a lista antiga não aparece (só é mostrada com buscarTodas + texto)
+    if (!buscarTodas || !buscaDebounced.trim()) return
     let cancelled = false
-    setBuscando(true)
     ;(async () => {
-      const { data: searchData } = await supabase
-        .from('Ordem_Servico')
-        .select('*')
-        .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
-        .or(`Id_Ordem.ilike.%${buscaDebounced.trim()}%,Os_Cliente.ilike.%${buscaDebounced.trim()}%,ID_PPV.ilike.%${buscaDebounced.trim()}%`)
-        .limit(10)
-      if (cancelled) return
-      const resultado = (searchData || []) as OrdemServico[]
-      setResultadoBusca(resultado)
-      const cnpjs = [...new Set(resultado.map(o => o.Cnpj_Cliente).filter(Boolean))]
-      if (cnpjs.length > 0) {
-        const { data: cliData } = await supabase.from('Clientes').select('cnpj_cpf, cidade').in('cnpj_cpf', cnpjs)
+      setBuscando(true)
+      // vírgula/parêntese/% quebravam o .or() (José, 23/10/2026)
+      const termo = buscaDebounced.replace(/[,()%*]/g, ' ').replace(/\s+/g, ' ').trim()
+      /** sem sinal: procura nas OS guardadas no celular */
+      const buscarNoCelular = async () => {
+        const guardadas = ((await offlineGet<OrdemServico[]>('prefetch:os-list')) || [])
         if (cancelled) return
-        const mapa: Record<string, string> = {}
-        cliData?.forEach((c: { cnpj_cpf: string; cidade: string | null }) => {
-          if (c.cidade) mapa[c.cnpj_cpf] = c.cidade
-        })
-        setBuscaCidadeMap(mapa)
+        setBuscaSemRede(true)
+        setResultadoBusca(guardadas.filter((o) => casaBusca(o, buscaDebounced)).slice(0, 20))
+        setBuscando(false)
       }
-      setBuscando(false)
+      if (!termo) { setResultadoBusca([]); setBuscando(false); return }
+      if (!navigator.onLine) { await buscarNoCelular(); return }
+      try {
+        const res = await Promise.race([
+          supabase
+            .from('Ordem_Servico')
+            .select('*')
+            .not('Status', 'in', '("Concluída","Cancelada","Concluida","cancelada")')
+            .or(`Id_Ordem.ilike.%${termo}%,Os_Cliente.ilike.%${termo}%,ID_PPV.ilike.%${termo}%`)
+            .limit(10),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+        ])
+        if (cancelled) return
+        if (res.error) throw new Error(res.error.message)
+        setBuscaSemRede(false)
+        const resultado = (res.data || []) as OrdemServico[]
+        setResultadoBusca(resultado)
+        const cnpjs = [...new Set(resultado.map(o => o.Cnpj_Cliente).filter(Boolean))]
+        if (cnpjs.length > 0) {
+          const { data: cliData } = await supabase.from('portal_nt_clientes_cadastro_omie').select('cnpj_cpf, cidade').in('cnpj_cpf', cnpjs)
+          if (cancelled) return
+          const mapa: Record<string, string> = {}
+          cliData?.forEach((c: { cnpj_cpf: string; cidade: string | null }) => {
+            if (c.cidade) mapa[c.cnpj_cpf] = c.cidade
+          })
+          setBuscaCidadeMap(mapa)
+        }
+        setBuscando(false)
+      } catch {
+        await buscarNoCelular()
+      }
     })()
     return () => { cancelled = true }
-  }, [buscaDebounced])
+  }, [buscaDebounced, buscarTodas])
+
+  /* ── busca nas OS do próprio técnico (já carregadas), ao digitar ── */
+  const todasAbertas = [...atrasadas, ...preencher, ...abertasExecucao, ...abertasOrcamento, ...abertasOutras]
+  const q = busca.trim()
+  const achadas = q ? todasAbertas.filter((o) => casaBusca(o, q)) : []
+  const cartao = (os: OrdemServico, i: number, destaque?: string, cid?: string) => (
+    // "Relatório preenchido" só com relatório ENVIADO (rascunho de horários não conta — José, 23/10/2026)
+    <OsCard key={os.Id_Ordem} os={os} cidade={cid ?? cidadeMap[os.Cnpj_Cliente]} preenchida={enviadas.has(String(os.Id_Ordem))} index={i} destaque={destaque} />
+  )
+
+  /* ── grupos ── */
+  const semInternas = (l: OrdemServico[]) => l.filter((o) => !ehInterna(o))
+  const internas = todasAbertas.filter((o) => ehInterna(o))
+  // Minhas OS = só as atrasadas e todas as abertas no nome dele; as enviadas têm o botão próprio na tela inicial
+  // e o agrupar saiu (José, 23/10/2026)
+  // atrasada = a mesma regra do cartão (previsão passou e a OS ainda está antes de feita), para a etiqueta e o grupo baterem
+  const ehAtrasada = (o: OrdemServico) => { const p = (o.Previsao_Execucao || '').trim().slice(0, 10); return !!p && p < hoje && situacaoOS(o.Status, true, false) === SITUACAO.atrasada }
+  const listaAtrasadas = todasAbertas.filter(ehAtrasada)
+  const naoAtrasadas = todasAbertas.filter((o) => !ehAtrasada(o))
+  const grupos: Grupo[] = [
+    { k: 'atr', rot: 'Atrasadas', icon: AlertTriangle, cor: SITUACAO.atrasada.cor, lista: listaAtrasadas },
+    { k: 'abe', rot: 'Abertas no seu nome', icon: FileText, cor: colors.primary, lista: naoAtrasadas },
+  ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
       {refreshing && <div className="refresh-bar" />}
 
-      <PageHeader title="Ordens" />
-
-      {/* Tabs */}
-      <TabBar
-        value={aba}
-        onChange={setAba}
-        options={[
-          { value: 'abertas', label: 'Abertas', icon: FileText },
-          { value: 'enviadas', label: 'Enviadas', icon: FileCheck },
-        ]}
+      <PageHeader
+        title="Ordens"
+        subtitle={loading ? 'carregando…' : `${todasAbertas.length} abertas no seu nome${listaAtrasadas.length ? ` · ${listaAtrasadas.length} atrasada${listaAtrasadas.length > 1 ? 's' : ''}` : ''}`}
       />
 
-      {/* ═══ ABA ABERTAS (preencher + abertas juntas) ═══ */}
-      {aba === 'abertas' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <SearchInput value={busca} onChange={setBusca} placeholder="Buscar OS, cliente ou PPV..." />
+      {/* ═══ ATRASADAS + ABERTAS ═══ */}
+      {(
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {/* busca grande, fixa no topo ao rolar */}
+          <div style={{
+            position: 'sticky', top: 'calc(64px + env(safe-area-inset-top, 0px))', zIndex: 20, margin: '0 -16px', padding: '8px 16px 10px',
+            background: colors.surfaceAlt, display: 'grid', gap: 8,
+          }}>
+            <label style={{
+              display: 'flex', alignItems: 'center', gap: 10, minHeight: 54, padding: '0 14px', borderRadius: 14,
+              background: colors.surface, border: `1.5px solid ${q ? colors.primary : colors.border}`, cursor: 'text',
+            }}>
+              <Search size={21} color={q ? colors.primary : colors.textSubtle} style={{ flexShrink: 0 }} />
+              <input
+                value={busca}
+                onChange={(e) => mudarBusca(e.target.value)}
+                placeholder="Cliente, máquina, nº da OS ou PPV"
+                inputMode="search"
+                enterKeyHint="search"
+                style={{ flex: 1, minWidth: 0, border: 'none', outline: 'none', background: 'transparent', fontSize: 17, color: colors.text, padding: '12px 0' }}
+              />
+              {busca && (
+                <button type="button" onClick={() => mudarBusca('')} aria-label="limpar busca" style={{
+                  width: 32, height: 32, borderRadius: 10, border: 'none', background: colors.surfaceAlt, display: 'grid', placeItems: 'center', cursor: 'pointer', flexShrink: 0,
+                }}>
+                  <X size={17} color={colors.textMuted} />
+                </button>
+              )}
+            </label>
+          </div>
 
-          {busca.trim() ? (
-            <Section label="Resultados">
-              {buscando ? (
-                <PageSpinner />
-              ) : resultadoBusca.length === 0 ? (
-                <EmptyState icon={FileText} title="Nenhuma OS encontrada" />
-              ) : (
-                resultadoBusca.map((os, i) => (
-                  <OsCard key={os.Id_Ordem} os={os} cidade={buscaCidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
-                ))
-              )}
-            </Section>
-          ) : loading ? (
-            <PageSpinner />
-          ) : (atrasadas.length === 0 && preencher.length === 0 && abertasExecucao.length === 0 && abertasOrcamento.length === 0 && abertasOutras.length === 0) ? (
-            <EmptyState icon={FileText} title="Nenhuma OS aberta" subtitle="Voce esta em dia" />
-          ) : (
+          {q ? (
+            /* ── resultado da busca ── */
             <>
-              {atrasadas.length > 0 && (
-                <Section label="Atrasadas">
-                  {atrasadas.map((os, i) => (
-                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
-                  ))}
-                </Section>
-              )}
-              {preencher.length > 0 && (
-                <Section label="Preencher">
-                  {preencher.map((os, i) => (
-                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
-                  ))}
-                </Section>
-              )}
-              {abertasExecucao.length > 0 && (
-                <Section label="Em Execução">
-                  {abertasExecucao.map((os, i) => (
-                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
-                  ))}
-                </Section>
-              )}
-              {abertasOrcamento.length > 0 && (
-                <Section label="Futuros">
-                  {abertasOrcamento.map((os, i) => (
-                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
-                  ))}
-                </Section>
-              )}
-              {abertasOutras.length > 0 && (
-                <Section label="Outras fases">
-                  {abertasOutras.map((os, i) => (
-                    <OsCard key={os.Id_Ordem} os={os} cidade={cidadeMap[os.Cnpj_Cliente]} preenchida={preenchidas.has(String(os.Id_Ordem))} index={i} />
-                  ))}
+              <div style={{ fontSize: 14, color: colors.textMuted, padding: '0 2px' }}>
+                {loading ? 'carregando suas ordens…' : achadas.length === 0
+                  ? <>Nenhuma das suas ordens abertas tem “{q}”.</>
+                  : <><span style={{ color: colors.text, fontWeight: 500 }}>{achadas.length}</span> {achadas.length === 1 ? 'ordem encontrada' : 'ordens encontradas'} nas suas abertas</>}
+              </div>
+              {achadas.map((os, i) => cartao(os, i, q))}
+
+              {!buscarTodas ? (
+                <button type="button" onClick={() => setBuscarTodas(true)} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, padding: '12px 14px', borderRadius: 12,
+                  background: colors.surface, border: `1px solid ${colors.border}`, color: colors.text, fontSize: 14, cursor: 'pointer',
+                }}>
+                  <Globe size={16} color={colors.primary} /> Buscar em todas as OS
+                </button>
+              ) : (
+                <Section label="Em todas as OS" icon={Globe} color={colors.primary} count={buscando ? undefined : resultadoBusca.length}>
+                  {buscaSemRede && !buscando && (
+                    <div style={{ fontSize: 13.5, color: '#9A3412', background: colors.warningBg, border: `1px solid ${colors.warningBorder}`, borderRadius: 10, padding: '8px 10px', marginBottom: 8 }}>
+                      Sem internet: mostrando só as ordens guardadas no celular.
+                    </div>
+                  )}
+                  {buscando ? (
+                    <PageSpinner />
+                  ) : resultadoBusca.length === 0 ? (
+                    <EmptyState icon={FileText} title="Nenhuma OS encontrada" subtitle="A busca em todas as OS procura nº, cliente e PPV" />
+                  ) : (
+                    resultadoBusca.map((os, i) => cartao(os, i, q, buscaCidadeMap[os.Cnpj_Cliente]))
+                  )}
                 </Section>
               )}
             </>
+          ) : loading ? (
+            <PageSpinner />
+          ) : todasAbertas.length === 0 ? (
+            <EmptyState icon={FileText} title="Nenhuma OS aberta" subtitle="Você está em dia" />
+          ) : (
+            grupos.filter((g) => g.lista.length > 0).map((g) => {
+              const aberto = !fechados.has(g.k)
+              return (
+                <div key={g.k} style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
+                  <button type="button" onClick={() => alternarGrupo(g.k)} aria-expanded={aberto} style={{
+                    display: 'flex', alignItems: 'center', gap: 10, width: '100%', minWidth: 0, padding: '8px 10px', borderRadius: 12,
+                    border: `1px solid ${colors.border}`, background: colors.surface, cursor: 'pointer', textAlign: 'left', color: colors.text,
+                  }}>
+                    <span style={{
+                      width: 32, height: 32, borderRadius: 10, flexShrink: 0, display: 'grid', placeItems: 'center',
+                      color: g.cor, background: clarinho(g.cor, 10),
+                    }}><g.icon size={16} /></span>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 15, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{g.rot}</span>
+                    {!g.semContagem && (
+                      <span style={{ fontSize: 13, padding: '1px 9px', borderRadius: 999, color: g.cor, background: clarinho(g.cor, 10), flexShrink: 0 }}>{g.lista.length}</span>
+                    )}
+                    <ChevronDown size={18} color={colors.textSubtle} style={{ flexShrink: 0, transition: 'transform .2s', transform: aberto ? 'rotate(180deg)' : 'none' }} />
+                  </button>
+                  {aberto && g.lista.map((os, i) => cartao(os, i))}
+                </div>
+              )
+            })
           )}
         </div>
       )}
 
-      {/* ═══ ABA ENVIADAS (histórico) ═══ */}
-      {aba === 'enviadas' && <OsEnviadasTab nome={nome} />}
 
       <div style={{ height: 80 }} />
     </div>
@@ -477,15 +508,15 @@ function OsEnviadasTab({ nome }: { nome: string }) {
   const [fotosPorOs, setFotosPorOs] = useState<Record<string, { label: string; url: string }[] | 'loading'>>({})
 
   const { data: ordens, loading } = useCached(
-    `os-enviadas:v6:${nome}`,
+    `os-enviadas:v7:${nome}`,
     async () => {
       type RegTec = {
-        id: number; Ordem_Servico: string; TecResp1: string | null; TecResp2: string | null;
+        IdOs: number; Ordem_Servico: string; TecResp1: string | null; TecResp2: string | null;
         Data: string; TipoServico: string | null; Status: string; pdf_criado: boolean; cliente?: string | null;
       }
       // Coluna se chama "Data" — NÃO "Data_Abertura" (esse era um nome inventado
       // que causava HTTP 400 silencioso e fazia a query inteira retornar []).
-      type OS = { Id_Ordem: string; Status: string; Tipo_Servico: string | null; Os_Cliente: string | null; Data: string | null }
+      type OS = { Id_Ordem: string; Status: string; Tipo_Servico: string | null; Os_Cliente: string | null; Data: string | null; Os_Tecnico?: string | null; Os_Tecnico2?: string | null }
 
       const FASES_FINALIZADAS = new Set([
         'Relatório Concluído', 'Relatorio Concluido',
@@ -502,22 +533,23 @@ function OsEnviadasTab({ nome }: { nome: string }) {
       //    SEM filtrar por TecResp (cobre caso do TecResp2 preencher).
       // 3) Inclui qualquer OS que tenha registro 'enviado' OU OS principal já
       //    está em fase finalizada (Concluída/Faturada/etc.).
+      const p1 = primeiroNome(nome)
       const { data: osList, error: osErr } = await supabase
         .from('Ordem_Servico')
-        .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data')
-        .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
-        .limit(1000)
+        .select('Id_Ordem, Status, Tipo_Servico, Os_Cliente, Data, Os_Tecnico, Os_Tecnico2')
+        .or(`Os_Tecnico.ilike.%${p1}%,Os_Tecnico2.ilike.%${p1}%`)
+        .limit(3000)
       if (osErr) {
         console.warn('[os-enviadas] erro na query de OS:', osErr.message)
         return [] as RegTec[]
       }
-      const osArr = (osList || []) as OS[]
+      const osArr = ((osList || []) as OS[]).filter((o) => ehMinha(o, nome))
       if (osArr.length === 0) return [] as RegTec[]
 
       const ids = osArr.map(o => String(o.Id_Ordem))
       const { data: regsData, error: regsErr } = await supabase
         .from('Ordem_Servico_Tecnicos')
-        .select('id, Ordem_Servico, TecResp1, TecResp2, Data, TipoServico, Status, pdf_criado')
+        .select('IdOs, Ordem_Servico, TecResp1, TecResp2, Data, TipoServico, Status, pdf_criado')
         .in('Ordem_Servico', ids)
         .order('Data', { ascending: false })
       if (regsErr) console.warn('[os-enviadas] erro na query de registros:', regsErr.message)
@@ -545,7 +577,7 @@ function OsEnviadasTab({ nome }: { nome: string }) {
         } else if (osFinalizada) {
           finais.push({
             ...(regs[0] || {
-              id: 0, Ordem_Servico: idOs, TecResp1: nome, TecResp2: null,
+              IdOs: 0, Ordem_Servico: idOs, TecResp1: nome, TecResp2: null,
               Data: os.Data || '', TipoServico: os.Tipo_Servico, Status: 'enviado', pdf_criado: false,
             }),
             cliente: os.Os_Cliente,
@@ -581,7 +613,7 @@ function OsEnviadasTab({ nome }: { nome: string }) {
 
   if (loading) return <PageSpinner />
 
-  const lista = (ordens || []) as Array<{ id: number; Ordem_Servico: string; TipoServico: string | null; Data: string; cliente?: string | null }>
+  const lista = (ordens || []) as Array<{ IdOs: number; Ordem_Servico: string; TipoServico: string | null; Data: string; cliente?: string | null }>
   const q = busca.trim().toLowerCase()
   const filtradas = q
     ? lista.filter(o => String(o.Ordem_Servico).toLowerCase().includes(q) || (o.cliente || '').toLowerCase().includes(q))
@@ -600,38 +632,46 @@ function OsEnviadasTab({ nome }: { nome: string }) {
           {filtradas.map((os, i) => {
             const aberto = expandido === os.Ordem_Servico
             const fotos = fotosPorOs[os.Ordem_Servico]
+            const verde = SITUACAO.feita.cor
             return (
               <div
-                key={os.id ?? os.Ordem_Servico}
+                key={os.Ordem_Servico}
                 className="hb-in"
                 style={{
-                  background: colors.surface, border: `1px solid ${colors.border}`,
-                  borderRadius: 18, overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
+                  background: clarinho(verde, 5), border: `1px solid ${clarinho(verde, 30, colors.border)}`,
+                  borderRadius: 16, overflow: 'hidden', minWidth: 0,
                   animationDelay: `${Math.min(i * 45, 300)}ms`,
                 }}
               >
-                <button onClick={() => toggle(os.Ordem_Servico)} style={{
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '6px 14px', background: verde, color: '#FEFEFE' }}>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>Enviada</span>
+                  <small style={{ fontSize: 12, opacity: 0.9 }}>{os.Data ? `relatório de ${dataBR(os.Data)}` : 'relatório enviado'}</small>
+                </div>
+                <button type="button" onClick={() => toggle(os.Ordem_Servico)} style={{
                   width: '100%', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left',
-                  padding: 16, display: 'flex', alignItems: 'center', gap: 14,
+                  padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 11, color: colors.text,
                 }}>
-                  <div style={{
-                    width: 50, height: 50, borderRadius: 15, flexShrink: 0, background: colors.success,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    boxShadow: '0 4px 10px rgba(0,0,0,0.12)',
+                  <span style={{
+                    width: 40, height: 40, borderRadius: 11, flexShrink: 0, background: verde,
+                    display: 'grid', placeItems: 'center', color: '#FEFEFE',
                   }}>
-                    <FileCheck size={24} color="#fff" strokeWidth={2.2} />
+                    <FileCheck size={18} />
+                  </span>
+                  <div style={{ display: 'grid', gap: 3, flex: 1, minWidth: 0 }}>
+                    <span style={{
+                      justifySelf: 'start', display: 'inline-flex', gap: 5, alignItems: 'baseline', fontSize: 13, padding: '0 8px',
+                      borderRadius: 7, background: clarinho(verde, 8), border: `1px solid ${clarinho(verde, 20, 'transparent')}`,
+                    }}>
+                      <em style={{ fontStyle: 'normal', fontSize: 10.5, color: verde }}>OS</em>{numeroOS(os.Ordem_Servico)}
+                    </span>
+                    <span style={{ fontSize: 16, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{nomeBonito(os.cliente) || 'Sem cliente'}</span>
+                    {os.TipoServico && <span style={{ fontSize: 13, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{os.TipoServico}</span>}
                   </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 15, fontWeight: 600, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{os.cliente || 'Sem cliente'}</div>
-                    <div style={{ fontSize: 12, color: colors.textMuted, marginTop: 2 }}>
-                      OS {os.Ordem_Servico}{os.Data ? ` · ${new Date(os.Data).toLocaleDateString('pt-BR')}` : ''}
-                    </div>
-                  </div>
-                  <ChevronDown size={18} color={colors.textSubtle} style={{ transition: 'transform 0.2s', transform: aberto ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
+                  <ChevronDown size={18} color="#94A3B8" style={{ transition: 'transform 0.2s', transform: aberto ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
                 </button>
 
                 {aberto && (
-                  <div style={{ padding: '0 16px 16px' }}>
+                  <div style={{ padding: '0 14px 14px' }}>
                     {fotos === 'loading' || fotos === undefined ? (
                       <div style={{ fontSize: 13, color: colors.textMuted, padding: '8px 0' }}>Carregando fotos...</div>
                     ) : fotos.length === 0 ? (
@@ -649,9 +689,10 @@ function OsEnviadasTab({ nome }: { nome: string }) {
                       </div>
                     )}
                     <a href={`/os-enviadas/${os.Ordem_Servico}`} style={{
-                      display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 12,
-                      fontSize: 13, color: colors.accent, textDecoration: 'none',
-                    }}>Ver detalhes da ordem</a>
+                      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 12,
+                      padding: '10px 14px', borderRadius: 12, background: '#FEFEFE', border: `1px solid ${colors.border}`,
+                      fontSize: 14, color: colors.text, textDecoration: 'none',
+                    }}>Ver detalhes da ordem <ChevronRight size={16} color={colors.textSubtle} /></a>
                   </div>
                 )}
               </div>

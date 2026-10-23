@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { exigirUsuario, supabaseAdmin } from '@/lib/apiAuth'
+import { codigoBusca, combina, ordenar, padraoSemAcento, palavrasBusca } from '@/lib/buscaCatalogo'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-)
-
+// Catálogo: só leitura, mas exige login como o resto do app (José, 23/10/2026)
 export async function POST(req: NextRequest) {
+  const u = await exigirUsuario(req)
+  if (u instanceof NextResponse) return u
+  const supabase = supabaseAdmin()
   try {
     const { action, marca, modelo, secao, figuraId, busca } = await req.json()
 
@@ -86,6 +86,28 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(result)
     }
 
+    // páginas aleatórias do catálogo para a vitrine da tela inicial (José, 23/10/2026)
+    if (action === 'aleatorias') {
+      const { count } = await supabase.from('catalogo_figuras').select('id', { count: 'exact', head: true }).not('image_url', 'is', null)
+      const total = count || 0
+      if (!total) return NextResponse.json([])
+      const sorteados = new Set<number>()
+      while (sorteados.size < Math.min(6, total)) sorteados.add(Math.floor(Math.random() * total))
+      const figs = (await Promise.all([...sorteados].map(async (off) => {
+        const { data } = await supabase.from('catalogo_figuras')
+          .select('id, name, secao, thumb_url, image_url, catalogo_figura_modelos(modelo)')
+          .not('image_url', 'is', null).order('id').range(off, off)
+        return (data || [])[0] as Record<string, unknown> | undefined
+      }))).filter(Boolean) as Record<string, unknown>[]
+      const modelos = [...new Set(figs.map((f) => ((f.catalogo_figura_modelos as { modelo: string }[] | null) || [])[0]?.modelo).filter(Boolean))] as string[]
+      const { data: mods } = modelos.length ? await supabase.from('catalogo_modelos').select('nome, marca').in('nome', modelos) : { data: [] }
+      const marcaDe = new Map(((mods || []) as { nome: string; marca: string }[]).map((m) => [m.nome, m.marca]))
+      return NextResponse.json(figs.map((f) => {
+        const modeloF = ((f.catalogo_figura_modelos as { modelo: string }[] | null) || [])[0]?.modelo || ''
+        return { id: f.id, nome: f.name, secao: f.secao, imagem: f.image_url || f.thumb_url, miniatura: f.thumb_url || f.image_url, modelo: modeloF, marca: marcaDe.get(modeloF) || '' }
+      }))
+    }
+
     if (action === 'figura') {
       const { data: fig } = await supabase.from('catalogo_figuras').select('*').eq('id', figuraId).maybeSingle()
       if (!fig) return NextResponse.json(null)
@@ -112,22 +134,19 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === 'busca') {
-      const safe = String(busca || '').replace(/[%,()*]/g, ' ').trim()
-      const tokens = safe.toLowerCase().split(/\s+/).filter((t: string) => t.length >= 2)
-      let query = supabase.from('catalogo_pecas').select('id, code, name, reference, qtd, figura_id').limit(60)
-      if (tokens.length === 0) {
-        query = query.or(`name.ilike.%${safe}%,code.ilike.%${safe}%`)
-      } else {
-        for (const t of tokens) query = query.ilike('name', `%${t}%`)
-      }
-      let { data: pecas } = await query
-      if ((!pecas || pecas.length === 0) && tokens.length > 1) {
-        const { data } = await supabase.from('catalogo_pecas')
-          .select('id, code, name, reference, qtd, figura_id')
-          .or(tokens.map((t: string) => `name.ilike.%${t}%`).join(',') + `,code.ilike.%${safe}%`)
-          .limit(60)
-        pecas = data
-      }
+      // código OU nome, sem ligar para acento nem "de/do" (lib/buscaCatalogo.ts)
+      const palavras = palavrasBusca(String(busca || ''))
+      const codigo = codigoBusca(String(busca || ''))
+      if (!palavras.length && codigo.length < 3) return NextResponse.json([])
+      const filtros = [
+        ...(codigo.length >= 3 ? [`code.ilike.%${codigo}%`] : []),
+        ...(palavras.length ? [`and(${palavras.map((t) => `name.ilike.%${padraoSemAcento(t)}%`).join(',')})`] : []),
+      ]
+      const { data: brutas } = await supabase.from('catalogo_pecas')
+        .select('id, code, name, reference, qtd, figura_id')
+        .or(filtros.join(','))
+        .limit(500)
+      const pecas = ordenar((brutas || []).filter((p) => combina(p, palavras, codigo)), palavras, codigo).slice(0, 60)
       const figIds = [...new Set((pecas || []).map((p: Record<string, unknown>) => p.figura_id))]
       let figMap: Record<string, unknown> = {}
       if (figIds.length) {

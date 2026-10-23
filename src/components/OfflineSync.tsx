@@ -1,21 +1,12 @@
 'use client'
 import { useEffect, useState } from 'react'
-import { startAutoSync, processQueue, ressuscitarFalhasDeRede } from '@/lib/syncManager'
-import { getQueueCount, getPendingPdfs, removePendingPdf, getFailedItems, retryFailedItem } from '@/lib/offlineCache'
-import { gerarEAnexarRelatorio } from '@/lib/gerarEAnexarRelatorio'
+import { startAutoSync, sincronizarTudo, ressuscitarFalhasDeRede, onSyncEstado } from '@/lib/syncManager'
+import { getQueueCount, getFailedItems, retryFailedItem } from '@/lib/offlineCache'
 import { Wifi, WifiOff, Upload, AlertTriangle } from 'lucide-react'
 
-// Gera/anexa o PDF das OS enviadas offline (roda depois que a fila sobe os dados)
-async function processarPdfsPendentes() {
-  if (!navigator.onLine) return
-  const list = await getPendingPdfs()
-  for (const osId of list) {
-    try {
-      const ok = await gerarEAnexarRelatorio(osId)
-      if (ok) await removePendingPdf(osId)
-    } catch { /* tenta de novo na proxima reconexao */ }
-  }
-}
+// Um fluxo só (José, 23/10/2026): quem sobe a fila e depois gera os PDFs é o syncManager (sincronizarTudo).
+// Esta faixa só mostra o estado — antes ela rodava um segundo processQueue no 'online', que voltava 0 na hora
+// (o outro já estava rodando), e o aviso de sucesso nunca aparecia.
 
 export default function OfflineSync() {
   const [online, setOnline] = useState(true)
@@ -26,7 +17,6 @@ export default function OfflineSync() {
 
   useEffect(() => {
     setOnline(navigator.onLine)
-    startAutoSync()
 
     const checkQueue = async () => {
       const count = await getQueueCount()
@@ -36,29 +26,23 @@ export default function OfflineSync() {
     }
     checkQueue()
 
-    // Abriu online com PDFs pendentes (de sessão anterior)? processa em background.
-    let pdfTimer: ReturnType<typeof setTimeout> | undefined
-    if (navigator.onLine) {
-      pdfTimer = setTimeout(() => { processarPdfsPendentes() }, 4000)
-    }
-
-    const goOnline = async () => {
-      setOnline(true)
-      setSyncing(true)
-      const count = await processQueue()
-      // Depois de subir os dados, gera/anexa o PDF das OS enviadas offline
-      await processarPdfsPendentes()
+    let bannerTimer: ReturnType<typeof setTimeout> | undefined
+    const tirar = onSyncEstado(async (e) => {
+      // "Enviando para o portal…" só quando há algo na fila (aparecia em toda abertura do app)
+      if (e.rodando) { if ((await getQueueCount()) > 0) setSyncing(true); return }
       setSyncing(false)
       await checkQueue()
-      if (count > 0) {
+      if (e.enviados > 0) {
         setShowBanner(true)
-        setTimeout(() => setShowBanner(false), 3000)
+        if (bannerTimer) clearTimeout(bannerTimer)
+        bannerTimer = setTimeout(() => setShowBanner(false), 3000)
       }
-    }
+    })
+    // registra depois de ouvir o estado, para a primeira rodada já aparecer
+    startAutoSync()
 
-    const goOffline = () => {
-      setOnline(false)
-    }
+    const goOnline = () => setOnline(true)
+    const goOffline = () => setOnline(false)
 
     window.addEventListener('online', goOnline)
     window.addEventListener('offline', goOffline)
@@ -67,10 +51,11 @@ export default function OfflineSync() {
     const interval = setInterval(checkQueue, 5000)
 
     return () => {
+      tirar()
       window.removeEventListener('online', goOnline)
       window.removeEventListener('offline', goOffline)
       clearInterval(interval)
-      if (pdfTimer) clearTimeout(pdfTimer)
+      if (bannerTimer) clearTimeout(bannerTimer)
     }
   }, [])
 
@@ -81,11 +66,11 @@ export default function OfflineSync() {
         position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
         background: '#F59E0B', color: '#fff', padding: '6px 16px',
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-        fontSize: 13, fontWeight: 700,
+        fontSize: 13, fontWeight: 500,
         animation: 'slideDown 0.3s ease',
       }}>
         <WifiOff size={16} />
-        Sem internet — alterações serão salvas localmente
+        Sem internet — o que você salvar fica no celular e sobe depois
         {pendentes > 0 && (
           <span style={{
             background: 'rgba(255,255,255,0.3)', borderRadius: 10,
@@ -105,10 +90,10 @@ export default function OfflineSync() {
         position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
         background: '#2563EB', color: '#fff', padding: '6px 16px',
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-        fontSize: 13, fontWeight: 700,
+        fontSize: 13, fontWeight: 500,
       }}>
         <Upload size={16} className="spinner" />
-        Sincronizando dados...
+        Enviando para o portal...
       </div>
     )
   }
@@ -121,29 +106,26 @@ export default function OfflineSync() {
         position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
         background: '#DC2626', color: '#fff', padding: '8px 16px',
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-        fontSize: 13, fontWeight: 700, flexWrap: 'wrap',
+        fontSize: 13, fontWeight: 500, flexWrap: 'wrap',
       }}>
         <AlertTriangle size={16} />
-        {falhas} envio{falhas > 1 ? 's' : ''} NÃO subi{falhas > 1 ? 'ram' : 'u'} pro portal
+        {falhas} envio{falhas > 1 ? 's' : ''} não subi{falhas > 1 ? 'ram' : 'u'} para o portal
         <button
           onClick={async () => {
-            setSyncing(true)
             const f = await getFailedItems()
             for (const item of f) { if (item.id) await retryFailedItem(item.id) }
             await ressuscitarFalhasDeRede()
-            await processQueue()
-            await processarPdfsPendentes()
-            setSyncing(false)
+            await sincronizarTudo()
             const rest = await getFailedItems()
             setFalhas(rest.length)
             setPendentes(await getQueueCount())
           }}
           style={{
             background: '#fff', color: '#DC2626', border: 'none', borderRadius: 8,
-            padding: '4px 14px', fontSize: 13, fontWeight: 800, cursor: 'pointer',
+            padding: '4px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer',
           }}
         >
-          TENTAR DE NOVO
+          Tentar de novo
         </button>
       </div>
     )
@@ -156,10 +138,10 @@ export default function OfflineSync() {
         position: 'fixed', top: 0, left: 0, right: 0, zIndex: 9999,
         background: '#059669', color: '#fff', padding: '6px 16px',
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-        fontSize: 13, fontWeight: 700,
+        fontSize: 13, fontWeight: 500,
       }}>
         <Wifi size={16} />
-        Dados sincronizados com sucesso!
+        Dados enviados para o portal
       </div>
     )
   }

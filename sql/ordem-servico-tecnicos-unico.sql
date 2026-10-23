@@ -1,0 +1,31 @@
+-- Um relatório por OS em "Ordem_Servico_Tecnicos" (José, 23/10/2026)
+-- Projeto do portal: citrhumdkfivdzbmayde
+--
+-- A fila offline do app reenviava inserts que já tinham gravado (timeout de 8 s / 45 s) e nasciam linhas
+-- duplicadas. O app agora grava por "Ordem_Servico" (update se existe, senão insert); este índice garante
+-- no banco que não nasça mais de uma linha por OS.
+--
+-- ANTES de criar o índice é preciso limpar as duplicadas (em 23/10/2026: OS-0526, OS-0532, OS-0504,
+-- OS-0533, OS-0493, OS-0774). Regra sugerida: fica a linha 'enviado' (ou, se não houver, a mais nova)
+-- e as outras saem. Conferir antes de apagar:
+--
+-- select "Ordem_Servico", array_agg("IdOs" || ':' || coalesce("Status", '') order by "IdOs")
+--   from "Ordem_Servico_Tecnicos"
+--  group by "Ordem_Servico"
+-- having count(*) > 1;
+--
+-- Limpeza (rodar só depois de conferir a lista acima):
+--
+-- delete from "Ordem_Servico_Tecnicos" t
+--  using (
+--    select "IdOs",
+--           row_number() over (
+--             partition by "Ordem_Servico"
+--             order by ("Status" = 'enviado') desc nulls last, "IdOs" desc
+--           ) as n
+--      from "Ordem_Servico_Tecnicos"
+--  ) r
+--  where t."IdOs" = r."IdOs" and r.n > 1;
+
+create unique index if not exists ordem_servico_tecnicos_os_unico
+  on "Ordem_Servico_Tecnicos" ("Ordem_Servico");

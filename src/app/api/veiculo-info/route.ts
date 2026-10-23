@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-)
+import { exigirUsuario, supabaseAdmin } from '@/lib/apiAuth'
 
 function extractPlaca(raw: string): string | null {
   const m = String(raw).match(/[A-Z]{3}\d[A-Z\d]\d{2}/i)
@@ -23,7 +18,7 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
     const clean = extractPlaca(placaRaw)
     if (clean) {
       const withDash = clean.slice(0, 3) + '-' + clean.slice(3)
-      const { data } = await supabase
+      const { data } = await supabaseAdmin()
         .from('frota_veiculos')
         .select('*')
         .or(`placa.eq.${clean},placa.eq.${withDash}`)
@@ -36,14 +31,14 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
   if (cpf) {
     const cpfLimpo = cleanCpf(cpf)
     const cpfFmt = cpfLimpo.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, '$1.$2.$3-$4')
-    const { data: motoristas } = await supabase
+    const { data: motoristas } = await supabaseAdmin()
       .from('frota_motoristas')
       .select('id')
       .in('cpf', [cpfLimpo, cpfFmt])
       .limit(1)
     const motorista = motoristas?.[0] || null
     if (motorista) {
-      const { data: resp } = await supabase
+      const { data: resp } = await supabaseAdmin()
         .from('frota_responsaveis')
         .select('veiculo_id')
         .eq('motorista_id', motorista.id)
@@ -52,7 +47,7 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
         .limit(1)
         .maybeSingle()
       if (resp?.veiculo_id) {
-        const { data } = await supabase
+        const { data } = await supabaseAdmin()
           .from('frota_veiculos')
           .select('*')
           .eq('id', resp.veiculo_id)
@@ -64,7 +59,7 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
 
   // 3. Fallback: by technician name → frota_responsaveis (current) → frota_veiculos
   if (tecnicoNome) {
-    const { data: resp } = await supabase
+    const { data: resp } = await supabaseAdmin()
       .from('frota_responsaveis')
       .select('veiculo_id')
       .ilike('motorista_nome', `%${tecnicoNome}%`)
@@ -72,7 +67,7 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
       .limit(1)
       .maybeSingle()
     if (resp?.veiculo_id) {
-      const { data } = await supabase
+      const { data } = await supabaseAdmin()
         .from('frota_veiculos')
         .select('*')
         .eq('id', resp.veiculo_id)
@@ -86,18 +81,13 @@ async function findFrotaVeiculo(placaRaw?: string, tecnicoNome?: string, cpf?: s
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json()
-    const { placa, tecnico_nome, user_id } = body
-    let { cpf } = body
-
-    if (!cpf && user_id) {
-      const { data: usu } = await supabase
-        .from('financeiro_usu')
-        .select('cpf')
-        .eq('id', user_id)
-        .maybeSingle()
-      if (usu?.cpf) cpf = usu.cpf
-    }
+    // nome e cpf vêm do token, nunca do corpo — a senha do Veloe só sai para o próprio responsável (José, 23/10/2026)
+    const u = await exigirUsuario(req)
+    if (u instanceof NextResponse) return u
+    const body = await req.json().catch(() => ({}))
+    const { placa } = body as { placa?: string }
+    const tecnico_nome = u.nome
+    const cpf = u.cpf || undefined
 
     const achado = await findFrotaVeiculo(placa, tecnico_nome, cpf)
     if (!achado) return NextResponse.json({ error: 'Veículo não encontrado' }, { status: 404 })
@@ -106,7 +96,7 @@ export async function POST(req: NextRequest) {
     // Image from Placas
     let imagemUrl: string | null = null
     if (veiculo.id_placa) {
-      const { data: placaRow } = await supabase
+      const { data: placaRow } = await supabaseAdmin()
         .from('Placas')
         .select('imagem_url')
         .eq('IdPlaca', veiculo.id_placa)
@@ -115,21 +105,22 @@ export async function POST(req: NextRequest) {
     }
 
     const [respRes, custosRes, multasRes] = await Promise.all([
-      supabase
+      supabaseAdmin()
         .from('frota_responsaveis')
         .select('motorista_nome, inicio, fim, origem, obs')
         .eq('veiculo_id', veiculo.id)
         .order('inicio', { ascending: false }),
-      supabase
+      supabaseAdmin()
         .from('frota_custos')
-        .select('tipo, valor')
+        // colunas reais: tipo_custo e dt_lancamento (José, 23/10/2026)
+        .select('tipo_custo, valor')
         .eq('veiculo_id', veiculo.id)
-        .gte('data', new Date(Date.now() - 365 * 86400000).toISOString().split('T')[0]),
-      supabase
+        .gte('dt_lancamento', new Date(Date.now() - 365 * 86400000).toISOString().split('T')[0]),
+      supabaseAdmin()
         .from('frota_multas')
-        .select('valor')
-        .eq('veiculo_id', veiculo.id)
-        .is('pago_em', null),
+        // multa em aberto = ainda não paga, descontada nem arquivada (não existe pago_em)
+        .select('valor, status_interno')
+        .eq('veiculo_id', veiculo.id),
     ])
 
     const responsaveis = respRes.data || []
@@ -140,36 +131,37 @@ export async function POST(req: NextRequest) {
     // com o responsável atual — não vaza senha de carro alheio)
     const pal = (s: string): string[] =>
       String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').match(/[A-Z0-9]+/g) || []
-    const reqPal = pal(String(tecnico_nome || ''))
     const respPal = pal(String(responsavelAtual?.motorista_nome || ''))
-    const nomesCasam =
-      reqPal.length > 0 && respPal.length > 0 &&
-      (reqPal.every((w) => respPal.includes(w)) || respPal.every((w) => reqPal.includes(w)))
+    const nomesCasam = u.nomes.some((n) => {
+      const reqPal = pal(n)
+      return reqPal.length > 0 && respPal.length > 0 &&
+        (reqPal.every((w) => respPal.includes(w)) || respPal.every((w) => reqPal.includes(w)))
+    })
     const ehResponsavel = via !== 'placa' || nomesCasam
 
     const custosPorTipo: Record<string, number> = {}
     for (const c of custosRes.data || []) {
-      const tipo = c.tipo || 'Outros'
+      const tipo = c.tipo_custo || 'Outros'
       custosPorTipo[tipo] = (custosPorTipo[tipo] || 0) + (c.valor || 0)
     }
 
-    const multasList = multasRes.data || []
+    const multasList = (multasRes.data || []).filter((m: any) => !['paga', 'descontada', 'arquivada'].includes(String(m.status_interno || '')))
     const valorMultas = multasList.reduce((s: number, m: any) => s + (m.valor || 0), 0)
 
     let hodometro: number | null = null
     if (veiculo.adesao_id) {
-      const { data: odo } = await supabase
+      const { data: odo } = await supabaseAdmin()
         .from('frota_odometro')
-        .select('km')
+        .select('km_adesao, km_rastreador')
         .eq('veiculo_id', veiculo.id)
         .order('data', { ascending: false })
         .limit(1)
         .maybeSingle()
-      if (odo) hodometro = odo.km
+      if (odo) hodometro = odo.km_rastreador ?? odo.km_adesao ?? null
     }
 
     // Documents from frota_documentos table
-    const { data: docsRows } = await supabase
+    const { data: docsRows } = await supabaseAdmin()
       .from('frota_documentos')
       .select('id, tipo, numero, emissor, vigencia_fim, arquivo_url, nome_arquivo')
       .eq('veiculo_id', veiculo.id)
@@ -187,7 +179,7 @@ export async function POST(req: NextRequest) {
     // Also get SupaPlacas display name for the tecnico_veiculos lookup
     let placaDisplay = veiculo.placa_exibicao || veiculo.placa
     if (veiculo.supa_placa_id) {
-      const { data: sp } = await supabase
+      const { data: sp } = await supabaseAdmin()
         .from('SupaPlacas')
         .select('NumPlaca')
         .eq('IdPlaca', veiculo.supa_placa_id)

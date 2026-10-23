@@ -1,5 +1,7 @@
 'use client'
 import { supabase } from '../supabase'
+import { offlineGet, offlineSet } from '../offlineCache'
+import { comprimirImagem } from '../imagem'
 import { BUCKET_GARANTIAS, STATUS_FINALIZADOS } from './constants'
 import type {
   Garantia, GarantiaDetalhe, GarantiaResumo, OSElegivel, PecaOS,
@@ -55,23 +57,51 @@ async function registrarEvento(garantiaId: string, params: {
 
 // ─── Leitura ─────────────────────────────────────────────────────────────────
 
-export async function listarMinhasGarantias(tecnicoNome: string): Promise<GarantiaResumo[]> {
-  if (!tecnicoNome) return []
-  const { data, error } = await supabase
-    .from('garantias')
-    .select(
-      '*, montadora:garantia_montadoras(id,nome,cor), pecas:garantia_pecas(id), pendencias:garantia_pendencias(id,tipo,status,descricao,exige_visita), anexos:garantia_anexos(id,categoria,url,nome_arquivo,created_at)'
-    )
-    // Match case-insensitive: a garantia pode ter sido gravada com o nome do
-    // técnico em caixa diferente (ex.: "PAULO MOTTA" do Tecnicos_Appsheet) do
-    // que o app resolve pro logado ("Paulo Motta" de mecanico_tecnico_nome).
-    .ilike('tecnico_nome', tecnicoNome)
-    .order('created_at', { ascending: false })
-  if (error) {
-    console.error('[garantias] listarMinhasGarantias:', error.message)
-    return []
+export interface ListaGarantias {
+  lista: GarantiaResumo[]
+  /** 'rede' veio agora; 'cache' sem internet/erro, mostrando o guardado; 'erro' sem nada guardado */
+  origem: 'rede' | 'cache' | 'erro'
+  erro?: string
+}
+
+function pareceRede(err: unknown) {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return true
+  const m = String((err as { message?: string })?.message || err || '').toLowerCase()
+  return /fetch|network|load failed|timeout|aborted/.test(m)
+}
+
+// Erro de rede não vira "nenhuma garantia" (José, 23/10/2026): devolve o que está guardado no celular e avisa.
+export async function listarMinhasGarantias(tecnicoNome: string): Promise<ListaGarantias> {
+  if (!tecnicoNome) return { lista: [], origem: 'rede' }
+  const chave = `garantias-lista:${tecnicoNome.toUpperCase()}`
+  const doCache = async (erro: string): Promise<ListaGarantias> => {
+    const salvo = await offlineGet<GarantiaResumo[]>(chave)
+    if (salvo) return { lista: salvo, origem: 'cache', erro }
+    // prefetch guarda as garantias sem os detalhes (pendências/anexos) — melhor que nada
+    const pre = await offlineGet<GarantiaResumo[]>('prefetch:garantias')
+    if (pre && pre.length) return { lista: pre, origem: 'cache', erro }
+    return { lista: [], origem: 'erro', erro }
   }
-  return (data as GarantiaResumo[]) || []
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return doCache('Sem internet')
+  try {
+    const { data, error } = await supabase
+      .from('garantias')
+      .select(
+        '*, montadora:garantia_montadoras(id,nome,cor), pecas:garantia_pecas(id), pendencias:garantia_pendencias(id,tipo,status,descricao,exige_visita), anexos:garantia_anexos(id,categoria,url,nome_arquivo,created_at)'
+      )
+      // Match case-insensitive: a garantia pode ter sido gravada com o nome do
+      // técnico em caixa diferente (ex.: "PAULO MOTTA" do Tecnicos_Appsheet) do
+      // que o app resolve pro logado ("Paulo Motta" de mecanico_tecnico_nome).
+      .ilike('tecnico_nome', tecnicoNome)
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    const lista = (data as GarantiaResumo[]) || []
+    offlineSet(chave, lista).catch(() => {})
+    return { lista, origem: 'rede' }
+  } catch (err) {
+    console.error('[garantias] listarMinhasGarantias:', (err as Error)?.message || err)
+    return doCache(pareceRede(err) ? 'Sem internet' : `Erro ao carregar: ${(err as Error)?.message || err}`)
+  }
 }
 
 export async function obterGarantia(id: string): Promise<GarantiaDetalhe | null> {
@@ -192,7 +222,7 @@ export async function listarPecasOS(osId: string): Promise<PecaOS[]> {
   // 2) Requisições vinculadas à OS (tabela Requisicao)
   const { data: reqs } = await supabase
     .from('Requisicao')
-    .select('id, titulo, valor_cobrado_cliente, quantidade')
+    .select('id, titulo, valor_cobrado_cliente') // Requisicao não tem coluna quantidade
     .eq('ordem_servico', osId)
     .not('status', 'in', '("lixeira","cancelada")')
   for (const r of ((reqs || []) as any[])) {
@@ -358,13 +388,20 @@ export async function responderPendencia(
     return { ok: false, erro: 'Responda com um texto ou anexe ao menos uma foto/vídeo.' }
   }
 
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { ok: false, erro: 'Sem internet. Sua resposta fica guardada aqui — envie quando tiver sinal.' }
+  }
+
   // Carrega pendência e garantia para validar e definir transição
-  const { data: pend } = await supabase
+  const { data: pend, error: pendLerErr } = await supabase
     .from('garantia_pendencias')
     .select('*')
     .eq('id', pendenciaId)
     .eq('garantia_id', garantiaId)
     .maybeSingle()
+  if (pendLerErr) {
+    return { ok: false, erro: pareceRede(pendLerErr) ? 'Sem internet. Sua resposta fica guardada aqui — envie quando tiver sinal.' : `Erro: ${pendLerErr.message}` }
+  }
   if (!pend) return { ok: false, erro: 'Pendência não encontrada.' }
   if ((pend as any).status !== 'aberta') return { ok: false, erro: 'Esta pendência já foi respondida.' }
 
@@ -375,37 +412,63 @@ export async function responderPendencia(
     .maybeSingle()
   if (!g) return { ok: false, erro: 'Garantia não encontrada.' }
 
-  // Upload de imagens -> bucket garantias -> grava em garantia_anexos
-  const anexoIds: string[] = []
-  for (const img of imagens) {
+  // Upload de imagens -> bucket garantias -> grava em garantia_anexos.
+  // Regra (José, 23/10/2026): se alguma foto/vídeo não subir, NÃO fecha a pendência — diz quais falharam.
+  // Foto sai comprimida (~1600 px); vídeo vai como está.
+  const subidos: { path: string; url: string; nome: string; tipo: string | null }[] = []
+  const falharam: string[] = []
+  for (let i = 0; i < imagens.length; i++) {
+    const img = imagens[i]
+    const nome = img.name || `arquivo ${i + 1}`
     try {
-      const ext = img.name.split('.').pop() || 'jpg'
-      const path = `${garantiaId}/pendencia_resposta/${Date.now()}_${sanitize(img.name) || `foto.${ext}`}`
+      const arq = img.type?.startsWith('image/') ? await comprimirImagem(img) : img
+      const tipo = arq.type || img.type || 'image/jpeg'
+      const base = sanitize(nome).replace(/\.[^.]+$/, '') || 'foto'
+      const ext = tipo === 'image/jpeg' ? 'jpg' : (nome.split('.').pop() || 'jpg')
+      const path = `${garantiaId}/pendencia_resposta/${Date.now()}_${i}_${base}.${ext}`
       const { error: upErr } = await supabase.storage
         .from(BUCKET_GARANTIAS)
-        .upload(path, img, { contentType: img.type || 'image/jpeg', upsert: true })
+        .upload(path, arq, { contentType: tipo, upsert: true })
       if (upErr) {
         console.error('[garantias] upload erro:', upErr.message)
+        falharam.push(nome)
         continue
       }
       const { data: pub } = supabase.storage.from(BUCKET_GARANTIAS).getPublicUrl(path)
-      const { data: anexo } = await supabase
-        .from('garantia_anexos')
-        .insert({
-          garantia_id: garantiaId,
-          pendencia_id: pendenciaId,
-          categoria: 'pendencia_resposta',
-          url: pub.publicUrl,
-          nome_arquivo: img.name,
-          content_type: img.type || null,
-          enviado_por: tecnicoNome,
-        })
-        .select()
-        .single()
-      if (anexo) anexoIds.push((anexo as any).id)
+      subidos.push({ path, url: pub.publicUrl, nome, tipo })
     } catch (err) {
       console.error('[garantias] falha ao enviar imagem:', err)
+      falharam.push(nome)
     }
+  }
+  if (falharam.length > 0) {
+    // limpa o que subiu para não ficar arquivo solto; a resposta continua no aparelho
+    if (subidos.length) await supabase.storage.from(BUCKET_GARANTIAS).remove(subidos.map((s) => s.path)).catch(() => {})
+    const semRede = typeof navigator !== 'undefined' && !navigator.onLine
+    return {
+      ok: false,
+      erro: `${semRede ? 'Sem internet. ' : ''}Não subiu: ${falharam.join(', ')}. Nada foi enviado — tente de novo${semRede ? ' quando tiver sinal' : ''}.`,
+    }
+  }
+  const anexoIds: string[] = []
+  if (subidos.length > 0) {
+    const { data: anexos, error: anErr } = await supabase
+      .from('garantia_anexos')
+      .insert(subidos.map((s) => ({
+        garantia_id: garantiaId,
+        pendencia_id: pendenciaId,
+        categoria: 'pendencia_resposta',
+        url: s.url,
+        nome_arquivo: s.nome,
+        content_type: s.tipo,
+        enviado_por: tecnicoNome,
+      })))
+      .select('id')
+    if (anErr || !anexos?.length) {
+      await supabase.storage.from(BUCKET_GARANTIAS).remove(subidos.map((s) => s.path)).catch(() => {})
+      return { ok: false, erro: `Os anexos não foram registrados${anErr ? ` (${anErr.message})` : ''}. Nada foi enviado — tente de novo.` }
+    }
+    anexos.forEach((a: any) => anexoIds.push(a.id))
   }
 
   // Fecha a pendência. O `.select()` é proposital: RLS sem policy de UPDATE
@@ -422,6 +485,11 @@ export async function responderPendencia(
     .eq('id', pendenciaId)
     .select('id')
   if (pendErr || !pendUpd?.length) {
+    // desfaz os anexos desta tentativa: sem isso cada nova tentativa duplicava as fotos (José, 23/10/2026)
+    if (anexoIds.length) {
+      try { await supabase.from('garantia_anexos').delete().in('id', anexoIds) } catch { /* segue */ }
+    }
+    if (subidos.length) await supabase.storage.from(BUCKET_GARANTIAS).remove(subidos.map((s) => s.path)).catch(() => {})
     return { ok: false, erro: 'Falha ao salvar a resposta (sem permissão de escrita — avise o garantista).' }
   }
 

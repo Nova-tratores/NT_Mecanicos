@@ -77,7 +77,11 @@ export function useNotificacoes(tecnicoNome: string | undefined, nomePos?: strin
       })
       .subscribe()
 
-    return () => { supabase.removeChannel(channel) }
+    // voltou do segundo plano: o iOS derruba o websocket — recarrega o sino (José, 23/10/2026)
+    const onVisivel = () => { if (document.visibilityState === 'visible') carregar() }
+    document.addEventListener('visibilitychange', onVisivel)
+
+    return () => { supabase.removeChannel(channel); document.removeEventListener('visibilitychange', onVisivel) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chaveNomes])
 

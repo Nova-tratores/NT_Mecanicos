@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-import { randomUUID } from 'crypto'
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-)
+import { exigirUsuario, ehDoUsuario, nomeDoUsuario, supabaseAdmin, type UsuarioApi } from '@/lib/apiAuth'
+import { randomUUID, createHash } from 'crypto'
+import { hojeBR } from '@/lib/hoje'
 
 const CHECKLIST_ITEMS = [
   { key: 'crlv', cat: 'Documentação', titulo: 'CRLV', desc: 'Fotografe o documento CRLV do veículo e verifique a validade' },
@@ -88,17 +84,18 @@ function calcularScore(checklist: any, itens: any[]): { score: number; alertas: 
     score -= 5; alertas.push('Nenhuma observação em nenhum item')
   }
 
-  // 5. Fotos com mesmo tamanho (duplicadas)
-  const tamanhos = itens.filter(i => i.foto_tamanho).map(i => i.foto_tamanho)
-  const tamSet = new Map<number, number>()
-  for (const t of tamanhos) {
-    const rounded = Math.round(t / 1024) // arredonda para KB
-    tamSet.set(rounded, (tamSet.get(rounded) || 0) + 1)
+  // 5. Fotos repetidas: compara o resumo (hash) dos bytes, guardado no ?h= da foto_url; foto antiga sem hash
+  //    compara o tamanho EXATO (antes arredondava para KB e acusava fotos diferentes) (José, 23/10/2026)
+  const assinatura = (i: any): string | null => {
+    const h = /[?&]h=([a-f0-9]+)/.exec(String(i.foto_url || ''))?.[1]
+    return h ? `h:${h}` : i.foto_tamanho ? `t:${i.foto_tamanho}` : null
   }
+  const tamSet = new Map<string, number>()
+  for (const a of itens.map(assinatura).filter(Boolean) as string[]) tamSet.set(a, (tamSet.get(a) || 0) + 1)
   const duplicatas = [...tamSet.values()].filter(v => v > 1).reduce((s, v) => s + v - 1, 0)
   if (duplicatas > 0) {
     score -= Math.min(30, duplicatas * 15)
-    alertas.push(`${duplicatas} foto(s) com tamanho idêntico (possível reutilização)`)
+    alertas.push(`${duplicatas} foto(s) repetida(s) (possível reutilização)`)
   }
 
   // 9. GPS não mudou
@@ -115,13 +112,22 @@ function calcularScore(checklist: any, itens: any[]): { score: number; alertas: 
 
   // 10. Horário suspeito
   if (checklist.inicio_em) {
-    const hora = new Date(checklist.inicio_em).getHours()
+    // hora de Brasília (o servidor roda em UTC: 19h aqui virava 22h) (José, 23/10/2026)
+    const hora = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hourCycle: 'h23' }).format(new Date(checklist.inicio_em)))
     if (hora < 6 || hora >= 22) {
       score -= 5; alertas.push('Checklist realizado fora do horário comercial')
     }
   }
 
   return { score: Math.max(0, score), alertas }
+}
+
+/** o checklist é do usuário do token? devolve a resposta de erro ou null */
+async function donoDoChecklist(u: UsuarioApi, checklistId: string): Promise<NextResponse | null> {
+  if (!checklistId) return NextResponse.json({ error: 'Checklist não informado' }, { status: 400 })
+  const { data } = await supabaseAdmin().from('veiculo_checklist').select('tecnico_nome').eq('id', checklistId).maybeSingle()
+  if (!data || !ehDoUsuario(u, data.tecnico_nome)) return NextResponse.json({ error: 'Checklist não encontrado' }, { status: 404 })
+  return null
 }
 
 export async function POST(req: NextRequest) {
@@ -142,26 +148,35 @@ export async function POST(req: NextRequest) {
       const categoria = fd.get('categoria') as string
       const titulo = fd.get('titulo') as string
 
+      const u = await exigirUsuario(req)
+      if (u instanceof NextResponse) return u
+      const dono = await donoDoChecklist(u, checklistId)
+      if (dono) return dono
+      // item_key vai no caminho do storage: só as chaves do checklist (nada de "../") (José, 23/10/2026)
+      if (!CHECKLIST_ITEMS.some((i) => i.key === itemKey)) return NextResponse.json({ error: 'Item inválido' }, { status: 400 })
+      if (foto && foto.size > 15 * 1024 * 1024) return NextResponse.json({ error: 'Foto grande demais' }, { status: 413 })
+
       let fotoUrl: string | null = null
       let fotoTamanho: number | null = null
 
       if (foto) {
-        const ext = foto.name.split('.').pop() || 'jpg'
+        const ext = (foto.name.split('.').pop() || 'jpg').replace(/[^a-z0-9]/gi, '').slice(0, 5) || 'jpg'
         const path = `checklist/${checklistId}/${itemKey}.${ext}`
         const buffer = Buffer.from(await foto.arrayBuffer())
         fotoTamanho = buffer.length
 
-        const { error: upErr } = await supabase.storage
+        const { error: upErr } = await supabaseAdmin().storage
           .from('requisicoes')
           .upload(path, buffer, { upsert: true, contentType: foto.type })
         if (upErr) return NextResponse.json({ error: `Falha no upload da foto: ${upErr.message}` }, { status: 500 })
 
-        const { data: urlData } = supabase.storage.from('requisicoes').getPublicUrl(path)
-        fotoUrl = urlData.publicUrl
+        const { data: urlData } = supabaseAdmin().storage.from('requisicoes').getPublicUrl(path)
+        // ?h= resumo dos bytes: acha foto repetida e não mostra a foto velha do cache (mesmo caminho)
+        fotoUrl = `${urlData.publicUrl}?h=${createHash('sha1').update(buffer).digest('hex').slice(0, 16)}`
       }
 
       // Upsert item
-      const { data: existing } = await supabase
+      const { data: existing } = await supabaseAdmin()
         .from('veiculo_checklist_itens')
         .select('id')
         .eq('checklist_id', checklistId)
@@ -169,12 +184,14 @@ export async function POST(req: NextRequest) {
         .maybeSingle()
 
       if (existing) {
-        await supabase.from('veiculo_checklist_itens').update({
-          resposta, observacao, foto_url: fotoUrl, foto_tamanho: fotoTamanho,
+        // reabrir o item e mudar só a resposta não apaga a foto: campos de foto só quando veio foto nova (José, 23/10/2026)
+        await supabaseAdmin().from('veiculo_checklist_itens').update({
+          resposta, observacao,
+          ...(fotoUrl ? { foto_url: fotoUrl, foto_tamanho: fotoTamanho } : {}),
           respondido_em: new Date().toISOString(),
         }).eq('id', existing.id)
       } else {
-        await supabase.from('veiculo_checklist_itens').insert({
+        await supabaseAdmin().from('veiculo_checklist_itens').insert({
           checklist_id: checklistId, item_key: itemKey, categoria, titulo,
           resposta, observacao, foto_url: fotoUrl, foto_tamanho: fotoTamanho,
           respondido_em: new Date().toISOString(),
@@ -182,7 +199,7 @@ export async function POST(req: NextRequest) {
       }
 
       // Update checklist status
-      await supabase.from('veiculo_checklist')
+      await supabaseAdmin().from('veiculo_checklist')
         .update({ status: 'em_andamento' })
         .eq('id', checklistId)
         .eq('status', 'pendente')
@@ -194,15 +211,27 @@ export async function POST(req: NextRequest) {
     const body = await req.json()
     const { action } = body
 
+    // link de compartilhar (/checklist-veiculo/ver?token=…) abre sem login, só pelo share_token
+    if (action === 'carregar' && body.token) {
+      const { data: checklist } = await supabaseAdmin().from('veiculo_checklist').select('*').eq('share_token', String(body.token)).maybeSingle()
+      if (!checklist) return NextResponse.json({ error: 'Não encontrado' }, { status: 404 })
+      const { data: itens } = await supabaseAdmin().from('veiculo_checklist_itens').select('*').eq('checklist_id', checklist.id).order('created_at')
+      return NextResponse.json({ checklist, itens: itens || [], items: CHECKLIST_ITEMS })
+    }
+
+    // o resto exige login; o técnico vem do token (José, 23/10/2026)
+    const u = await exigirUsuario(req)
+    if (u instanceof NextResponse) return u
+    body.tecnico_nome = nomeDoUsuario(u, body.tecnico_nome)
+
     // Verificar se precisa fazer checklist (para bloqueio)
     if (action === 'verificar') {
       const { tecnico_nome } = body
       if (!tecnico_nome) return NextResponse.json({ pendente: false })
 
-      const hoje = new Date()
-      const mesRef = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`
+      const mesRef = hojeBR().slice(0, 7) // mês de Brasília (UTC virava o mês seguinte na última noite) (José, 23/10/2026)
 
-      const { data } = await supabase
+      const { data } = await supabaseAdmin()
         .from('veiculo_checklist')
         .select('id, status, score_confianca')
         .eq('tecnico_nome', tecnico_nome)
@@ -212,7 +241,7 @@ export async function POST(req: NextRequest) {
       const pendente = !data || (data.status !== 'completo' && data.status !== 'suspeito')
 
       // Também verificar se tem veículo atribuído
-      const { data: veic } = await supabase
+      const { data: veic } = await supabaseAdmin()
         .from('tecnico_veiculos')
         .select('placa')
         .eq('tecnico_nome', tecnico_nome)
@@ -228,12 +257,11 @@ export async function POST(req: NextRequest) {
     // Iniciar checklist
     if (action === 'iniciar') {
       const { tecnico_nome, placa, km } = body
-      const hoje = new Date()
-      const mesRef = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}`
+      const mesRef = hojeBR().slice(0, 7) // mês de Brasília (UTC virava o mês seguinte na última noite) (José, 23/10/2026)
       const token = randomUUID().replace(/-/g, '')
 
       // Verificar se já existe
-      const { data: existente } = await supabase
+      const { data: existente } = await supabaseAdmin()
         .from('veiculo_checklist')
         .select('id, status')
         .eq('tecnico_nome', tecnico_nome)
@@ -245,9 +273,9 @@ export async function POST(req: NextRequest) {
           return NextResponse.json({ error: 'Checklist deste mês já foi concluído' }, { status: 400 })
         }
         if (km) {
-          await supabase.from('veiculo_checklist').update({ km: Number(km) }).eq('id', existente.id).then(() => {})
+          await supabaseAdmin().from('veiculo_checklist').update({ km: Number(km) }).eq('id', existente.id).then(() => {})
         }
-        const { data: itens } = await supabase
+        const { data: itens } = await supabaseAdmin()
           .from('veiculo_checklist_itens')
           .select('*')
           .eq('checklist_id', existente.id)
@@ -263,7 +291,7 @@ export async function POST(req: NextRequest) {
       }
       if (km) insertData.km = Number(km)
 
-      let { data, error } = await supabase
+      let { data, error } = await supabaseAdmin()
         .from('veiculo_checklist')
         .insert(insertData)
         .select()
@@ -272,7 +300,7 @@ export async function POST(req: NextRequest) {
       // Fallback: if km column doesn't exist yet, retry without it
       if (error && error.message.includes("'km'")) {
         delete insertData.km
-        const retry = await supabase.from('veiculo_checklist').insert(insertData).select().single()
+        const retry = await supabaseAdmin().from('veiculo_checklist').insert(insertData).select().single()
         data = retry.data
         error = retry.error
       }
@@ -285,15 +313,15 @@ export async function POST(req: NextRequest) {
     if (action === 'concluir') {
       const { checklist_id, loc } = body
 
-      const { data: checklist } = await supabase
+      const { data: checklist } = await supabaseAdmin()
         .from('veiculo_checklist')
         .select('*')
         .eq('id', checklist_id)
         .single()
 
-      if (!checklist) return NextResponse.json({ error: 'Checklist não encontrado' }, { status: 404 })
+      if (!checklist || !ehDoUsuario(u, checklist.tecnico_nome)) return NextResponse.json({ error: 'Checklist não encontrado' }, { status: 404 })
 
-      const { data: itens } = await supabase
+      const { data: itens } = await supabaseAdmin()
         .from('veiculo_checklist_itens')
         .select('*')
         .eq('checklist_id', checklist_id)
@@ -329,26 +357,22 @@ export async function POST(req: NextRequest) {
         titulo,
       }
 
-      const { error: updErr } = await supabase.from('veiculo_checklist').update(updateData).eq('id', checklist_id)
+      const { error: updErr } = await supabaseAdmin().from('veiculo_checklist').update(updateData).eq('id', checklist_id)
       // Fallback: if titulo column doesn't exist yet
       if (updErr && updErr.message.includes("'titulo'")) {
         delete updateData.titulo
-        await supabase.from('veiculo_checklist').update(updateData).eq('id', checklist_id)
+        await supabaseAdmin().from('veiculo_checklist').update(updateData).eq('id', checklist_id)
       }
 
       return NextResponse.json({ status, score, alertas, duracao, titulo })
     }
 
-    // Carregar (por id ou token)
+    // Carregar por id: só o dono (o link com token é tratado lá em cima)
     if (action === 'carregar') {
-      const { id, token } = body
-      let query = supabase.from('veiculo_checklist').select('*')
-      if (token) query = query.eq('share_token', token)
-      else query = query.eq('id', id)
-      const { data: checklist } = await query.maybeSingle()
-      if (!checklist) return NextResponse.json({ error: 'Não encontrado' }, { status: 404 })
+      const { data: checklist } = await supabaseAdmin().from('veiculo_checklist').select('*').eq('id', body.id).maybeSingle()
+      if (!checklist || !ehDoUsuario(u, checklist.tecnico_nome)) return NextResponse.json({ error: 'Não encontrado' }, { status: 404 })
 
-      const { data: itens } = await supabase
+      const { data: itens } = await supabaseAdmin()
         .from('veiculo_checklist_itens')
         .select('*')
         .eq('checklist_id', checklist.id)
@@ -360,7 +384,7 @@ export async function POST(req: NextRequest) {
     // Listar do técnico
     if (action === 'listar') {
       const { tecnico_nome } = body
-      let { data, error } = await supabase
+      let { data, error } = await supabaseAdmin()
         .from('veiculo_checklist')
         .select('id, mes_referencia, status, score_confianca, duracao_total_seg, placa, titulo, km, share_token, created_at')
         .eq('tecnico_nome', tecnico_nome)
@@ -368,7 +392,7 @@ export async function POST(req: NextRequest) {
         .limit(12)
       // Fallback if new columns don't exist yet
       if (error && (error.message.includes("'titulo'") || error.message.includes("'km'"))) {
-        const retry = await supabase
+        const retry = await supabaseAdmin()
           .from('veiculo_checklist')
           .select('id, mes_referencia, status, score_confianca, duracao_total_seg, placa, share_token, created_at')
           .eq('tecnico_nome', tecnico_nome)
@@ -377,26 +401,6 @@ export async function POST(req: NextRequest) {
         data = retry.data as any
       }
       return NextResponse.json(data || [])
-    }
-
-    // Migração: adicionar colunas km e titulo
-    if (action === 'migrate') {
-      const results: string[] = []
-      // Testa inserindo e removendo um registro com as novas colunas
-      const testId = '__migrate_test__'
-      const { error: testErr } = await supabase
-        .from('veiculo_checklist')
-        .insert({ tecnico_nome: testId, placa: testId, mes_referencia: '0000-00', status: 'test', share_token: testId, km: 0, titulo: 'test' })
-      if (testErr) {
-        results.push(`Colunas km/titulo NÃO existem: ${testErr.message}`)
-        results.push('Execute no SQL Editor do Supabase:')
-        results.push('ALTER TABLE veiculo_checklist ADD COLUMN IF NOT EXISTS km integer;')
-        results.push('ALTER TABLE veiculo_checklist ADD COLUMN IF NOT EXISTS titulo text;')
-      } else {
-        await supabase.from('veiculo_checklist').delete().eq('tecnico_nome', testId)
-        results.push('Colunas km e titulo já existem!')
-      }
-      return NextResponse.json({ results })
     }
 
     return NextResponse.json({ error: 'Ação inválida' }, { status: 400 })

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { exigirUsuario, placaDoUsuario } from '@/lib/apiAuth'
 import { createClient } from '@supabase/supabase-js'
 
 // Lê pontos GPS de UM dia de UMA placa, ordenados temporalmente.
@@ -31,6 +32,7 @@ interface RowGps {
 }
 
 export async function GET(req: NextRequest) {
+  const usu = await exigirUsuario(req); if (usu instanceof NextResponse) return usu // exige login (José, 23/10/2026)
   const sp = req.nextUrl.searchParams
   const placa = (sp.get('placa') || '').trim()
   const data = (sp.get('data') || '').trim()
@@ -41,6 +43,8 @@ export async function GET(req: NextRequest) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
     return NextResponse.json({ error: 'data deve ser YYYY-MM-DD' }, { status: 400 })
   }
+  // histórico de GPS só do carro do próprio técnico (admin: qualquer placa) (José, 23/10/2026)
+  if (!(await placaDoUsuario(usu, placa))) return NextResponse.json({ error: 'sem permissão para esta placa' }, { status: 403 })
 
   // Variantes da placa: o GPS pode salvar com ou sem hífen.
   const placaNorm = placa.toUpperCase().replace(/[^A-Z0-9]/g, '')

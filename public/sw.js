@@ -1,6 +1,16 @@
-const ASSETS_CACHE = 'nt-assets-v29';
-const PAGES_CACHE = 'nt-pages-v11';
+// Versões dos caches (José, 23/10/2026): esta é a ÚNICA versão do app (o script do <head> com 'v27' saiu).
+// Trocar o número limpa os arquivos de programa de deploys antigos; as páginas/OS offline são COPIADAS para o
+// cache novo, nunca apagadas.
+// Programa do deploy (/_next/static) num cache SEM limite: o limite expulsava JS do deploy atual quando
+// imagens enchiam o cache (José, 23/10/2026). Imagens e outros GET ficam no cache com limite.
+const STATIC_CACHE = 'nt-static-v32';
+const ASSETS_CACHE = 'nt-assets-v32';
+const PAGES_CACHE = 'nt-pages-v13';
+const TILES_CACHE = 'nt-tiles-v1';
 const APP_SHELL_KEY = 'nt-app-shell';
+const MAX_ASSETS = 600; // imagens e outros arquivos (o programa não entra aqui)
+const STATIC_RE = /\/_next\/static\//;
+const MAX_TILES = 400;  // pedacinhos do mapa
 
 const PRECACHE_URLS = [
   '/manifest.json',
@@ -8,11 +18,13 @@ const PRECACHE_URLS = [
   '/Logo_Nova.png',
 ];
 
+// cache-first só da MESMA origem (antes guardava imagem de qualquer site, sem limite)
 const CACHE_FIRST_PATTERNS = [
   /\/_next\/static\//,
   /\.(?:png|jpg|jpeg|svg|gif|ico|webp|woff2?)$/,
   /\/manifest\.json$/,
 ];
+const TILE_HOSTS = /(^|\.)tile\.openstreetmap\.org$/;
 
 const API_PATTERNS = [
   /supabase\.co/,
@@ -29,15 +41,54 @@ self.addEventListener('install', (event) => {
       }
     })
   );
-  self.skipWaiting();
+  // SEM skipWaiting aqui: a versão nova espera o toque em "Atualizar" (ServiceWorkerRegister) para não
+  // recarregar no meio do relatório/assinatura (José, 23/10/2026)
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting();
+});
+
+/** apaga as entradas mais antigas (ordem de inserção) acima do limite */
+async function limitarCache(nome, max) {
+  try {
+    const cache = await caches.open(nome);
+    const chaves = await cache.keys();
+    if (chaves.length <= max) return;
+    for (const k of chaves.slice(0, chaves.length - max)) await cache.delete(k);
+  } catch { /* sem espaço/erro: ignora */ }
+}
+let putsDesdeLimpeza = 0;
+function guardar(nome, request, response, max) {
+  caches.open(nome).then((cache) => cache.put(request, response)).then(() => {
+    if (++putsDesdeLimpeza >= 25) { putsDesdeLimpeza = 0; limitarCache(nome, max); }
+  }).catch(() => {});
+}
+
 self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== ASSETS_CACHE && k !== PAGES_CACHE).map((k) => caches.delete(k)))
-    ).then(() => self.clients.claim())
-  );
+  event.waitUntil((async () => {
+    const nomes = await caches.keys();
+    const atuais = [STATIC_CACHE, ASSETS_CACHE, PAGES_CACHE, TILES_CACHE];
+    for (const nome of nomes) {
+      if (atuais.includes(nome)) continue;
+      // páginas/OS offline de versões antigas: copia para o cache novo antes de apagar
+      if (nome.startsWith('nt-pages')) {
+        try {
+          const velho = await caches.open(nome);
+          const novo = await caches.open(PAGES_CACHE);
+          for (const req of await velho.keys()) {
+            if (await novo.match(req)) continue;
+            const resp = await velho.match(req);
+            if (resp) await novo.put(req, resp);
+          }
+        } catch { /* sem espaço: segue */ }
+      }
+      await caches.delete(nome);
+    }
+    await limitarCache(ASSETS_CACHE, MAX_ASSETS);
+    await limitarCache(TILES_CACHE, MAX_TILES);
+    await self.clients.claim();
+  })());
 });
 
 /**
@@ -52,6 +103,12 @@ async function saveAppShell(response) {
   } catch (e) {
     console.warn('[SW] Erro ao salvar app shell:', e);
   }
+}
+
+/** só HTML serve de página: o cache também guarda o "RSC" (dados internos do Next) da mesma rota, e devolvê-lo
+ *  numa navegação mostrava código na tela (teste offline, 22/10/2026) */
+function ehHtml(resp) {
+  return !!resp && (resp.headers.get('content-type') || '').includes('text/html');
 }
 
 async function getAppShell() {
@@ -92,7 +149,9 @@ self.addEventListener('fetch', (event) => {
     event.respondWith(
       fetchWithTimeout(event.request, 3000)
         .then((response) => {
-          if (response.ok) {
+          // o "prefetch" dos links do Next é PARCIAL: guardado por cima do completo, a página não abria offline
+          const parcial = event.request.headers.get('Next-Router-Prefetch') === '1';
+          if (response.ok && !parcial) {
             // Salvar SEM o header Vary para que qualquer RSC request bata no cache
             const headers = new Headers(response.headers);
             headers.delete('Vary');
@@ -131,29 +190,31 @@ self.addEventListener('fetch', (event) => {
             const navUrl = new URL(event.request.url);
             navUrl.search = '';
             caches.open(PAGES_CACHE).then((cache) => cache.put(navUrl.href, clone1));
-            // Salvar como app shell (qualquer página serve de shell)
-            const clone2 = response.clone();
-            saveAppShell(clone2);
+            // a casca de reserva é sempre a tela inicial (outra página abriria a tela errada)
+            if (navUrl.pathname === '/') saveAppShell(response.clone());
           }
           return response;
         })
         .catch(async () => {
-          // 1. Tentar cache exato desta URL (match por Request)
+          // 1. Tentar cache exato desta URL (match por Request) — SÓ HTML
           const exact = await caches.match(event.request);
-          if (exact) return exact;
+          if (ehHtml(exact)) return exact;
 
           // 1b. Match por URL sem query (prefetch grava com Request simples)
           const url = new URL(event.request.url);
           url.search = '';
           const byUrl = await caches.match(url.href);
-          if (byUrl) return byUrl;
+          if (ehHtml(byUrl)) return byUrl;
 
-          // 1c. Match ignorando query/vary
-          const byIgnore = await caches.match(event.request, { ignoreSearch: true, ignoreVary: true });
-          if (byIgnore) return byIgnore;
+          // 1c. Match ignorando query/vary (todas as entradas: a 1ª pode ser o RSC)
+          const todas = await (await caches.open(PAGES_CACHE)).matchAll(event.request, { ignoreSearch: true, ignoreVary: true });
+          const html = todas.find(ehHtml);
+          if (html) return html;
 
-          // 2. Fallback: app shell (qualquer página HTML cacheada)
-          const shell = await getAppShell();
+          // 2. OS que não foi baixada: a "casca" de outra página mostraria a tela errada (ou outra OS) — avisa
+          const ehOS = /^\/os\/[^/]+/.test(url.pathname);
+          // 3. Fallback: app shell (qualquer página HTML cacheada) para as telas fixas
+          const shell = ehOS ? null : await getAppShell();
           if (shell) return shell.clone();
 
           // 3. Último recurso: página offline mínima
@@ -190,9 +251,9 @@ self.addEventListener('fetch', (event) => {
                     <line x1="12" y1="20" x2="12.01" y2="20"/>
                   </svg>
                 </div>
-                <h2>Sem conexao</h2>
-                <p>Conecte-se a internet para carregar esta pagina. Depois de baixar os dados, voce podera navegar offline.</p>
-                <button class="btn" onclick="location.reload()">Tentar novamente</button>
+                <h2>Sem internet</h2>
+                <p>Esta tela ainda não foi baixada para usar sem internet. Volte para o início: as ordens baixadas abrem por lá. Com sinal, o app baixa tudo sozinho.</p>
+                <button class="btn" onclick="location.href='/'">Ir para o início</button> <button class="btn" onclick="location.reload()">Tentar de novo</button>
               </div>
             </body>
             </html>
@@ -205,15 +266,37 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Cache-first para assets estáticos (imagens, fonts, JS/CSS chunks)
-  if (CACHE_FIRST_PATTERNS.some((p) => p.test(event.request.url))) {
+  const url = new URL(event.request.url);
+  const mesmaOrigem = url.origin === self.location.origin;
+
+  // Pedacinhos do mapa (OpenStreetMap): cache-first com limite
+  if (TILE_HOSTS.test(url.hostname)) {
+    event.respondWith(
+      caches.open(TILES_CACHE).then((c) => c.match(event.request)).then((cached) => {
+        if (cached) return cached;
+        return fetch(event.request).then((response) => {
+          if (response.ok || response.type === 'opaque') guardar(TILES_CACHE, event.request, response.clone(), MAX_TILES);
+          return response;
+        }).catch(() => new Response('', { status: 404 }));
+      })
+    );
+    return;
+  }
+
+  // de outro site: não intercepta (o navegador resolve; nada vai para o cache)
+  if (!mesmaOrigem) return;
+
+  // Cache-first para assets estáticos da mesma origem (imagens, fonts, JS/CSS chunks)
+  if (CACHE_FIRST_PATTERNS.some((p) => p.test(url.pathname))) {
     event.respondWith(
       caches.match(event.request).then((cached) => {
         if (cached) return cached;
         return fetch(event.request).then((response) => {
           if (response.ok) {
-            const clone = response.clone();
-            caches.open(ASSETS_CACHE).then((cache) => cache.put(event.request, clone));
+            if (STATIC_RE.test(url.pathname)) {
+              const copia = response.clone();
+              caches.open(STATIC_CACHE).then((c) => c.put(event.request, copia)).catch(() => {});
+            } else guardar(ASSETS_CACHE, event.request, response.clone(), MAX_ASSETS);
           }
           return response;
         }).catch(() => new Response('', { status: 404 }));
@@ -222,14 +305,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Outros requests — network-first
+  // Outros GET da mesma origem — network-first; só guarda resposta "basic" ok, no cache com limite
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        if (response.ok) {
-          const clone = response.clone();
-          caches.open(PAGES_CACHE).then((cache) => cache.put(event.request, clone));
-        }
+        if (response.ok && response.type === 'basic') guardar(ASSETS_CACHE, event.request, response.clone(), MAX_ASSETS);
         return response;
       })
       .catch(() => caches.match(event.request).then((c) => c || new Response('', { status: 404 })))
@@ -241,7 +321,7 @@ self.addEventListener('fetch', (event) => {
 const IDB_NAME = 'nt-mecanicos-offline';
 const IDB_STORE = 'cache';
 
-function idbGet(key) {
+function idbOpen() {
   return new Promise((resolve) => {
     const req = indexedDB.open(IDB_NAME, 1);
     req.onupgradeneeded = () => {
@@ -249,27 +329,66 @@ function idbGet(key) {
       if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE, { keyPath: 'key' });
       if (!db.objectStoreNames.contains('syncQueue')) db.createObjectStore('syncQueue', { keyPath: 'id', autoIncrement: true });
     };
-    req.onsuccess = () => {
-      const tx = req.result.transaction(IDB_STORE, 'readonly');
-      const get = tx.objectStore(IDB_STORE).get(key);
-      get.onsuccess = () => resolve(get.result ? get.result.data : null);
-      get.onerror = () => resolve(null);
-    };
+    req.onsuccess = () => resolve(req.result);
     req.onerror = () => resolve(null);
   });
 }
 
-function idbSet(key, data) {
+async function idbGet(key) {
+  const db = await idbOpen();
+  if (!db) return null;
   return new Promise((resolve) => {
-    const req = indexedDB.open(IDB_NAME, 1);
-    req.onsuccess = () => {
-      const tx = req.result.transaction(IDB_STORE, 'readwrite');
-      tx.objectStore(IDB_STORE).put({ key, data, timestamp: Date.now() });
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-    };
-    req.onerror = () => resolve();
+    const get = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).get(key);
+    get.onsuccess = () => resolve(get.result ? get.result.data : null);
+    get.onerror = () => resolve(null);
   });
+}
+
+async function idbSet(key, data) {
+  const db = await idbOpen();
+  if (!db) return;
+  return new Promise((resolve) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    tx.objectStore(IDB_STORE).put({ key, data, timestamp: Date.now() });
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+  });
+}
+
+async function idbKeys() {
+  const db = await idbOpen();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    const r = db.transaction(IDB_STORE, 'readonly').objectStore(IDB_STORE).getAllKeys();
+    r.onsuccess = () => resolve(r.result || []);
+    r.onerror = () => resolve([]);
+  });
+}
+
+async function idbDelete(keys) {
+  if (!keys.length) return;
+  const db = await idbOpen();
+  if (!db) return;
+  return new Promise((resolve) => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const st = tx.objectStore(IDB_STORE);
+    for (const k of keys) st.delete(k);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+  });
+}
+
+// Mesmo nome? Cópia de mesmoNome (src/lib/push-server.ts) — o SW não importa módulos.
+// "DANILO DE SOUZA" × "Danilo de Souza", "José Oliveira" × "JOSE ANTONIO DE OLIVEIRA"
+function semAcento(s) { return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().trim(); }
+function mesmoNome(a, b) {
+  const x = semAcento(a).split(/\s+/).filter((w) => w.length > 2), y = semAcento(b).split(/\s+/).filter((w) => w.length > 2);
+  if (!x.length || !y.length) return false;
+  return x[0] === y[0] && (x[x.length - 1] === y[y.length - 1] || x.every((w) => y.includes(w)) || y.every((w) => x.includes(w)));
+}
+function ehDoTecnico(nomeOS, nomes) {
+  if (!nomeOS) return false;
+  return nomes.some((n) => mesmoNome(nomeOS, n) || semAcento(nomeOS) === semAcento(n));
 }
 
 async function backgroundPrefetch() {
@@ -279,16 +398,34 @@ async function backgroundPrefetch() {
   const { supabaseUrl, supabaseKey, tecnicoNome, tecnicoNomeReal } = config;
   const headers = { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}` };
   const base = `${supabaseUrl}/rest/v1`;
+  const nomes = [tecnicoNome, tecnicoNomeReal].filter(Boolean);
 
   console.log('[SW] Background sync iniciando para', tecnicoNome);
 
   try {
-    // 1. OS do técnico
-    const encNome = encodeURIComponent(tecnicoNome);
-    const osUrl = `${base}/Ordem_Servico?select=*&Status=not.in.("Concluida","Cancelada","Concluída","cancelada")&or=(Os_Tecnico.ilike.%25${encNome}%25,Os_Tecnico2.ilike.%25${encNome}%25)&order=Id_Ordem.desc`;
+    // 1. OS do técnico: busca pelo PRIMEIRO nome e confere com a regra mesmoNome (antes o ilike do nome inteiro
+    //    não achava "José Oliveira" × "JOSE ANTONIO DE OLIVEIRA") (José, 23/10/2026)
+    //    O ilike não ignora acento: vogais e 'C' viram '_' ("JOSE" → "J_S_" acha "JOSÉ"); quem decide é o
+    //    filtro mesmoNome logo abaixo (José, 23/10/2026)
+    const primeiro = (semAcento(tecnicoNome).split(/\s+/)[0] || '').replace(/[^A-Z]/g, '');
+    if (!primeiro) return;
+    const curinga = primeiro.replace(/[AEIOUC]/g, '_');
+    const LIMITE = 400;
+    const osUrl = `${base}/Ordem_Servico?select=*&Status=not.in.("Concluida","Cancelada","Concluída","cancelada")&or=(Os_Tecnico.ilike.%25${curinga}%25,Os_Tecnico2.ilike.%25${curinga}%25)&order=Id_Ordem.desc&limit=${LIMITE}`;
     const osRes = await fetch(osUrl, { headers });
     if (!osRes.ok) return;
-    const osList = await osRes.json();
+    const bruto = await osRes.json();
+    if (!Array.isArray(bruto)) return;
+    // lista cortada no limite não serve para apagar o que "saiu" (pode só não ter vindo)
+    const listaCompleta = bruto.length < LIMITE;
+    const osList = bruto.filter((o) => ehDoTecnico(o.Os_Tecnico, nomes) || ehDoTecnico(o.Os_Tecnico2, nomes));
+
+    // lista vazia não apaga a lista offline boa (pode ser falha do filtro/servidor)
+    const listaAnterior = await idbGet('prefetch:os-list');
+    if (!osList.length && Array.isArray(listaAnterior) && listaAnterior.length) {
+      console.log('[SW] lista veio vazia — mantém a offline');
+      return;
+    }
 
     await idbSet('prefetch:os-list', osList);
     for (const os of osList) {
@@ -297,15 +434,48 @@ async function backgroundPrefetch() {
 
     // 2. OS_Tecnicos
     const ids = osList.map(o => `"${o.Id_Ordem}"`).join(',');
+    let tecEntries = [];
     if (ids) {
       const tecUrl = `${base}/Ordem_Servico_Tecnicos?select=*&Ordem_Servico=in.(${ids})`;
       const tecRes = await fetch(tecUrl, { headers });
       if (tecRes.ok) {
-        const tecEntries = await tecRes.json();
+        tecEntries = await tecRes.json();
         for (const e of tecEntries) {
           await idbSet(`prefetch:os-tec:${e.Ordem_Servico}`, e);
         }
       }
+    }
+
+    // 2b. a lista que a tela /os lê sem internet (useCached `os:v2:<nome>`) — junta com o que já havia
+    const chaveLista = `os:v2:${tecnicoNome}`;
+    const ant = (await idbGet(chaveLista)) || {};
+    const enviadas = new Set(Array.from(ant.enviadas || []).map(String));
+    for (const e of tecEntries) if (e.Status === 'enviado') enviadas.add(String(e.Ordem_Servico));
+    await idbSet(chaveLista, {
+      ordens: osList,
+      preenchidas: Array.from(new Set(tecEntries.map((e) => String(e.Ordem_Servico)))),
+      enviadas: Array.from(enviadas),
+      cidadeMap: ant.cidadeMap || {},
+      enviadasCount: Math.max(ant.enviadasCount || 0, enviadas.size),
+      agendaMap: ant.agendaMap || {},
+    });
+
+    // 2c. OS que saíram da lista (concluídas/canceladas/de outro): apaga do aparelho — só com a lista desta
+    //     busca (deu certo, não vazia, não cortada no limite); busca que falhou já saiu lá em cima
+    if (listaCompleta && osList.length) {
+      const atuais = new Set(osList.map((o) => String(o.Id_Ordem)));
+      const velhas = (await idbKeys()).filter((k) => {
+        const m = /^prefetch:os(?:-tec)?:(.+)$/.exec(String(k));
+        return m && !atuais.has(m[1]);
+      });
+      await idbDelete(velhas);
+      try {
+        const pc = await caches.open(PAGES_CACHE);
+        for (const req of await pc.keys()) {
+          const m = /^\/os\/([^/?]+)/.exec(new URL(req.url).pathname);
+          if (m && !atuais.has(decodeURIComponent(m[1]))) await pc.delete(req);
+        }
+      } catch { /* sem Cache API */ }
     }
 
     // 3. Dados de referência
@@ -325,15 +495,15 @@ async function backgroundPrefetch() {
 
     // 5. Pré-cachear páginas HTML + RSC para navegação offline
     const cache = await caches.open(PAGES_CACHE);
-    const rscHeaders2 = { RSC: '1', 'Next-Router-Prefetch': '1' };
+    const rscHeaders2 = { RSC: '1' };
     const rscFetches = osList.slice(0, 40).flatMap(os => [
       fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}?__rscq`, r)).catch(() => {}),
       fetch(`/os/${os.Id_Ordem}/preencher`, { headers: rscHeaders2 }).then(r => r.ok && cache.put(`/os/${os.Id_Ordem}/preencher?__rscq`, r)).catch(() => {}),
     ]);
-    // HTML pages (para MPA navigation / fallback offline) — limitado a 10
-    const htmlFetches = osList.slice(0, 10).flatMap(os => [
+    // HTML de TODAS as OS (até 40): sem ela a OS não abre sem internet
+    const htmlFetches = osList.slice(0, 40).flatMap(os => [
       fetch(`/os/${os.Id_Ordem}`).then(r => {
-        if (r.ok) { saveAppShell(r.clone()); return cache.put(new Request(`/os/${os.Id_Ordem}`), r); }
+        if (r.ok) return cache.put(new Request(`/os/${os.Id_Ordem}`), r);
       }).catch(() => {}),
       fetch(`/os/${os.Id_Ordem}/preencher`).then(r => {
         if (r.ok) return cache.put(new Request(`/os/${os.Id_Ordem}/preencher`), r);
@@ -341,6 +511,8 @@ async function backgroundPrefetch() {
     ]);
     await Promise.allSettled([...rscFetches, ...htmlFetches]);
 
+    // selo "N OS no celular · atualizado às hh:mm" (tela inicial)
+    await idbSet('offline-status', { qtd: osList.length, em: Date.now(), por: 'segundo plano' });
     console.log('[SW] Background sync completo:', osList.length, 'OS');
   } catch (err) {
     console.warn('[SW] Background sync falhou:', err);
@@ -355,13 +527,17 @@ self.addEventListener('periodicsync', (event) => {
 });
 
 // ── Push Notifications ──
+// Sempre mostra uma notificação: push que não vira notificação faz o iOS cancelar a inscrição, e um
+// push que não é JSON antes não mostrava nada (José, 23/10/2026)
 self.addEventListener('push', (event) => {
-  if (!event.data) return;
-
-  const data = event.data.json();
+  let data = {};
+  if (event.data) {
+    try { data = event.data.json() || {}; }
+    catch { try { data = { body: event.data.text() }; } catch { data = {}; } }
+  }
   const title = data.title || 'Nova Tratores';
   const options = {
-    body: data.body || '',
+    body: data.body || 'Você tem uma novidade no app.',
     icon: data.icon || '/capa_app.png',
     badge: data.badge || '/capa_app.png',
     vibrate: [200, 100, 200],
@@ -373,7 +549,7 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     Promise.all([
       self.registration.showNotification(title, options),
-      backgroundPrefetch(),
+      backgroundPrefetch().catch(() => {}),
     ])
   );
 });
@@ -381,14 +557,14 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
-  const url = event.notification.data?.url || '/';
+  const url = (event.notification.data && event.notification.data.url) || '/';
 
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
       for (const client of clients) {
         if ('focus' in client) {
           client.focus();
-          client.navigate(url);
+          if ('navigate' in client) client.navigate(url).catch(() => {});
           return;
         }
       }

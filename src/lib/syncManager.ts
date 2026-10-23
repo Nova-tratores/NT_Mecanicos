@@ -4,9 +4,10 @@
  */
 
 import { supabase } from './supabase'
-import { getQueue, removeFromQueue, updateQueueItem, type SyncItem } from './offlineCache'
+import { getQueue, removeFromQueue, updateQueueItem, getPendingPdfs, removePendingPdf, type SyncItem } from './offlineCache'
+import { executarEscrita, isNetworkError } from './offlineWrite'
+import { gerarEAnexarRelatorio } from './gerarEAnexarRelatorio'
 
-let syncing = false
 const MAX_RETRIES = 10
 const SYNC_TIMEOUT = 45000
 
@@ -14,20 +15,7 @@ const SYNC_TIMEOUT = 45000
 // fila — ela existe exatamente pra aguentar sinal ruim na roça. Só erro de
 // DADO (RLS, coluna, constraint) vira falha permanente após MAX_RETRIES.
 // (Caso real: OS-0670 — 10 timeouts seguidos mataram o relatório no aparelho.)
-function isNetworkError(err: unknown): boolean {
-  const msg = String((err as { message?: string })?.message || err || '').toLowerCase()
-  return (
-    msg.includes('fetch') ||
-    msg.includes('network') ||
-    msg.includes('load failed') ||
-    msg.includes('timeout') ||
-    msg.includes('dns') ||
-    msg.includes('econnrefused') ||
-    msg.includes('enotfound') ||
-    msg.includes('aborted') ||
-    msg.includes('socket')
-  )
-}
+// (isNetworkError vem de offlineWrite — a mesma regra nos dois lugares.)
 
 const syncFailListeners: Array<(item: SyncItem, error: string) => void> = []
 export function onSyncFail(cb: (item: SyncItem, error: string) => void) {
@@ -49,13 +37,6 @@ async function logFailureToServer(item: SyncItem, errorMsg: string) {
   } catch { /* melhor não travar por causa do log */ }
 }
 
-function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
-  return Promise.race([
-    p,
-    new Promise<never>((_, rej) => setTimeout(() => rej(new Error('sync timeout')), SYNC_TIMEOUT)),
-  ])
-}
-
 // Campos que podem conter fotos em base64 pendentes de upload
 const FOTO_FIELDS = [
   'FotoHorimetro', 'FotoChassis', 'FotoFrente', 'FotoDireita', 'FotoEsquerda',
@@ -63,6 +44,24 @@ const FOTO_FIELDS = [
   'FotoPecaNova1', 'FotoPecaNova2', 'FotoPecaInstalada1', 'FotoPecaInstalada2', 'FotoAlmoco',
   'FotoExtra1', 'FotoExtra2', 'FotoExtra3', 'FotoExtra4', 'FotoExtra5',
 ]
+
+/* Fotos que não sobem (José, 23/10/2026): o item vira update SÓ dos campos de foto, cada rodada conta uma
+   tentativa e, depois de MAX_TENTATIVAS_FOTO, vira falha visível (não trava o PDF nem o Status da OS). */
+const MAX_TENTATIVAS_FOTO = 12
+const CAMPOS_DE_FOTO = new Set([...FOTO_FIELDS, 'AlmocosFotos', 'FotosExtras', 'AssCliente', 'AssTecnico'])
+
+/** só os campos de foto do payload (+ nº da OS, que diz qual relatório atualizar) */
+function soCamposDeFoto(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { Ordem_Servico: data.Ordem_Servico }
+  for (const [k, v] of Object.entries(data)) if (CAMPOS_DE_FOTO.has(k)) out[k] = v
+  return out
+}
+
+/** item que já é só o reenvio das fotos de um relatório que subiu */
+function ehSoFotos(item: SyncItem): boolean {
+  if (item.table !== 'Ordem_Servico_Tecnicos' || item.action !== 'update') return false
+  return Object.keys(item.data || {}).every((k) => k === 'Ordem_Servico' || CAMPOS_DE_FOTO.has(k))
+}
 
 /** Upload de uma foto base64 para Supabase Storage. Retorna URL ou null se falhou. */
 async function uploadBase64Foto(base64: string, campo: string, osId: string): Promise<string | null> {
@@ -174,21 +173,56 @@ async function resolverFotosPendentes(data: Record<string, unknown>): Promise<{ 
   return { data: resolved, pendente }
 }
 
-export async function processQueue(): Promise<number> {
-  if (syncing) return 0
-  if (!navigator.onLine) return 0
+/** chave da OS do item (para ligar relatório e Status da mesma OS) */
+function osDoItem(item: SyncItem): string | null {
+  const d = item.data || {}, m = item.match || {}
+  if (item.table === 'Ordem_Servico_Tecnicos') return d.Ordem_Servico ? String(d.Ordem_Servico) : (m.Ordem_Servico ? String(m.Ordem_Servico) : null)
+  if (item.table === 'Ordem_Servico') return m.Id_Ordem ? String(m.Id_Ordem) : null
+  return null
+}
 
-  syncing = true
+// Um fluxo só (José, 23/10/2026): o 'online' disparava dois processQueue (este arquivo e o OfflineSync) e os PDFs
+// rodavam antes da fila subir. Agora quem chama aguarda a MESMA rodada em andamento.
+let rodada: Promise<number> | null = null
+
+export function processQueue(): Promise<number> {
+  if (rodada) return rodada
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return Promise.resolve(0)
+  rodada = processarFila().finally(() => { rodada = null })
+  return rodada
+}
+
+async function processarFila(): Promise<number> {
   let processed = 0
 
   try {
     const items = await getQueue()
     if (items.length === 0) return 0
 
+    // sem sessão válida o banco recusa tudo (0 linhas) e cada volta do app gastava uma tentativa até virar
+    // "falha": sem login, a fila só espera (José, 23/10/2026)
+    const { data: sess } = await supabase.auth.getSession()
+    if (!sess.session || (sess.session.expires_at && sess.session.expires_at * 1000 < Date.now() - 60_000)) {
+      console.warn('[sync] sem sessão válida: a fila espera o técnico entrar de novo')
+      return 0
+    }
+
     console.log(`[sync] Processando ${items.length} item(s) pendente(s)...`)
 
+    // OS cujo relatório NÃO subiu nesta rodada: o update de Status 'Relatório Concluído' dela fica esperando
+    // (antes a OS ia pra fase seguinte no portal sem relatório nenhum).
+    const relatorioTravado = new Set<string>()
+
     for (const item of items) {
-      if (item.failed) continue
+      const osItem = osDoItem(item)
+      if (item.failed) {
+        if (item.table === 'Ordem_Servico_Tecnicos' && osItem && !ehSoFotos(item)) relatorioTravado.add(osItem)
+        continue
+      }
+      if (item.table === 'Ordem_Servico' && osItem && relatorioTravado.has(osItem)) {
+        console.warn(`[sync] Item ${item.id}: Status da ${osItem} espera o relatório subir`)
+        continue
+      }
       try {
         // Resolver fotos base64 antes de gravar
         let data = item.data
@@ -199,27 +233,11 @@ export async function processQueue(): Promise<number> {
           fotoPendente = r.pendente
         }
 
-        let result
+        // enfileiradoEm: o insert da fila confere se a linha já subiu desde o enfileiramento (sem duplicar)
+        const result = await executarEscrita({ table: item.table, action: item.action, data, match: item.match, enfileiradoEm: item.createdAt }, SYNC_TIMEOUT)
 
-        if (item.action === 'insert') {
-          result = await withTimeout(supabase.from(item.table).insert(data))
-        } else if (item.action === 'update' && item.match) {
-          let query = supabase.from(item.table).update(data)
-          for (const [k, v] of Object.entries(item.match)) {
-            query = query.eq(k, v)
-          }
-          result = await withTimeout(query)
-        } else if (item.action === 'upsert') {
-          result = await withTimeout(supabase.from(item.table).upsert(data))
-        } else if (item.action === 'delete' && item.match) {
-          let query = supabase.from(item.table).delete()
-          for (const [k, v] of Object.entries(item.match)) {
-            query = query.eq(k, v)
-          }
-          result = await withTimeout(query)
-        }
-
-        if (result?.error) {
+        if (result.error) {
+          if (item.table === 'Ordem_Servico_Tecnicos' && osItem && !ehSoFotos(item)) relatorioTravado.add(osItem)
           const retries = (item.retries || 0) + 1
           const errMsg = result.error.message || String(result.error)
           if (isNetworkError(result.error)) {
@@ -239,11 +257,21 @@ export async function processQueue(): Promise<number> {
         }
 
         if (fotoPendente && item.id) {
-          // Dados gravados no banco mas algumas fotos ficaram como base64.
-          // Atualiza o item na fila com os dados parcialmente resolvidos
-          // para tentar subir as fotos restantes no próximo sync.
-          await updateQueueItem(item.id, { data, action: 'update', match: item.match || { IdOs: data.Ordem_Servico } })
-          console.warn(`[sync] Item ${item.id} gravado, mas ${item.table} tem fotos pendentes — tentará de novo`)
+          // Dados gravados no banco mas algumas fotos ficaram como base64. O item vira update SÓ das fotos da
+          // MESMA OS (por Ordem_Servico), contando tentativas; esgotou = falha visível e libera o PDF.
+          const tentativas = ehSoFotos(item) ? (item.retries || 0) + 1 : 1
+          const errMsg = `fotos do relatório não subiram (tentativa ${tentativas}/${MAX_TENTATIVAS_FOTO})`
+          const fotos = soCamposDeFoto(data)
+          if (tentativas >= MAX_TENTATIVAS_FOTO) {
+            const falhou = { ...item, data: fotos, action: 'update' as const, match: { Ordem_Servico: data.Ordem_Servico } }
+            await updateQueueItem(item.id, { data: fotos, action: 'update', match: { Ordem_Servico: data.Ordem_Servico }, retries: tentativas, failed: true, failedAt: Date.now(), lastError: errMsg })
+            await logFailureToServer(falhou, errMsg)
+            syncFailListeners.forEach(cb => cb(falhou, errMsg))
+            console.error(`[sync] Item ${item.id}: ${errMsg} — desistiu`)
+          } else {
+            await updateQueueItem(item.id, { data: fotos, action: 'update', match: { Ordem_Servico: data.Ordem_Servico }, retries: tentativas, lastError: errMsg })
+            console.warn(`[sync] Item ${item.id} gravado, mas ${errMsg} — tentará de novo`)
+          }
         } else {
           if (item.id) await removeFromQueue(item.id)
           console.log(`[sync] Item ${item.id} sincronizado (${item.table}/${item.action})`)
@@ -251,6 +279,7 @@ export async function processQueue(): Promise<number> {
         processed++
       } catch (err) {
         console.error(`[sync] Erro no item ${item.id}:`, err)
+        if (item.table === 'Ordem_Servico_Tecnicos' && osItem && !ehSoFotos(item)) relatorioTravado.add(osItem)
         const retries = (item.retries || 0) + 1
         const errMsg = String((err as { message?: string })?.message || err)
         if (item.id) {
@@ -272,7 +301,7 @@ export async function processQueue(): Promise<number> {
       console.log(`[sync] ${processed} item(s) sincronizado(s) com sucesso`)
     }
   } finally {
-    syncing = false
+    /* nada a liberar: a rodada é limpa em processQueue */
   }
 
   return processed
@@ -296,25 +325,72 @@ export async function ressuscitarFalhasDeRede(): Promise<number> {
   return n
 }
 
+/* ═══ PDFs das OS enviadas sem internet ═══
+   Só depois que a fila daquela OS subiu (senão o PDF sairia do banco ainda antigo). */
+export async function processarPdfsPendentes(): Promise<void> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return
+  const list = await getPendingPdfs()
+  if (list.length === 0) return
+  const fila = await getQueue()
+  // foto que desistiu (falha) não segura o PDF para sempre
+  const comFila = new Set(fila.filter((i) => i.table === 'Ordem_Servico_Tecnicos' && !(i.failed && ehSoFotos(i))).map((i) => String(i.data?.Ordem_Servico || i.match?.Ordem_Servico || '')))
+  for (const osId of list) {
+    if (comFila.has(osId)) continue // relatório ainda na fila: fica para a próxima rodada
+    try {
+      const ok = await gerarEAnexarRelatorio(osId, { forcar: true })
+      if (ok) await removePendingPdf(osId)
+    } catch { /* tenta de novo na próxima reconexão */ }
+  }
+}
+
+/* ═══ Um fluxo só: sobe a fila e DEPOIS os PDFs (José, 23/10/2026) ═══ */
+export type EstadoSync = { rodando: boolean; enviados: number }
+const estadoListeners: Array<(e: EstadoSync) => void> = []
+export function onSyncEstado(cb: (e: EstadoSync) => void) {
+  estadoListeners.push(cb)
+  return () => { const i = estadoListeners.indexOf(cb); if (i >= 0) estadoListeners.splice(i, 1) }
+}
+let tudo: Promise<number> | null = null
+export function sincronizarTudo(): Promise<number> {
+  if (tudo) return tudo
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return Promise.resolve(0)
+  tudo = (async () => {
+    estadoListeners.forEach((cb) => cb({ rodando: true, enviados: 0 }))
+    let n = 0
+    try {
+      n = await processQueue()
+      // atualizações de requisição guardadas no celular (comprovante sem sinal) sobem junto (José, 23/10/2026)
+      try { const { enviarPendentes } = await import('@/app/(tecnico)/requisicoes/_util'); n += await enviarPendentes() } catch { /* tenta no próximo sync */ }
+      await processarPdfsPendentes()
+    } finally {
+      estadoListeners.forEach((cb) => cb({ rodando: false, enviados: n }))
+    }
+    return n
+  })().finally(() => { tudo = null })
+  return tudo
+}
+
 /** Registra listeners para sync automático quando volta online */
+let autoIniciado = false
 export function startAutoSync() {
-  if (typeof window === 'undefined') return
+  if (typeof window === 'undefined' || autoIniciado) return
+  autoIniciado = true
 
   // Sync quando volta online
   window.addEventListener('online', () => {
     console.log('[sync] Conexão restaurada, sincronizando...')
-    processQueue()
+    void sincronizarTudo()
   })
 
   // Sync quando o app volta ao foco
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && navigator.onLine) {
-      processQueue()
+      void sincronizarTudo()
     }
   })
 
   // Sync inicial se tiver internet (antes, devolve pra fila o que morreu por rede)
   if (navigator.onLine) {
-    ressuscitarFalhasDeRede().then(() => processQueue())
+    ressuscitarFalhasDeRede().then(() => sincronizarTudo())
   }
 }

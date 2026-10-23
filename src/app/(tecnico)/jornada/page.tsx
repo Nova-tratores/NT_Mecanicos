@@ -2,7 +2,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
-import { geocodificar, rotaDaOficina } from '@/lib/ors'
+import { geocodificar, rotaDaOficina, cidadeUf, linkNavegar } from '@/lib/ors'
+import { hojeBR } from '@/lib/hoje'
 import { offlineWrite } from '@/lib/offlineWrite'
 import { getCachedCheckin, getCachedVeiculos, getCachedOSList } from '@/lib/prefetch'
 import {
@@ -29,6 +30,7 @@ interface OrdemOption {
   Id_Ordem: string
   Os_Cliente: string
   Endereco_Cliente: string
+  Cidade_Cliente?: string | null
   Qtd_HR: number | null
 }
 
@@ -50,7 +52,8 @@ export default function JornadaPage() {
 
   const tecnicoNome = user?.tecnico_nome || ''
   const nomeBusca = user?.nome_pos || user?.tecnico_nome || ''
-  const hoje = new Date().toISOString().split('T')[0]
+  const hoje = hojeBR() // dia de Brasília (UTC pulava para amanhã depois das 21h) (José, 23/10/2026)
+  const [avisoRota, setAvisoRota] = useState('')
 
   // Fallback offline: le tudo do cache do IndexedDB (prefetch)
   const carregarDoCache = useCallback(async () => {
@@ -66,6 +69,7 @@ export default function JornadaPage() {
         Id_Ordem: String(o.Id_Ordem),
         Os_Cliente: String(o.Os_Cliente || ''),
         Endereco_Cliente: String(o.Endereco_Cliente || ''),
+        Cidade_Cliente: (o.Cidade_Cliente as string) || null,
         Qtd_HR: (o.Qtd_HR as number) ?? null,
       })))
     }
@@ -89,7 +93,7 @@ export default function JornadaPage() {
         supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca'),
         supabase
           .from('Ordem_Servico')
-          .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Qtd_HR')
+          .select('Id_Ordem, Os_Cliente, Endereco_Cliente, Cidade_Cliente, Qtd_HR')
           .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
           .or(`Os_Tecnico.ilike.%${nomeBusca}%,Os_Tecnico2.ilike.%${nomeBusca}%`),
       ])
@@ -145,9 +149,14 @@ export default function JornadaPage() {
     let lat_destino: number | null = null
     let lng_destino: number | null = null
 
+    setAvisoRota('')
     if (!isOficina && ordem?.Endereco_Cliente) {
       setCalculando(true)
-      const coords = await geocodificar(ordem.Endereco_Cliente + ', SP, Brasil')
+      // estado do cliente quando houver ("FARTURA (SP)"); antes sempre ", SP" e errava cliente do PR (José, 23/10/2026)
+      const { cidade, uf } = cidadeUf(ordem.Cidade_Cliente)
+      const end = ordem.Endereco_Cliente.trim()
+      const texto = [end, cidade && !end.toUpperCase().includes(cidade.toUpperCase()) ? cidade : '', uf, 'Brasil'].filter(Boolean).join(', ')
+      const coords = await geocodificar(texto)
       if (coords) {
         lat_destino = coords.lat
         lng_destino = coords.lng
@@ -156,6 +165,11 @@ export default function JornadaPage() {
           distancia_km = rota.distancia_km
           tempo_estimado_min = rota.tempo_min
         }
+      }
+      if (!coords || distancia_km == null) {
+        setAvisoRota(navigator.onLine
+          ? 'Não deu para calcular a rota agora — o destino foi salvo sem a distância.'
+          : 'Sem internet: o destino foi salvo sem a distância.')
       }
       setCalculando(false)
     }
@@ -256,6 +270,13 @@ export default function JornadaPage() {
           <Plus size={16} /> Adicionar
         </button>
       </div>
+
+      {avisoRota && (
+        <div role="status" onClick={() => setAvisoRota('')} style={{
+          background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 16,
+          padding: '12px 14px', fontSize: 13.5, color: colors.textMuted, lineHeight: 1.45,
+        }}>{avisoRota}</div>
+      )}
 
       {/* Resumo do dia */}
       {entries.length > 0 && (() => {
@@ -391,6 +412,15 @@ export default function JornadaPage() {
                         <span style={{ fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
                           {entry.destino}
                         </span>
+                        {/* abre Waze/Google Maps com o destino (José, 23/10/2026) */}
+                        <a href={linkNavegar({ lat: entry.lat_destino, lng: entry.lng_destino, endereco: entry.destino })}
+                          target="_blank" rel="noopener noreferrer" style={{
+                            flexShrink: 0, display: 'flex', alignItems: 'center', gap: 4, minHeight: 32, padding: '0 10px',
+                            borderRadius: 10, border: `1px solid ${colors.border}`, background: colors.surface,
+                            color: colors.primary, fontSize: 12.5, textDecoration: 'none',
+                          }}>
+                          <Navigation size={13} /> Navegar
+                        </a>
                       </>
                     )}
                   </div>

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { exigirAdmin } from '@/lib/apiAuth'
 import { supabase } from '@/lib/supabase'
 
 async function fetchAll<T>(table: string, select: string, filters?: (q: any) => any): Promise<T[]> {
@@ -19,6 +20,7 @@ async function fetchAll<T>(table: string, select: string, filters?: (q: any) => 
 }
 
 export async function GET(req: NextRequest) {
+  const adm = await exigirAdmin(req); if (adm instanceof NextResponse) return adm // só admin: era tela do /admin, desligado (José, 23/10/2026)
   try {
     const sp = req.nextUrl.searchParams
     const codCli = sp.get('codCli')
@@ -138,6 +140,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const adm = await exigirAdmin(req); if (adm instanceof NextResponse) return adm // só admin: era tela do /admin, desligado (José, 23/10/2026)
   try {
     const body = await req.json()
     const { acao } = body

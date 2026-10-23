@@ -1,25 +1,40 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
 import { randomUUID } from 'crypto'
+import { exigirUsuario, ehDoUsuario, supabaseAdmin, type UsuarioApi } from '@/lib/apiAuth'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-)
+// Carrinho do catálogo (José, 23/10/2026): exige login; cada um vê e mexe só nos próprios carrinhos
+// (criado_por = nome do técnico do token); o link com token abre para quem está logado.
+// Obs.: em 23/10/2026 as tabelas catalogo_carrinhos* não existem no banco do portal.
+
+async function doUsuario(u: UsuarioApi, carrinhoId: unknown): Promise<boolean> {
+  if (!carrinhoId) return false
+  const { data } = await supabaseAdmin().from('catalogo_carrinhos').select('criado_por').eq('id', carrinhoId).maybeSingle()
+  return !!data && ehDoUsuario(u, data.criado_por)
+}
 
 export async function POST(req: NextRequest) {
+  const u = await exigirUsuario(req)
+  if (u instanceof NextResponse) return u
+  const supabase = supabaseAdmin()
   try {
     const body = await req.json()
     const { action } = body
+    // quem fez vem do token, não da tela
+    body.quem = u.nome
+    body.criado_por = u.nome
+    const negado = () => NextResponse.json({ error: 'Carrinho não encontrado' }, { status: 404 })
+    if (['adicionar_item', 'remover_item', 'alterar_qtd'].includes(action) && !(await doUsuario(u, body.carrinho_id))) return negado()
+    if (['mudar_status', 'excluir'].includes(action) && !(await doUsuario(u, body.id))) return negado()
 
     // ── Listar carrinhos ──
     if (action === 'listar') {
       const { status } = body
-      const { data } = await supabase
+      let q = supabase
         .from('catalogo_carrinhos')
         .select('*, catalogo_carrinho_itens(count)')
         .eq('status', status || 'aberto')
-        .order('updated_at', { ascending: false })
+      if (!u.isAdmin) q = q.in('criado_por', u.nomes)
+      const { data } = await q.order('updated_at', { ascending: false })
       return NextResponse.json(data || [])
     }
 
@@ -47,7 +62,7 @@ export async function POST(req: NextRequest) {
       if (token) query = query.eq('share_token', token)
       else query = query.eq('id', id)
       const { data: carrinho } = await query.maybeSingle()
-      if (!carrinho) return NextResponse.json({ error: 'Carrinho não encontrado' }, { status: 404 })
+      if (!carrinho || (!token && !ehDoUsuario(u, carrinho.criado_por))) return NextResponse.json({ error: 'Carrinho não encontrado' }, { status: 404 })
       const { data: itens } = await supabase
         .from('catalogo_carrinho_itens')
         .select('*')
@@ -94,7 +109,7 @@ export async function POST(req: NextRequest) {
     // ── Remover item ──
     if (action === 'remover_item') {
       const { carrinho_id, item_id, quem } = body
-      const { data: item } = await supabase.from('catalogo_carrinho_itens').select('*').eq('id', item_id).maybeSingle()
+      const { data: item } = await supabase.from('catalogo_carrinho_itens').select('*').eq('id', item_id).eq('carrinho_id', carrinho_id).maybeSingle()
       if (item) {
         await supabase.from('catalogo_carrinho_itens').delete().eq('id', item_id)
         await supabase.from('catalogo_carrinho_historico').insert({
@@ -108,7 +123,7 @@ export async function POST(req: NextRequest) {
     // ── Alterar quantidade ──
     if (action === 'alterar_qtd') {
       const { carrinho_id, item_id, qtd, quem } = body
-      const { data: item } = await supabase.from('catalogo_carrinho_itens').select('*').eq('id', item_id).maybeSingle()
+      const { data: item } = await supabase.from('catalogo_carrinho_itens').select('*').eq('id', item_id).eq('carrinho_id', carrinho_id).maybeSingle()
       if (item) {
         await supabase.from('catalogo_carrinho_itens').update({ qtd: Math.max(1, qtd) }).eq('id', item_id)
         await supabase.from('catalogo_carrinho_historico').insert({

@@ -28,6 +28,8 @@ export interface AgendaItem {
 
 export interface OrdemServico {
   Id_Ordem: string
+  /** OS de resserviço: nº da OS original (o técnico volta para refazer) — lib/resservico.ts */
+  resservico_de?: string | null
   Status: string
   Data: string
   Os_Cliente: string

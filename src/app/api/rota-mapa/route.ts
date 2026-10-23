@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { exigirUsuario } from '@/lib/apiAuth'
 
 const ORS_KEY = process.env.NEXT_PUBLIC_ORS_API_KEY || ''
 
 export async function GET(req: NextRequest) {
+  const usu = await exigirUsuario(req); if (usu instanceof NextResponse) return usu // exige login (José, 23/10/2026)
   const sp = req.nextUrl.searchParams
   const origemLat = sp.get('origemLat')
   const origemLng = sp.get('origemLng')
   const destinoLat = sp.get('destinoLat')
   const destinoLng = sp.get('destinoLng')
 
-  if (!origemLat || !origemLng || !destinoLat || !destinoLng) {
+  if (![origemLat, origemLng, destinoLat, destinoLng].every((v) => v && Number.isFinite(Number(v)))) {
     return NextResponse.json({ error: 'Params obrigatorios: origemLat, origemLng, destinoLat, destinoLng' }, { status: 400 })
   }
 

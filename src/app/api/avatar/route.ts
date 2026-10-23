@@ -1,22 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
+import { exigirUsuario, supabaseAdmin } from '@/lib/apiAuth'
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '',
-)
-
+// Foto de perfil: só a do próprio usuário do token — o userId do formulário é ignorado (José, 23/10/2026)
 export async function POST(req: NextRequest) {
   try {
-    if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
-      return NextResponse.json({ error: 'SUPABASE_SERVICE_ROLE_KEY nao configurada no servidor' }, { status: 500 })
-    }
+    const u = await exigirUsuario(req)
+    if (u instanceof NextResponse) return u
+    const supabase = supabaseAdmin()
 
     const formData = await req.formData()
     const file = formData.get('file') as File | null
-    const userId = formData.get('userId') as string | null
-    if (!file || !userId) return NextResponse.json({ error: 'Dados incompletos' }, { status: 400 })
+    if (!file) return NextResponse.json({ error: 'Dados incompletos' }, { status: 400 })
+    if (file.size > 8 * 1024 * 1024) return NextResponse.json({ error: 'Foto grande demais' }, { status: 413 })
+    if (file.type && !file.type.startsWith('image/')) return NextResponse.json({ error: 'Envie uma imagem' }, { status: 400 })
 
+    const userId = u.userId
     const path = `${userId}.jpg`
     const bytes = new Uint8Array(await file.arrayBuffer())
 

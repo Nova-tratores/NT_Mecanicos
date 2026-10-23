@@ -3,11 +3,12 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { use } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useFormBackup } from '@/hooks/useFormBackup'
-import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
-import { ArrowLeft, Upload, CheckCircle, Store } from 'lucide-react'
-import Link from 'next/link'
-import { notificarPortalReq } from '@/lib/notificarPortal'
+import { getCachedRequisicoes, getCachedFornecedores } from '@/lib/prefetch'
+import { comprimirImagem, blobParaBase64 } from '@/lib/imagem'
+import { CheckCircle, Store, Camera, ClipboardList, Receipt } from 'lucide-react'
+import { COR, T, cartao, campo, rotulo, botaoPrincipal, Icone, Voltar, TelaSucesso, EstiloCampos } from '../../_ui'
+import { lerValor, moeda, dataBR, erroDeRede, enviarAtualizacao, guardarPendente, enviarPendentes } from '../../_util'
 
 interface Fornecedor {
   id: number
@@ -27,28 +28,37 @@ interface RequisicaoInfo {
   valor_despeza: string | null
 }
 
+// Regras (José, 23/10/2026): confere cada erro; sem sinal guarda no celular (comprovante em base64) e não
+// apaga o digitado; sem comprovante não vira "completa" (continua pendente); valor aceita 150,00 e precisa ser > 0.
 export default function AtualizarRequisicao({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
   const { user } = useCurrentUser()
-  const router = useRouter()
 
   const [req, setReq] = useState<RequisicaoInfo | null>(null)
   const [fornecedores, setFornecedores] = useState<Fornecedor[]>([])
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
-  const [sucesso, setSucesso] = useState(false)
+  // 'ok' foi; 'guardado' sem sinal, vai depois; 'sem-comprovante' foi, mas segue pendente
+  const [sucesso, setSucesso] = useState<null | 'ok' | 'guardado' | 'sem-comprovante'>(null)
+  const [erro, setErro] = useState('')
   const [filtroFornecedor, setFiltroFornecedor] = useState('')
   const [showFornecedores, setShowFornecedores] = useState(false)
+  const [preparandoFoto, setPreparandoFoto] = useState(false)
 
   const [form, setForm] = useState({
     valor: '',
     fornecedor: '',
-    foto: null as File | null,
+    foto: null as Blob | null,
+    fotoNome: '',
     fotoPreview: '',
   })
 
+  // trava contra toque duplo + marca de enviado (o backup não regrava depois de enviar)
+  const enviandoRef = useRef(false)
+  const enviadoRef = useRef(false)
+
   // Backup automático do formulário
-  const getFormData = useCallback(() => ({
+  const getFormData = useCallback(() => (enviadoRef.current ? {} : {
     valor: form.valor, fornecedor: form.fornecedor,
   }), [form.valor, form.fornecedor])
 
@@ -70,164 +80,194 @@ export default function AtualizarRequisicao({ params }: { params: Promise<{ id: 
     }
   }, [loading, restoreBackup])
 
+  // manda o que ficou guardado sem sinal
   useEffect(() => {
+    const mandar = () => { enviarPendentes().catch(() => {}) }
+    mandar()
+    window.addEventListener('online', mandar)
+    return () => window.removeEventListener('online', mandar)
+  }, [])
+
+  useEffect(() => {
+    const doCache = async () => {
+      const [reqs, forns] = await Promise.all([getCachedRequisicoes(), getCachedFornecedores()])
+      const r = (reqs || []).find((x) => String(x.id) === String(id))
+      if (r) setReq(r as unknown as RequisicaoInfo)
+      if (forns) setFornecedores(forns as unknown as Fornecedor[])
+    }
     const carregar = async () => {
-      const [{ data: reqData }, { data: fornData }] = await Promise.all([
-        supabase.from('Requisicao').select('id, titulo, tipo, data, obs, fornecedor, valor_despeza').eq('id', id).single(),
-        supabase.from('Fornecedores').select('*').order('nome'),
-      ])
-      if (reqData) setReq(reqData as RequisicaoInfo)
-      if (fornData) setFornecedores(fornData as Fornecedor[])
+      if (!navigator.onLine) { await doCache(); setLoading(false); return }
+      try {
+        const [{ data: reqData, error: e1 }, { data: fornData }] = await Promise.all([
+          supabase.from('Requisicao').select('id, titulo, tipo, data, obs, fornecedor, valor_despeza').eq('id', id).maybeSingle(),
+          supabase.from('Fornecedores').select('*').order('nome'),
+        ])
+        if (e1) throw e1
+        if (reqData) setReq(reqData as RequisicaoInfo)
+        if (fornData) setFornecedores(fornData as Fornecedor[])
+        else await doCache()
+      } catch {
+        await doCache()
+      }
       setLoading(false)
     }
     carregar()
   }, [id])
 
-  const handleFoto = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
+  // libera a prévia da foto da memória
+  useEffect(() => () => { if (form.fotoPreview) URL.revokeObjectURL(form.fotoPreview) }, [form.fotoPreview])
+
+  const handleFoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const input = e.target
+    const file = input.files?.[0]
+    input.value = '' // deixa escolher a mesma foto de novo
     if (!file) return
-    setForm({
-      ...form,
-      foto: file,
-      fotoPreview: URL.createObjectURL(file),
-    })
+    setPreparandoFoto(true)
+    const comprimida = await comprimirImagem(file)
+    setPreparandoFoto(false)
+    setForm(prev => ({ ...prev, foto: comprimida, fotoNome: file.name, fotoPreview: URL.createObjectURL(comprimida) }))
+  }
+
+  const valorNum = lerValor(form.valor)
+  const valorOk = Number.isFinite(valorNum) && valorNum > 0
+
+  const terminar = (r: 'ok' | 'guardado' | 'sem-comprovante') => {
+    enviadoRef.current = true
+    clearBackup()
+    setSucesso(r)
   }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!req || !form.valor.trim() || !form.fornecedor.trim()) return
+    if (!req || enviandoRef.current) return
+    setErro('')
+    if (!valorOk) { setErro('Informe um valor maior que zero, por exemplo 150,00.'); return }
+    if (!form.fornecedor.trim()) { setErro('Informe o fornecedor.'); return }
+    if (!form.foto && !window.confirm('Sem a foto do comprovante a requisição continua pendente — só o valor e o fornecedor vão para o escritório. Enviar assim mesmo?')) return
+    enviandoRef.current = true
     setSaving(true)
 
-    let fotoUrl: string | null = null
-
-    // Upload da foto se tiver
-    if (form.foto) {
-      const ext = form.foto.name.split('.').pop()
-      const path = `comprovantes/${req.id}_${Date.now()}.${ext}`
-      const { error: uploadError } = await supabase.storage
-        .from('requisicoes')
-        .upload(path, form.foto)
-
-      if (!uploadError) {
-        const { data: urlData } = supabase.storage.from('requisicoes').getPublicUrl(path)
-        fotoUrl = urlData.publicUrl
-      }
+    const nomeTecnico = user?.nome_pos || user?.tecnico_nome || 'Técnico'
+    const valor = moeda(valorNum)
+    const fornecedor = form.fornecedor.trim()
+    const guardar = async () => {
+      await guardarPendente({
+        reqId: req.id, titulo: req.titulo, valor, fornecedor,
+        comprovante: form.foto ? await blobParaBase64(form.foto) : null,
+        tecnico: nomeTecnico, criadoEm: Date.now(),
+      })
+      terminar('guardado')
     }
 
-    // Atualiza a Requisicao com fornecedor e valor
-    await supabase.from('Requisicao')
-      .update({
-        fornecedor: form.fornecedor.toUpperCase(),
-        valor_despeza: form.valor,
-        recibo_fornecedor: fotoUrl,
-        status: 'completa',
-      })
-      .eq('id', req.id)
-
-    // Insere na tabela Supa-AtualizarReq para o portal receber em tempo real
-    await supabase.from('Supa-AtualizarReq').insert({
-      ReqREF: String(req.id),
-      ReqValor: form.valor,
-      ReqFotoNota: fotoUrl,
-    })
-
-    // Notifica portal (bell icon)
-    const nomeTecnico = user?.nome_pos || user?.tecnico_nome || 'Técnico'
-    notificarPortalReq(
-      'Requisição Atualizada',
-      `${nomeTecnico} atualizou a requisição #${req.id} — ${req.titulo} (R$ ${form.valor})`
-    )
-
-    setSaving(false)
-    setSucesso(true)
-    clearBackup()
+    try {
+      if (!navigator.onLine) {
+        await guardar()
+      } else {
+        try {
+          await enviarAtualizacao({
+            reqId: req.id, titulo: req.titulo, valor, fornecedor,
+            comprovante: form.foto, nomeArquivo: form.fotoNome, tecnico: nomeTecnico,
+          })
+          terminar(form.foto ? 'ok' : 'sem-comprovante')
+        } catch (err) {
+          if (erroDeRede(err)) await guardar()
+          else setErro(`${(err as Error)?.message || 'Erro ao enviar.'} Seus dados continuam aqui — tente de novo.`)
+        }
+      }
+    } catch (err) {
+      setErro(`Não deu para guardar no celular: ${(err as Error)?.message || err}. Tente de novo.`)
+    } finally {
+      enviandoRef.current = false
+      setSaving(false)
+    }
   }
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><div className="spinner" style={{ margin: '0 auto' }} /></div>
-  if (!req) return <div style={{ padding: 40, textAlign: 'center', color: '#9CA3AF' }}>Requisição não encontrada</div>
+  if (!req) return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <Voltar href="/requisicoes" />
+      <div style={{ ...cartao, padding: 32, textAlign: 'center', color: T.textoFraco }}>
+        {typeof navigator !== 'undefined' && !navigator.onLine
+          ? 'Sem internet, e esta requisição não está guardada no celular. Abra de novo quando tiver sinal.'
+          : 'Requisição não encontrada'}
+      </div>
+    </div>
+  )
 
   if (sucesso) {
     return (
-      <div style={{
-        minHeight: '60vh', display: 'flex', flexDirection: 'column',
-        alignItems: 'center', justifyContent: 'center', textAlign: 'center', padding: 20,
-      }}>
-        <div style={{
-          width: 80, height: 80, borderRadius: '50%', background: '#D1FAE5',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 20,
-        }}>
-          <CheckCircle size={40} color="#10B981" />
-        </div>
-        <h2 style={{ fontSize: 20, fontWeight: 700, color: '#1F2937', marginBottom: 8 }}>
-          Requisição Atualizada!
-        </h2>
-        <p style={{ fontSize: 14, color: '#6B7280', marginBottom: 24 }}>
-          Os dados foram enviados com sucesso.
-        </p>
-        <Link href="/requisicoes" style={{
-          background: '#C41E2A', color: '#fff', borderRadius: 12,
-          padding: '14px 32px', fontSize: 15, fontWeight: 700,
-          textDecoration: 'none',
-        }}>
-          Voltar às Requisições
-        </Link>
-      </div>
+      <TelaSucesso
+        icon={CheckCircle}
+        titulo={sucesso === 'guardado' ? 'Salvo no celular' : 'Requisição atualizada'}
+        texto={
+          sucesso === 'guardado' ? 'Salvo no celular, vai quando tiver sinal. Não precisa fazer de novo.'
+            : sucesso === 'sem-comprovante' ? 'Valor e fornecedor enviados. Falta a foto do comprovante — a requisição continua em Pendentes.'
+              : 'Os dados foram enviados com sucesso.'
+        }
+        href="/requisicoes"
+        botao="Voltar às requisições"
+      />
     )
   }
 
   const fornecedoresFiltrados = fornecedores.filter((f) =>
-    f.nome.toLowerCase().includes(filtroFornecedor.toLowerCase())
+    (f.nome || '').toLowerCase().includes(filtroFornecedor.toLowerCase())
   )
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '14px 16px', borderRadius: 12,
-    border: '1.5px solid #E5E7EB', fontSize: 15, outline: 'none',
-    background: '#fff',
-  }
+  const inputStyle: React.CSSProperties = campo
 
-  const labelStyle: React.CSSProperties = {
-    fontSize: 13, fontWeight: 600, color: '#374151',
-    display: 'block', marginBottom: 6,
-  }
+  const labelStyle: React.CSSProperties = rotulo
+
+  const desligado = saving || preparandoFoto || !valorOk || !form.fornecedor.trim()
 
   return (
-    <div>
-      <Link href="/requisicoes" style={{
-        display: 'flex', alignItems: 'center', gap: 6,
-        color: '#C41E2A', fontSize: 14, fontWeight: 600,
-        textDecoration: 'none', marginBottom: 16,
-      }}>
-        <ArrowLeft size={18} /> Voltar
-      </Link>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+      <EstiloCampos />
+      <Voltar href="/requisicoes" />
 
-      {/* Info da requisição */}
-      <div style={{
-        background: '#1E3A5F', borderRadius: 16, padding: 18, color: '#fff', marginBottom: 20,
-      }}>
-        <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 4 }}>Requisição #{req.id}</div>
-        <div style={{ fontSize: 17, fontWeight: 700 }}>{req.titulo}</div>
-        <div style={{ fontSize: 13, opacity: 0.8, marginTop: 6 }}>
-          {req.tipo} • {new Date(req.data).toLocaleDateString('pt-BR')}
+      {/* Info da requisição — faixa laranja no topo: está esperando você atualizar */}
+      <div style={{ ...cartao, padding: 0, overflow: 'hidden' }}>
+        <div style={{ background: COR.pendente, color: '#fff', padding: '7px 14px', fontSize: 13, fontWeight: 500 }}>
+          Requisição #{req.id}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: 14 }}>
+          <Icone icon={ClipboardList} cor={COR.pendente} cheio />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ fontSize: 16, fontWeight: 500, color: T.texto, overflowWrap: 'anywhere' }}>{req.titulo}</div>
+            <div style={{ fontSize: 13, color: T.textoMedio, marginTop: 3 }}>
+              {req.tipo} · {dataBR(req.data)}
+            </div>
+          </div>
         </div>
       </div>
 
-      <h2 style={{ fontSize: 18, fontWeight: 700, color: '#1F2937', marginBottom: 16 }}>
-        Atualizar Dados
-      </h2>
+      <form onSubmit={handleSubmit} style={{ ...cartao, display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Icone icon={Receipt} cor={COR.principal} tam={36} />
+          <div style={{ fontSize: 15, fontWeight: 500, color: T.texto }}>Atualizar dados</div>
+        </div>
 
-      <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {/* Valor */}
+        {/* Valor — aceita 150,00 ou 150.00; arruma ao sair do campo */}
         <div>
-          <label style={labelStyle}>Valor do Serviço / Material *</label>
-          <input
-            type="text"
-            value={form.valor}
-            onChange={(e) => setForm({ ...form, valor: e.target.value })}
-            required
-            placeholder="Ex: 150,00"
-            style={inputStyle}
-            inputMode="decimal"
-          />
+          <label style={labelStyle}>Valor do serviço / material *</label>
+          <div style={{ position: 'relative' }}>
+            <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: T.textoFraco, fontSize: 15, pointerEvents: 'none' }}>R$</span>
+            <input
+              className="rq-campo"
+              type="text"
+              value={form.valor}
+              onChange={(e) => { const v = e.target.value.replace(/[^\d.,]/g, ''); setForm(prev => ({ ...prev, valor: v })) }}
+              onBlur={() => { if (valorOk) setForm(prev => ({ ...prev, valor: moeda(valorNum) })) }}
+              required
+              placeholder="150,00"
+              style={{ ...inputStyle, paddingLeft: 42 }}
+              inputMode="decimal"
+              autoComplete="off"
+            />
+          </div>
+          {form.valor.trim() && !valorOk && (
+            <div style={{ fontSize: 13, color: COR.erro, marginTop: 6 }}>Valor inválido — use, por exemplo, 150,00.</div>
+          )}
         </div>
 
         {/* Fornecedor */}
@@ -235,11 +275,13 @@ export default function AtualizarRequisicao({ params }: { params: Promise<{ id: 
           <label style={labelStyle}>Fornecedor *</label>
           <div style={{ position: 'relative' }}>
             <input
+              className="rq-campo"
               type="text"
               value={form.fornecedor}
               onChange={(e) => {
-                setForm({ ...form, fornecedor: e.target.value })
-                setFiltroFornecedor(e.target.value)
+                const v = e.target.value
+                setForm(prev => ({ ...prev, fornecedor: v }))
+                setFiltroFornecedor(v)
                 setShowFornecedores(true)
               }}
               onFocus={() => { setFiltroFornecedor(form.fornecedor); setShowFornecedores(true) }}
@@ -247,37 +289,37 @@ export default function AtualizarRequisicao({ params }: { params: Promise<{ id: 
               placeholder="Digite ou selecione o fornecedor..."
               style={inputStyle}
             />
-            {showFornecedores && filtroFornecedor.length >= 0 && (
+            {showFornecedores && (
               <div style={{
                 position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 20,
-                background: '#fff', borderRadius: 12, marginTop: 4,
-                boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
-                maxHeight: 200, overflowY: 'auto',
-                border: '1px solid #E5E7EB',
+                background: T.cartao, borderRadius: 12, marginTop: 4,
+                boxShadow: '0 12px 28px -14px rgba(15,23,42,0.35)',
+                maxHeight: 220, overflowY: 'auto',
+                border: `1px solid ${T.borda}`,
               }}>
                 {fornecedoresFiltrados.length === 0 ? (
-                  <div style={{ padding: 14, fontSize: 13, color: '#9CA3AF', textAlign: 'center' }}>
-                    Nenhum fornecedor encontrado
+                  <div style={{ padding: 14, fontSize: 13, color: T.textoFraco, textAlign: 'center' }}>
+                    Nenhum fornecedor encontrado — pode digitar o nome
                   </div>
                 ) : fornecedoresFiltrados.slice(0, 10).map((f) => (
                   <button
                     key={f.id}
                     type="button"
                     onClick={() => {
-                      setForm({ ...form, fornecedor: f.nome })
+                      setForm(prev => ({ ...prev, fornecedor: f.nome }))
                       setShowFornecedores(false)
                     }}
                     style={{
-                      width: '100%', padding: '12px 16px', border: 'none',
+                      width: '100%', padding: '10px 12px', border: 'none',
                       background: 'transparent', cursor: 'pointer',
-                      textAlign: 'left', borderBottom: '1px solid #F3F4F6',
-                      display: 'flex', alignItems: 'center', gap: 10,
+                      textAlign: 'left', borderBottom: '1px solid #F1F5F9',
+                      display: 'flex', alignItems: 'center', gap: 10, fontFamily: 'inherit',
                     }}
                   >
-                    <Store size={16} color="#C41E2A" />
-                    <div>
-                      <div style={{ fontSize: 14, fontWeight: 600, color: '#1F2937' }}>{f.nome}</div>
-                      {f.descricao && <div style={{ fontSize: 11, color: '#9CA3AF' }}>{f.descricao}</div>}
+                    <Icone icon={Store} cor={COR.principal} tam={30} />
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14, color: T.texto, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.nome}</div>
+                      {f.descricao && <div style={{ fontSize: 12, color: T.textoFraco, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.descricao}</div>}
                     </div>
                   </button>
                 ))}
@@ -286,16 +328,18 @@ export default function AtualizarRequisicao({ params }: { params: Promise<{ id: 
           </div>
         </div>
 
-        {/* Foto do comprovante */}
+        {/* Foto do comprovante (sai comprimida) */}
         <div>
-          <label style={labelStyle}>Foto do Comprovante</label>
+          <label style={labelStyle}>Foto do comprovante</label>
           <label style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10,
-            background: '#fff', borderRadius: 14, padding: form.fotoPreview ? 8 : 32,
-            border: '2px dashed #E5E7EB', cursor: 'pointer',
-            textAlign: 'center',
+            background: form.fotoPreview ? T.cartao : T.fundo, borderRadius: 14, padding: form.fotoPreview ? 8 : 26,
+            border: `1px dashed ${T.fantasma}`, cursor: 'pointer',
+            textAlign: 'center', marginBottom: 0,
           }}>
-            {form.fotoPreview ? (
+            {preparandoFoto ? (
+              <span style={{ fontSize: 14, color: T.textoMedio }}>Preparando a foto...</span>
+            ) : form.fotoPreview ? (
               <img
                 src={form.fotoPreview}
                 alt="Comprovante"
@@ -303,8 +347,8 @@ export default function AtualizarRequisicao({ params }: { params: Promise<{ id: 
               />
             ) : (
               <>
-                <Upload size={32} color="#9CA3AF" />
-                <span style={{ fontSize: 14, color: '#6B7280' }}>
+                <Icone icon={Camera} cor={COR.principal} tam={44} />
+                <span style={{ fontSize: 14, color: T.textoMedio }}>
                   Toque para tirar foto ou selecionar
                 </span>
               </>
@@ -312,18 +356,22 @@ export default function AtualizarRequisicao({ params }: { params: Promise<{ id: 
             <input
               type="file"
               accept="image/*"
-              capture="environment"
               onChange={handleFoto}
               style={{ display: 'none' }}
             />
           </label>
+          {!form.foto && !preparandoFoto && (
+            <div style={{ fontSize: 13, color: COR.pendente, marginTop: 6 }}>
+              Sem o comprovante a requisição continua pendente.
+            </div>
+          )}
           {form.fotoPreview && (
             <button
               type="button"
-              onClick={() => setForm({ ...form, foto: null, fotoPreview: '' })}
+              onClick={() => setForm(prev => ({ ...prev, foto: null, fotoNome: '', fotoPreview: '' }))}
               style={{
-                marginTop: 8, fontSize: 13, color: '#EF4444', background: 'none',
-                border: 'none', cursor: 'pointer', fontWeight: 600,
+                marginTop: 8, fontSize: 14, color: COR.erro, background: 'none',
+                border: 'none', cursor: 'pointer', padding: '4px 0', fontFamily: 'inherit',
               }}
             >
               Remover foto
@@ -331,21 +379,18 @@ export default function AtualizarRequisicao({ params }: { params: Promise<{ id: 
           )}
         </div>
 
+        {erro && (
+          <div role="alert" style={{ fontSize: 14, color: COR.erro, lineHeight: 1.45 }}>{erro}</div>
+        )}
+
         {/* Submit */}
         <button
           type="submit"
-          disabled={saving || !form.valor.trim() || !form.fornecedor.trim()}
-          style={{
-            width: '100%', padding: '16px 0', borderRadius: 14,
-            background: saving ? '#9CA3AF' : '#1E3A5F', color: '#fff',
-            fontSize: 16, fontWeight: 700, border: 'none',
-            cursor: saving ? 'default' : 'pointer',
-            marginTop: 8, display: 'flex', alignItems: 'center',
-            justifyContent: 'center', gap: 8,
-          }}
+          disabled={desligado}
+          style={{ ...botaoPrincipal(desligado), minHeight: 50, fontSize: 16, marginTop: 4 }}
         >
           <CheckCircle size={18} />
-          {saving ? 'Enviando...' : 'Confirmar Atualização'}
+          {saving ? 'Enviando...' : 'Confirmar atualização'}
         </button>
       </form>
 

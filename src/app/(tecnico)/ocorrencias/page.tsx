@@ -1,12 +1,15 @@
 'use client'
+import { hojeBR } from '@/lib/hoje'
 // Ocorrências disciplinares do Painel dos Mecânicos (tecnico_ocorrencias) —
 // NÃO confundir com o "Opa" (portal_opas) nem com mecanico_ocorrencias (OPA
 // escalada). Aqui o técnico vê as ocorrências que TOMOU, os pontos e pode se
 // justificar com texto + fotos/vídeos direto pelo card vermelho.
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
+import { useFormBackup } from '@/hooks/useFormBackup'
 import { supabase } from '@/lib/supabase'
-import { colors, shadow } from '@/lib/ui'
+import { comprimirImagem } from '@/lib/imagem'
+import { colors } from '@/lib/ui'
 import { PageSpinner } from '@/components/ui'
 import {
   AlertTriangle, X, Camera, Image as ImageIcon, Film, Clock, CheckCircle2,
@@ -118,6 +121,41 @@ export default function OcorrenciasTecnicoPage() {
   const [justEnviando, setJustEnviando] = useState(false)
   const [justErro, setJustErro] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
+  const enviandoRef = useRef(false)
+
+  // Rascunho por ocorrência (José, 23/10/2026): fechar o quadro ou sair da tela não perde o texto.
+  const [rascunhos, setRascunhos] = useState<Record<string, string>>({})
+  const getRascunho = useCallback(() => ({ rascunhos }), [rascunhos])
+  const setRascunho = useCallback((d: Record<string, unknown>) => {
+    if (d.rascunhos && typeof d.rascunhos === 'object') setRascunhos(d.rascunhos as Record<string, string>)
+  }, [])
+  const { restore: restoreRascunho } = useFormBackup('ocorrencias-justificativa', getRascunho, setRascunho)
+  useEffect(() => { restoreRascunho() }, [restoreRascunho])
+  const mudarTexto = (id: number, t: string) => {
+    setJustTexto(t)
+    setRascunhos(prev => {
+      const n = { ...prev }
+      if (t.trim()) n[id] = t
+      else delete n[id]
+      return n
+    })
+  }
+
+  // Anexos: soma ao que já tem; passou do limite avisa (antes cortava calado)
+  const adicionarArquivos = (input: HTMLInputElement) => {
+    const novos = Array.from(input.files || [])
+    input.value = ''
+    if (!novos.length) return
+    setJustArquivos(prev => {
+      const todos = [...prev, ...novos]
+      if (todos.length > MAX_ANEXOS) {
+        setJustErro(`Máximo de ${MAX_ANEXOS} anexos — ${todos.length - MAX_ANEXOS} ficaram de fora.`)
+        return todos.slice(0, MAX_ANEXOS)
+      }
+      setJustErro('')
+      return todos
+    })
+  }
 
   // URLs de preview memoizadas: criar no render faria o <video> recarregar a
   // cada tecla no textarea, e blob URLs nunca revogadas acumulam no PWA.
@@ -162,18 +200,21 @@ export default function OcorrenciasTecnicoPage() {
     return () => window.removeEventListener('online', onOnline)
   }, [carregar])
 
-  // Realtime: nova ocorrência ou avaliação da defesa atualiza a tela
+  // Realtime: nova ocorrência ou avaliação da defesa atualiza a tela.
+  // Só as do técnico (antes escutava a tabela inteira e recarregava a cada ocorrência de qualquer um).
+  const nomesRt = nomes.flatMap(n => [n, n.toUpperCase()]).filter((n, i, a) => a.indexOf(n) === i).join('|')
   useEffect(() => {
-    const chs = [
-      supabase.channel('oc_tec_rt')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_ocorrencias' }, () => carregar())
-        .subscribe(),
-      supabase.channel('oc_just_rt')
-        .on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_justificativas' }, () => carregar())
-        .subscribe(),
-    ]
-    return () => { chs.forEach(c => supabase.removeChannel(c)) }
-  }, [carregar])
+    if (!nomesRt) return
+    const lista = nomesRt.split('|')
+    const ch = supabase.channel(`oc_rt_${Date.now()}`)
+    for (const n of lista) {
+      const filter = `tecnico_nome=eq.${n}`
+      ch.on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_ocorrencias', filter }, () => carregar())
+      ch.on('postgres_changes', { event: '*', schema: 'public', table: 'tecnico_justificativas', filter }, () => carregar())
+    }
+    ch.subscribe()
+    return () => { supabase.removeChannel(ch) }
+  }, [carregar, nomesRt])
 
   // Catálogo remoto (labels/pontos vivos do Portal), com cache local
   useEffect(() => {
@@ -223,27 +264,41 @@ export default function OcorrenciasTecnicoPage() {
     if (!justTexto.trim()) { setJustErro('Escreva a sua justificativa.'); return }
     const errArq = validarArquivos(justArquivos)
     if (errArq) { setJustErro(errArq); return }
+    if (enviandoRef.current) return
+    if (!navigator.onLine) { setJustErro('Sem internet. Seu texto fica guardado aqui — envie quando tiver sinal.'); return }
+    enviandoRef.current = true
     setJustEnviando(true)
     setJustErro('')
     try {
-      // Upload dos anexos — mesmo bucket/pasta do Portal
+      // Upload dos anexos — mesmo bucket/pasta do Portal. Foto sai comprimida.
+      // Se algum falhar, não envia a defesa pela metade: avisa quais e apaga os que subiram.
       const anexos: Anexo[] = []
+      const subidos: string[] = []
+      const falharam: string[] = []
       for (const f of justArquivos) {
-        const pasta = `ocorrencias/justificativas/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-        const nomeArq = f.name.replace(/[^a-zA-Z0-9._-]/g, '_')
-        const { error: upErr } = await supabase.storage.from('anexos').upload(`${pasta}/${nomeArq}`, f)
-        if (upErr) continue
-        const { data: urlData } = supabase.storage.from('anexos').getPublicUrl(`${pasta}/${nomeArq}`)
-        anexos.push({
-          url: urlData.publicUrl,
-          tipo: f.type.startsWith('video') ? 'video' : 'imagem',
-          nome: f.name,
-          tamanho: f.size,
-        })
+        try {
+          const video = f.type.startsWith('video')
+          const arq = video ? f : await comprimirImagem(f)
+          const pasta = `ocorrencias/justificativas/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+          let nomeArq = f.name.replace(/[^a-zA-Z0-9._-]/g, '_') || 'anexo'
+          if (!video && arq.type === 'image/jpeg') nomeArq = nomeArq.replace(/\.[^.]+$/, '') + '.jpg'
+          const { error: upErr } = await supabase.storage.from('anexos').upload(`${pasta}/${nomeArq}`, arq, { contentType: arq.type || f.type || undefined })
+          if (upErr) { falharam.push(f.name); continue }
+          subidos.push(`${pasta}/${nomeArq}`)
+          const { data: urlData } = supabase.storage.from('anexos').getPublicUrl(`${pasta}/${nomeArq}`)
+          anexos.push({
+            url: urlData.publicUrl,
+            tipo: video ? 'video' : 'imagem',
+            nome: f.name,
+            tamanho: arq.size,
+          })
+        } catch {
+          falharam.push(f.name)
+        }
       }
-      if (justArquivos.length > 0 && anexos.length === 0) {
-        setJustErro('Falha ao enviar os anexos. Tente de novo.')
-        setJustEnviando(false)
+      if (falharam.length > 0) {
+        if (subidos.length) await supabase.storage.from('anexos').remove(subidos).catch(() => {})
+        setJustErro(`${navigator.onLine ? '' : 'Sem internet. '}Não subiu: ${falharam.join(', ')}. Nada foi enviado — tente de novo.`)
         return
       }
 
@@ -255,7 +310,11 @@ export default function OcorrenciasTecnicoPage() {
         status: 'pendente',
         anexos,
       })
-      if (error) { setJustErro(error.message); setJustEnviando(false); return }
+      if (error) {
+        if (subidos.length) await supabase.storage.from('anexos').remove(subidos).catch(() => {})
+        setJustErro(`Não foi enviada: ${error.message}. Seu texto continua aqui.`)
+        return
+      }
 
       // Avisa os admins do painel (respeitando módulos silenciados)
       try {
@@ -280,36 +339,57 @@ export default function OcorrenciasTecnicoPage() {
       } catch {}
 
       setJustTexto(''); setJustArquivos([]); setJustAberta(null)
+      setRascunhos(prev => { const n = { ...prev }; delete n[o.id]; return n })
       carregar()
     } finally {
+      enviandoRef.current = false
       setJustEnviando(false)
     }
   }
+
+
+  // Estilo POS NewPortal (22/10/2026): vermelho só para ocorrência a justificar e pontos perdidos;
+  // categoria em pílula clarinha na cor do catálogo; sem faixa lateral.
+  const clarinho = (cor: string, pct = 10) => `color-mix(in srgb, ${cor} ${pct}%, #FEFEFE)`
+  const cabecalho = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+      <div style={{ width: 44, height: 44, borderRadius: 11, background: colors.warning, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+        <AlertTriangle size={22} color="#fff" />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 20, fontWeight: 500, color: colors.text }}>Ocorrências</div>
+        <div style={{ fontSize: 13, color: colors.textMuted }}>Pontos e justificativas</div>
+      </div>
+    </div>
+  )
+  const pilulaCat = (cor: string, txt: string) => (
+    <span style={{ fontSize: 12, fontWeight: 500, padding: '1px 9px', borderRadius: 999, background: clarinho(cor), color: cor, border: `1px solid ${clarinho(cor, 25)}`, whiteSpace: 'nowrap' }}>{txt}</span>
+  )
+  const pilulaAuto = (
+    <span style={{ fontSize: 12, padding: '1px 9px', borderRadius: 999, background: colors.accentBg, color: colors.textMuted, border: `1px solid ${colors.border}` }}>Automática</span>
+  )
 
   if (loading) return <PageSpinner />
 
   // Erro de carga sem nada em memória: dizer a verdade (não "zero ocorrências")
   if (erroCarga && ocorrencias.length === 0) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <div style={{ width: 46, height: 46, borderRadius: 14, background: colors.dangerBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <AlertTriangle size={24} color={colors.danger} />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {cabecalho}
+        <div style={{ background: colors.surface, borderRadius: 16, padding: '28px 20px', textAlign: 'center', border: `1px solid ${colors.border}` }}>
+          <div style={{ width: 44, height: 44, borderRadius: 11, background: colors.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px' }}>
+            <WifiOff size={21} color={colors.textSubtle} />
           </div>
-          <div style={{ fontSize: 20, fontWeight: 800, color: colors.text }}>Ocorrências</div>
-        </div>
-        <div style={{ background: colors.surface, borderRadius: 18, padding: 32, textAlign: 'center', border: `1px solid ${colors.border}` }}>
-          <WifiOff size={34} color={colors.textSubtle} style={{ margin: '0 auto 12px', display: 'block' }} />
-          <div style={{ fontSize: 14, fontWeight: 700, color: colors.text, marginBottom: 6 }}>
+          <div style={{ fontSize: 15, fontWeight: 500, color: colors.text, marginBottom: 6 }}>
             Não consegui carregar as suas ocorrências
           </div>
-          <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.6, marginBottom: 16 }}>
+          <div style={{ fontSize: 13, color: colors.textMuted, lineHeight: 1.5, marginBottom: 16 }}>
             Verifique a conexão e tente de novo — a lista só aparece com internet.
           </div>
           <button onClick={() => { setLoading(true); carregar() }} style={{
-            display: 'inline-flex', alignItems: 'center', gap: 8, padding: '12px 22px',
+            display: 'inline-flex', alignItems: 'center', gap: 8, padding: '0 22px', height: 46,
             borderRadius: 12, border: 'none', background: colors.primary, color: '#fff',
-            fontSize: 14, fontWeight: 700,
+            fontSize: 15, fontWeight: 500,
           }}>
             <RefreshCw size={16} /> Tentar de novo
           </button>
@@ -320,20 +400,20 @@ export default function OcorrenciasTecnicoPage() {
 
   const pendentes = ocorrencias.filter(o => (o.tecnico_justificativas || []).length === 0)
   const historico = ocorrencias.filter(o => (o.tecnico_justificativas || []).length > 0)
-  const mesAtual = new Date().toISOString().slice(0, 7)
+  const mesAtual = hojeBR().slice(0, 7)
   const pontosMes = ocorrencias
     .filter(o => aindaVale(o) && (o.data || o.created_at || '').slice(0, 7) === mesAtual)
     .reduce((s, o) => s + (o.pontos_descontados || 0), 0)
 
   const thumbAnexo = (a: Anexo, i: number) => (
     <a key={i} href={a.url} target="_blank" rel="noopener noreferrer" style={{
-      position: 'relative', width: 80, height: 80, borderRadius: 10, overflow: 'hidden',
-      border: `1px solid ${colors.border}`, background: '#000', display: 'block', flexShrink: 0,
+      position: 'relative', width: 80, height: 80, borderRadius: 12, overflow: 'hidden',
+      border: `1px solid ${colors.border}`, background: '#0F172A', display: 'block', flexShrink: 0,
     }}>
       {a.tipo === 'video'
         ? <video src={a.url} muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
         : <img src={a.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-      <span style={{ position: 'absolute', top: 5, right: 5, background: 'rgba(0,0,0,0.6)', borderRadius: 5, padding: 3, display: 'flex' }}>
+      <span style={{ position: 'absolute', top: 5, right: 5, background: 'rgba(15,23,42,0.6)', borderRadius: 6, padding: 3, display: 'flex' }}>
         {a.tipo === 'video' ? <Film size={11} color="#fff" /> : <ImageIcon size={11} color="#fff" />}
       </span>
     </a>
@@ -344,52 +424,42 @@ export default function OcorrenciasTecnicoPage() {
       ? { bg: colors.successBg, cor: colors.success, Icone: CheckCircle2, label: 'Defesa aprovada' }
       : j.status === 'recusada'
         ? { bg: colors.dangerBg, cor: colors.danger, Icone: XCircle, label: 'Defesa recusada' }
-        : { bg: '#FEF3C7', cor: '#D97706', Icone: Hourglass, label: 'Defesa em análise' }
+        : { bg: '#F5F3FF', cor: '#7C3AED', Icone: Hourglass, label: 'Defesa em análise' }
     return (
       <span style={{
-        display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontWeight: 700,
-        padding: '3px 8px', borderRadius: 6, background: cfg.bg, color: cfg.cor,
+        display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 500,
+        padding: '2px 9px', borderRadius: 999, background: cfg.bg, color: cfg.cor,
       }}>
-        <cfg.Icone size={11} /> {cfg.label}{j.avaliado_por ? ` · ${j.avaliado_por}` : ''}
+        <cfg.Icone size={12} /> {cfg.label}{j.avaliado_por ? ` · ${j.avaliado_por}` : ''}
       </span>
     )
   }
 
+  const numero = (rot: string, valor: number, cor: string, dica: string) => (
+    <div style={{ flex: 1, minWidth: 0, background: clarinho(cor, 7), borderRadius: 16, padding: '10px 12px', border: `1px solid ${clarinho(cor, 22)}` }}>
+      <div style={{ fontSize: 12.5, color: colors.textMuted, lineHeight: 1.2 }}>{rot}</div>
+      <div style={{ fontSize: 26, fontWeight: 500, color: cor, lineHeight: 1.1, marginTop: 4 }}>{valor}</div>
+      <div style={{ fontSize: 12, color: colors.textSubtle }}>{dica}</div>
+    </div>
+  )
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <div style={{ width: 46, height: 46, borderRadius: 14, background: colors.dangerBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <AlertTriangle size={24} color={colors.danger} />
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 20, fontWeight: 800, color: colors.text }}>Ocorrências</div>
-          <div style={{ fontSize: 12, color: colors.textMuted }}>Pontos e justificativas</div>
-        </div>
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {cabecalho}
 
       {/* Resumo de pontos */}
-      <div style={{ display: 'flex', gap: 10 }}>
-        <div style={{ flex: 1, background: colors.surface, borderRadius: 16, padding: 14, border: `1px solid ${colors.border}`, boxShadow: shadow.sm, textAlign: 'center' }}>
-          <div style={{ fontSize: 22, fontWeight: 900, color: pontosMes > 0 ? colors.danger : colors.success }}>
-            {Math.max(0, 100 - pontosMes)}
-          </div>
-          <div style={{ fontSize: 10, fontWeight: 600, color: colors.textSubtle, textTransform: 'uppercase', letterSpacing: 0.4 }}>Pontos no mês</div>
-        </div>
-        <div style={{ flex: 1, background: colors.surface, borderRadius: 16, padding: 14, border: `1px solid ${colors.border}`, boxShadow: shadow.sm, textAlign: 'center' }}>
-          <div style={{ fontSize: 22, fontWeight: 900, color: pendentes.length > 0 ? colors.danger : colors.text }}>{pendentes.length}</div>
-          <div style={{ fontSize: 10, fontWeight: 600, color: colors.textSubtle, textTransform: 'uppercase', letterSpacing: 0.4 }}>Sem justificativa</div>
-        </div>
-        <div style={{ flex: 1, background: colors.surface, borderRadius: 16, padding: 14, border: `1px solid ${colors.border}`, boxShadow: shadow.sm, textAlign: 'center' }}>
-          <div style={{ fontSize: 22, fontWeight: 900, color: colors.text }}>{ocorrencias.length}</div>
-          <div style={{ fontSize: 10, fontWeight: 600, color: colors.textSubtle, textTransform: 'uppercase', letterSpacing: 0.4 }}>Total</div>
-        </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        {numero('Pontos no mês', Math.max(0, 100 - pontosMes), pontosMes > 0 ? colors.danger : colors.success, 'de 100')}
+        {numero('A justificar', pendentes.length, pendentes.length > 0 ? colors.danger : colors.success, pendentes.length > 0 ? 'sem defesa' : 'tudo certo')}
+        {numero('Total', ocorrencias.length, '#475569', 'ocorrências')}
       </div>
 
       {ocorrencias.length === 0 && (
-        <div style={{ background: colors.surface, borderRadius: 18, padding: 40, textAlign: 'center', border: `1px solid ${colors.border}` }}>
-          <CheckCircle2 size={36} color={colors.success} style={{ margin: '0 auto 12px', display: 'block' }} />
-          <div style={{ fontSize: 14, fontWeight: 600, color: colors.textMuted }}>
+        <div style={{ background: colors.surface, borderRadius: 16, padding: '30px 20px', textAlign: 'center', border: `1px dashed ${colors.borderStrong}` }}>
+          <div style={{ width: 44, height: 44, borderRadius: 11, background: colors.successBg, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 12px' }}>
+            <CheckCircle2 size={22} color={colors.success} />
+          </div>
+          <div style={{ fontSize: 14, color: colors.textMuted }}>
             Nenhuma ocorrência — continue assim! 💪
           </div>
         </div>
@@ -401,26 +471,28 @@ export default function OcorrenciasTecnicoPage() {
         const aberta = justAberta === o.id
         return (
           <div key={o.id} style={{
-            background: '#FEF2F2', borderRadius: 16, overflow: 'hidden',
-            border: '2px solid #FECACA', boxShadow: shadow.sm,
+            background: clarinho(colors.danger, 5), borderRadius: 16, overflow: 'hidden',
+            border: `1px solid ${colors.dangerBorder}`, minWidth: 0,
           }}>
-            <div style={{ height: 4, background: '#DC2626' }} />
-            <div style={{ padding: 16 }}>
-              <div style={{ fontSize: 10, fontWeight: 800, color: '#DC2626', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
-                ⚠ Você recebeu uma ocorrência
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: r.cor, color: '#fff' }}>{r.catLabel}</span>
-                {o.origem === 'auto' && (
-                  <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: '#111', color: '#fff' }}>AUTO</span>
-                )}
-                <span style={{ fontSize: 15, fontWeight: 800, color: '#7F1D1D', flex: 1 }}>{r.label}</span>
-                <span style={{ fontSize: 14, fontWeight: 900, padding: '4px 10px', borderRadius: 8, background: '#DC2626', color: '#fff', flexShrink: 0 }}>
+            {/* faixa no topo com o aviso */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 14px', background: colors.danger, color: '#fff', fontSize: 13, fontWeight: 500 }}>
+              <AlertTriangle size={14} /> Você recebeu uma ocorrência
+            </div>
+            <div style={{ padding: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 8 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 5 }}>
+                    {pilulaCat(r.cor, r.catLabel)}
+                    {o.origem === 'auto' && pilulaAuto}
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 500, color: colors.text, lineHeight: 1.3, overflowWrap: 'anywhere' }}>{r.label}</div>
+                </div>
+                <span style={{ fontSize: 15, fontWeight: 500, padding: '3px 10px', borderRadius: 999, background: colors.danger, color: '#fff', flexShrink: 0, whiteSpace: 'nowrap' }}>
                   −{o.pontos_descontados} pts
                 </span>
               </div>
 
-              <div style={{ fontSize: 13, color: '#7F1D1D', lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 10 }}>{o.descricao}</div>
+              <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginBottom: 10, background: colors.surface, borderRadius: 10, padding: '9px 11px' }}>{o.descricao}</div>
 
               {(o.anexos || []).length > 0 && (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
@@ -428,42 +500,44 @@ export default function OcorrenciasTecnicoPage() {
                 </div>
               )}
 
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: '#991B1B', marginBottom: 12, flexWrap: 'wrap' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Clock size={11} /> {fmtData(o.data || o.created_at)}</span>
-                {o.id_ordem && <span>OS {o.id_ordem}</span>}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: colors.textMuted, marginBottom: 12, flexWrap: 'wrap' }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 9px', borderRadius: 999, background: colors.surface, border: `1px solid ${colors.border}` }}><Clock size={12} /> {fmtData(o.data || o.created_at)}</span>
+                {o.id_ordem && <span style={{ padding: '2px 9px', borderRadius: 999, background: colors.surface, border: `1px solid ${colors.border}` }}>OS {o.id_ordem}</span>}
                 {o.detalhes?.maps_url && (
-                  <a href={o.detalhes.maps_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#0c63e4', fontWeight: 700 }}>
-                    <MapPin size={11} /> Ver no mapa
+                  <a href={o.detalhes.maps_url} target="_blank" rel="noopener noreferrer" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: colors.primary, textDecoration: 'none', padding: '2px 9px', borderRadius: 999, background: colors.surface, border: `1px solid ${colors.border}` }}>
+                    <MapPin size={12} /> Ver no mapa
                   </a>
                 )}
               </div>
 
               {!aberta ? (
-                <button onClick={() => { setJustAberta(o.id); setJustTexto(''); setJustArquivos([]); setJustErro('') }} style={{
+                <button onClick={() => { setJustAberta(o.id); setJustTexto(rascunhos[o.id] || ''); setJustArquivos([]); setJustErro('') }} style={{
                   width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  padding: 13, borderRadius: 12, border: 'none', background: '#DC2626', color: '#fff',
-                  fontSize: 14, fontWeight: 700,
+                  height: 46, borderRadius: 12, border: 'none', background: colors.primary, color: '#fff',
+                  fontSize: 15, fontWeight: 500,
                 }}>
                   <ShieldQuestion size={17} /> Justificar ocorrência
                 </button>
               ) : (
-                <div style={{ background: '#fff', borderRadius: 12, padding: 14, border: '1px solid #FECACA' }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: colors.text, marginBottom: 6 }}>Sua justificativa *</div>
+                <div style={{ background: colors.surface, borderRadius: 12, padding: 14, border: `1px solid ${colors.border}` }}>
+                  <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 6 }}>Sua justificativa <span style={{ color: colors.danger }}>*</span></div>
                   <textarea
                     value={justTexto}
-                    onChange={e => setJustTexto(e.target.value)}
+                    onChange={e => mudarTexto(o.id, e.target.value)}
                     placeholder="Explique o que aconteceu..."
                     rows={3}
-                    style={{ width: '100%', padding: '11px 14px', borderRadius: 10, border: `1px solid ${colors.border}`, fontSize: 14, boxSizing: 'border-box', background: '#FAFAFA', resize: 'vertical', fontFamily: 'inherit' }}
+                    onFocus={e => { e.currentTarget.style.borderColor = '#38BDF8' }}
+                    onBlur={e => { e.currentTarget.style.borderColor = colors.border }}
+                    style={{ width: '100%', padding: '11px 14px', borderRadius: 12, border: `1px solid ${colors.border}`, fontSize: 15, boxSizing: 'border-box', background: colors.surface, color: colors.text, outline: 'none', resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.5 }}
                   />
                   <input
                     ref={fileRef} type="file" accept="image/*,video/*" multiple
-                    onChange={e => { setJustArquivos(prev => [...prev, ...Array.from(e.target.files || [])].slice(0, MAX_ANEXOS)); if (fileRef.current) fileRef.current.value = '' }}
+                    onChange={e => adicionarArquivos(e.target)}
                     style={{ display: 'none' }}
                   />
                   <button onClick={() => fileRef.current?.click()} style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%', padding: 12, marginTop: 10,
-                    borderRadius: 10, border: '2px dashed #D1D5DB', background: '#FAFAFA', fontSize: 13, fontWeight: 700, color: '#6B7280',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, width: '100%', height: 46, marginTop: 10,
+                    borderRadius: 12, border: `1px dashed ${colors.borderStrong}`, background: colors.surface, fontSize: 14, color: colors.textMuted,
                   }}>
                     <Camera size={17} /> Fotos / vídeos ({justArquivos.length}/{MAX_ANEXOS})
                   </button>
@@ -473,9 +547,9 @@ export default function OcorrenciasTecnicoPage() {
                         const isVideo = f.type.startsWith('video')
                         const url = previews[i]
                         return (
-                          <div key={i} style={{ position: 'relative', width: 72, height: 72, borderRadius: 8, overflow: 'hidden', border: `1px solid ${colors.border}`, background: '#000' }}>
+                          <div key={i} style={{ position: 'relative', width: 72, height: 72, borderRadius: 10, overflow: 'hidden', border: `1px solid ${colors.border}`, background: '#0F172A' }}>
                             {isVideo ? <video src={url} muted style={{ width: '100%', height: '100%', objectFit: 'cover' }} /> : <img src={url} alt={f.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
-                            <button onClick={() => setJustArquivos(prev => prev.filter((_, idx) => idx !== i))} style={{ position: 'absolute', top: 3, right: 3, background: 'rgba(0,0,0,0.6)', border: 'none', width: 20, height: 20, borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                            <button onClick={() => setJustArquivos(prev => prev.filter((_, idx) => idx !== i))} aria-label="tirar" style={{ position: 'absolute', top: 3, right: 3, background: 'rgba(15,23,42,0.65)', border: 'none', width: 22, height: 22, borderRadius: 7, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                               <X size={12} color="#fff" />
                             </button>
                           </div>
@@ -483,11 +557,11 @@ export default function OcorrenciasTecnicoPage() {
                       })}
                     </div>
                   )}
-                  {justErro && <div style={{ fontSize: 12, color: colors.danger, fontWeight: 600, marginTop: 8 }}>{justErro}</div>}
+                  {justErro && <div style={{ fontSize: 13, color: colors.danger, marginTop: 8 }}>{justErro}</div>}
                   <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-                    <button onClick={() => setJustAberta(null)} style={{ flex: 1, padding: 12, borderRadius: 10, fontSize: 13, fontWeight: 700, background: colors.surfaceAlt, color: colors.textMuted, border: 'none' }}>Cancelar</button>
+                    <button onClick={() => setJustAberta(null)} style={{ flex: 1, height: 46, borderRadius: 12, fontSize: 15, fontWeight: 500, background: colors.surface, color: colors.text, border: `1px solid ${colors.border}` }}>Cancelar</button>
                     <button onClick={() => enviarJustificativa(o)} disabled={justEnviando || !justTexto.trim()} style={{
-                      flex: 2, padding: 12, borderRadius: 10, fontSize: 13, fontWeight: 700, background: '#DC2626', color: '#fff', border: 'none',
+                      flex: 2, height: 46, borderRadius: 12, fontSize: 15, fontWeight: 500, background: colors.primary, color: '#fff', border: 'none',
                       opacity: (justEnviando || !justTexto.trim()) ? 0.5 : 1,
                     }}>
                       {justEnviando ? 'Enviando...' : 'Enviar justificativa'}
@@ -502,7 +576,7 @@ export default function OcorrenciasTecnicoPage() {
 
       {/* ═══ HISTÓRICO (já justificadas) ═══ */}
       {historico.length > 0 && (
-        <div style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, textTransform: 'uppercase', letterSpacing: 0.4, marginTop: 4 }}>
+        <div style={{ fontSize: 16, fontWeight: 500, color: colors.text, marginTop: 4, padding: '0 2px' }}>
           Histórico
         </div>
       )}
@@ -513,38 +587,39 @@ export default function OcorrenciasTecnicoPage() {
         return (
           <div key={o.id} style={{
             background: colors.surface, borderRadius: 16, overflow: 'hidden',
-            border: `1px solid ${colors.border}`, boxShadow: shadow.sm, opacity: vale ? 1 : 0.65,
+            border: `1px solid ${colors.border}`, opacity: vale ? 1 : 0.7, minWidth: 0,
           }}>
-            <div style={{ height: 3, background: r.cor }} />
             <div style={{ padding: 14 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
-                <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: r.cor, color: '#fff' }}>{r.catLabel}</span>
-                {o.origem === 'auto' && (
-                  <span style={{ fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6, background: '#111', color: '#fff' }}>AUTO</span>
-                )}
-                <span style={{ fontSize: 14, fontWeight: 700, color: colors.text, flex: 1 }}>{r.label}</span>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 6 }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 5 }}>
+                    {pilulaCat(r.cor, r.catLabel)}
+                    {o.origem === 'auto' && pilulaAuto}
+                  </div>
+                  <div style={{ fontSize: 15, fontWeight: 500, color: colors.text, lineHeight: 1.3, overflowWrap: 'anywhere' }}>{r.label}</div>
+                </div>
                 <span style={{
-                  fontSize: 13, fontWeight: 900, flexShrink: 0,
+                  fontSize: 14, fontWeight: 500, flexShrink: 0, whiteSpace: 'nowrap',
                   color: vale ? colors.danger : colors.textSubtle,
                   textDecoration: vale ? 'none' : 'line-through',
                 }}>
                   −{o.pontos_descontados} pts
                 </span>
               </div>
-              <div style={{ fontSize: 12.5, color: colors.textMuted, lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 8 }}>{o.descricao}</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 11, color: colors.textSubtle, flexWrap: 'wrap' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Clock size={11} /> {fmtData(o.data || o.created_at)}</span>
+              <div style={{ fontSize: 13.5, color: colors.textMuted, lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', marginBottom: 8 }}>{o.descricao}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: colors.textSubtle, flexWrap: 'wrap' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}><Clock size={12} /> {fmtData(o.data || o.created_at)}</span>
                 {o.id_ordem && <span>OS {o.id_ordem}</span>}
                 {o.detalhes?.maps_url && (
-                  <a href={o.detalhes.maps_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#0c63e4', fontWeight: 700 }}>
-                    <MapPin size={11} /> Mapa
+                  <a href={o.detalhes.maps_url} target="_blank" rel="noopener noreferrer" style={{ display: 'flex', alignItems: 'center', gap: 4, color: colors.primary, textDecoration: 'none' }}>
+                    <MapPin size={12} /> Mapa
                   </a>
                 )}
                 {j && badgeDefesa(j)}
               </div>
               {j?.justificativa && (
-                <div style={{ marginTop: 8, fontSize: 12, color: colors.textMuted, background: colors.surfaceAlt, borderRadius: 10, padding: '10px 12px' }}>
-                  <strong>Sua defesa:</strong> {j.justificativa}
+                <div style={{ marginTop: 10, fontSize: 13.5, color: colors.textMuted, background: colors.surfaceAlt, borderRadius: 12, padding: '10px 12px', overflowWrap: 'anywhere' }}>
+                  <span style={{ color: colors.text, fontWeight: 500 }}>Sua defesa:</span> {j.justificativa}
                   {(j.anexos || []).length > 0 && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
                       {(j.anexos || []).map(thumbAnexo)}
@@ -557,7 +632,7 @@ export default function OcorrenciasTecnicoPage() {
         )
       })}
 
-      <div style={{ fontSize: 11, color: colors.textSubtle, textAlign: 'center', lineHeight: 1.6, padding: '4px 12px 12px' }}>
+      <div style={{ fontSize: 12.5, color: colors.textSubtle, textAlign: 'center', lineHeight: 1.5, padding: '4px 12px 12px' }}>
         Cada funcionário começa o mês com 100 pontos. A ocorrência só deixa de
         descontar se a sua justificativa for aprovada pelo gestor.
       </div>

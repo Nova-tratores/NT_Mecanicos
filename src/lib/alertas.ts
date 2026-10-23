@@ -1,5 +1,10 @@
 import { supabase } from './supabase'
 import type { AlertaSeveridade } from './types'
+import { hojeBR } from './hoje'
+
+// Status sem acento e em minúsculas ("Concluída" × "Concluida") (José, 23/10/2026)
+const normStatus = (s: unknown) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()
+const STATUS_FINAIS = new Set(['concluida', 'cancelada', 'cancelado', 'concluido'])
 
 interface AlertaDetectado {
   tecnico_nome: string
@@ -56,14 +61,14 @@ export async function varrerAlertas(dataInicio: string, dataFim: string): Promis
   ] = await Promise.all([
     supabase.from('Diario_Tecnico').select('*').gte('data', dataInicio).lte('data', dataFim),
     supabase.from('Ordem_Servico_Tecnicos').select('*').gte('Data', dataInicio).lte('Data', dataFim),
-    supabase.from('Ordem_Servico').select('*').not('Status', 'in', '("Concluida","Cancelada")').lt('Previsao_Execucao', dataFim),
+    supabase.from('Ordem_Servico').select('*').not('Status', 'in', '("Concluida","Concluída","Cancelada")').lt('Previsao_Execucao', dataFim),
     supabase.from('mecanico_usuarios').select('tecnico_nome').eq('ativo', true),
     supabase.from('mecanico_alertas').select('tipo, tecnico_nome, data_referencia, id_ordem').gte('data_referencia', dataInicio).lte('data_referencia', dataFim),
   ])
 
   const diarioList = (diarios || []) as Record<string, unknown>[]
   const relatorioList = (relatorios || []) as Record<string, unknown>[]
-  const osList = (osAtivas || []) as Record<string, unknown>[]
+  const osList = ((osAtivas || []) as Record<string, unknown>[]).filter(o => !STATUS_FINAIS.has(normStatus(o.Status)))
   const tecnicosList = (tecnicos || []) as { tecnico_nome: string }[]
 
   // Chave única para não duplicar alertas
@@ -284,7 +289,7 @@ export async function varrerAlertas(dataInicio: string, dataFim: string): Promis
   const datasNoRange = new Set(diarioList.map(d => d.data as string))
   for (const data of datasNoRange) {
     // Pular hoje (pode não ter terminado ainda)
-    if (data === new Date().toISOString().split('T')[0]) continue
+    if (data === hojeBR()) continue
     const dow = new Date(data + 'T12:00:00').getDay()
     if (dow === 0 || dow === 6) continue // pular fim de semana
     for (const tec of tecnicosList) {
@@ -353,7 +358,7 @@ export async function varrerAlertas(dataInicio: string, dataFim: string): Promis
   }
 
   // 9. OS rascunho antiga (3+ dias)
-  const hoje = new Date().toISOString().split('T')[0]
+  const hoje = hojeBR()
   for (const r of relatorioList) {
     if (r.Status !== 'rascunho') continue
     const dataRel = r.Data as string

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { exigirUsuario, veiculosDoUsuario } from '@/lib/apiAuth'
+import { hojeBR } from '@/lib/hoje'
 
 const API_URL = process.env.ROTAEXATA_API_URL || 'https://api.rotaexata.com.br'
 const EMAIL = process.env.ROTAEXATA_EMAIL || ''
@@ -23,14 +25,20 @@ async function getToken(): Promise<string> {
 }
 
 export async function GET(request: NextRequest) {
+  const usu = await exigirUsuario(request); if (usu instanceof NextResponse) return usu // exige login (José, 23/10/2026)
   const adesaoId = request.nextUrl.searchParams.get('adesaoId')
   if (!adesaoId) {
     return NextResponse.json({ error: 'adesaoId obrigatorio' }, { status: 400 })
   }
+  // a posição atual de todos segue no mapa (/api/veiculos-mapa); o trajeto do dia só do carro dele (admin: qualquer) (José, 23/10/2026)
+  if (!usu.isAdmin && !(await veiculosDoUsuario(usu)).adesoes.has(String(adesaoId))) {
+    return NextResponse.json({ error: 'sem permissão para a rota deste veículo' }, { status: 403 })
+  }
 
   try {
     const token = await getToken()
-    const hoje = new Date().toISOString().split('T')[0]
+    // Dia de Brasília (o servidor roda em UTC) (José, 23/10/2026)
+    const hoje = hojeBR()
 
     const where = encodeURIComponent(JSON.stringify({
       adesao_id: adesaoId,

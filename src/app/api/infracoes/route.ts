@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { exigirUsuario, nomeBateComUsuario, placaDoUsuario } from '@/lib/apiAuth'
 import { createClient } from '@supabase/supabase-js'
 import type { InfracaoItem } from '@/lib/types'
 import { cleanName } from '@/lib/relatorios'
@@ -284,6 +285,7 @@ function matchViaMaisProxima(
 // =========================================================
 
 export async function GET(req: NextRequest) {
+  const usu = await exigirUsuario(req); if (usu instanceof NextResponse) return usu // exige login (José, 23/10/2026)
   const sp = req.nextUrl.searchParams
   const motorista = (sp.get('motorista') || '').trim()
   const dataInicio = sp.get('dataInicio') || ''
@@ -292,6 +294,11 @@ export async function GET(req: NextRequest) {
 
   if (!dataInicio || !dataFim || (!motorista && !placa)) {
     return NextResponse.json({ error: 'Parâmetros: motorista|placa, dataInicio, dataFim' }, { status: 400 })
+  }
+  // técnico só consulta as próprias infrações: motorista = ele, placa = carro dele (admin: qualquer um) (José, 23/10/2026)
+  if (!usu.isAdmin) {
+    if (motorista && !nomeBateComUsuario(usu, motorista)) return NextResponse.json({ error: 'sem permissão para outro motorista' }, { status: 403 })
+    if (placa && !(await placaDoUsuario(usu, placa))) return NextResponse.json({ error: 'sem permissão para esta placa' }, { status: 403 })
   }
 
   // ---- 1. Busca pontos GPS do período ----

@@ -1,22 +1,25 @@
 /**
  * Tokens de design — fonte única de verdade para cores, espaçamento, radius, sombras.
  * Importe a partir de qualquer componente para manter consistência visual.
+ * 22/10/2026: "Estilo POS NewPortal" (docs/estilo-pos-newportal.md do Portal) — fundo cinza-azulado, cartões
+ * brancos com cantos 16, texto escuro, sem negrito (máx. 500), azul do portal como cor principal e as cores
+ * com significado fixo (roxo para fazer, azul execução, laranja peças, verde feita, vermelho atrasada).
  */
 
 export const colors = {
   // Marca
-  primary: '#C41E2A',
-  primaryDark: '#9B1723',
-  primaryBg: '#FEF2F2',
-  primaryBorder: '#FECACA',
+  primary: '#0369A1',
+  primaryDark: '#075985',
+  primaryBg: '#E0F2FE',
+  primaryBorder: '#BAE6FD',
 
   // Acento
-  accent: '#1E3A5F',
-  accentBg: '#EFF6FF',
-  accentBorder: '#BFDBFE',
+  accent: '#0F172A',
+  accentBg: '#F1F5F9',
+  accentBorder: '#E2E8F0',
 
   // Status
-  success: '#059669',
+  success: '#16A34A',
   successBg: '#ECFDF5',
   successBorder: '#A7F3D0',
 
@@ -33,15 +36,23 @@ export const colors = {
   infoBorder: '#BFDBFE',
 
   // Neutros
-  text: '#1F2937',
-  textMuted: '#6B7280',
-  textSubtle: '#9CA3AF',
-  textGhost: '#D1D5DB',
+  text: '#0F172A',
+  textMuted: '#475569',
+  textSubtle: '#64748B',
+  textGhost: '#CBD5E1',
 
-  surface: '#FFFFFF',
-  surfaceAlt: '#F9FAFB',
-  border: '#F3F4F6',
-  borderStrong: '#E5E7EB',
+  surface: '#FEFEFE',
+  surfaceAlt: '#EEF2F6',
+  border: '#E2E8F0',
+  borderStrong: '#CBD5E1',
+
+  // Situação da OS (mesma cor sempre — José, 22/10/2026)
+  osFazer: '#7C3AED',
+  osExecucao: '#2563EB',
+  osPecas: '#D97706',
+  osFeita: '#16A34A',
+  osAtrasada: '#DC2626',
+  osResservico: '#9F1239',
 } as const
 
 export const spacing = {
@@ -56,7 +67,7 @@ export const spacing = {
 export const radius = {
   sm: 8,
   md: 12,
-  lg: 14,
+  lg: 16,
   xl: 16,
   pill: 999,
 } as const
@@ -66,16 +77,16 @@ export const shadow = {
   sm: '0 1px 3px rgba(0,0,0,0.06)',
   md: '0 2px 8px rgba(0,0,0,0.08)',
   lg: '0 4px 16px rgba(0,0,0,0.1)',
-  primary: '0 2px 8px rgba(196,30,42,0.25)',
-  accent: '0 2px 8px rgba(30,58,95,0.2)',
+  primary: '0 6px 16px -8px rgba(3,105,161,0.6)',
+  accent: '0 6px 16px -8px rgba(15,23,42,0.4)',
   success: '0 2px 8px rgba(5,150,105,0.25)',
 } as const
 
 export const text = {
   // Títulos
-  h1: { fontSize: 24, fontWeight: 800, color: colors.text, margin: 0 },
-  h2: { fontSize: 18, fontWeight: 700, color: colors.text, margin: 0 },
-  h3: { fontSize: 15, fontWeight: 700, color: colors.text, margin: 0 },
+  h1: { fontSize: 24, fontWeight: 500, color: colors.text, margin: 0 },
+  h2: { fontSize: 19, fontWeight: 500, color: colors.text, margin: 0 },
+  h3: { fontSize: 16, fontWeight: 500, color: colors.text, margin: 0 },
 
   // Corpo
   body: { fontSize: 14, color: colors.text },
@@ -83,13 +94,13 @@ export const text = {
   small: { fontSize: 12, color: colors.textMuted },
   tiny: { fontSize: 11, color: colors.textSubtle },
 
-  // Label de seção (UPPERCASE)
+  // Label de seção (sem caixa alta no estilo novo)
   sectionLabel: {
-    fontSize: 11,
-    fontWeight: 700,
-    color: colors.textSubtle,
-    textTransform: 'uppercase' as const,
-    letterSpacing: 0.8,
+    fontSize: 13,
+    fontWeight: 400,
+    color: colors.textMuted,
+    textTransform: 'none' as const,
+    letterSpacing: 0,
   },
 } as const
 

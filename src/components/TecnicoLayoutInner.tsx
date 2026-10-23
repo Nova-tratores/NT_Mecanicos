@@ -1,4 +1,5 @@
 'use client'
+import { hojeBR } from '@/lib/hoje'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useNotificacoes } from '@/hooks/useNotificacoes'
@@ -7,6 +8,10 @@ import HeaderMobile from '@/components/HeaderMobile'
 import PushPermissionBanner from '@/components/PushPermissionBanner'
 import OfflineSync from '@/components/OfflineSync'
 import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
+import { instalarAuthFetch } from '@/lib/apiFetch'
+
+// token do login em todo fetch para /api do app (José, 23/10/2026)
+instalarAuthFetch()
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon, ChevronRight, Car, ClipboardCheck } from 'lucide-react'
@@ -112,7 +117,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     if (!user?.tecnico_nome) return
     if (!navigator.onLine) return
     try {
-    const hoje = new Date().toISOString().split('T')[0]
+    const hoje = hojeBR()
     const { data: avisos } = await withTimeout(supabase
       .from('avisos_gerais')
       .select('id, titulo, mensagem, prioridade')
@@ -224,7 +229,7 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     if (!user?.tecnico_nome) return
     if (!navigator.onLine) return
     try {
-      await fetch('/api/opa/escalar', { method: 'POST' }).catch(() => {})
+      // as ocorrências do Opa (−3/−5) agora nascem no servidor (instrumentation.ts) — José, 23/10/2026
       const { data } = await withTimeout(supabase
         .from('mecanico_ocorrencias')
         .select('id, tipo, descricao, pontos, created_at')
@@ -271,10 +276,15 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     return () => { chs.forEach(c => supabase.removeChannel(c)) }
   }, [carregarOcDisciplinares])
 
+  // Voltou do segundo plano: o iOS derruba o websocket do realtime — recarrega avisos/Opa/ocorrências (José, 23/10/2026)
   useEffect(() => {
-    if (!user?.tecnico_nome || !navigator.onLine) return
-    fetch('/api/os/check-notify', { method: 'POST' }).catch(() => {})
-  }, [user?.tecnico_nome])
+    const onVisivel = () => {
+      if (document.visibilityState !== 'visible') return
+      carregarAvisosPendentes(); carregarOpasPendentes(); carregarOcDisciplinares(); carregarOcorrenciasPendentes()
+    }
+    document.addEventListener('visibilitychange', onVisivel)
+    return () => document.removeEventListener('visibilitychange', onVisivel)
+  }, [carregarAvisosPendentes, carregarOpasPendentes, carregarOcDisciplinares, carregarOcorrenciasPendentes])
 
   // ── Checklist veículo: verificar se está pendente ──
   const verificarChecklist = useCallback(async () => {
@@ -366,8 +376,40 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
   if (!user) return null
 
 
+  // Estilo POS NewPortal (22/10/2026): popups em cartão branco com faixa colorida no TOPO (com o nome do tipo),
+  // ícone em quadradinho de cor cheia, botão de cantos 12 e sem degradê. Lógica igual.
+  const fundoPopup: React.CSSProperties = {
+    position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.55)',
+    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000,
+    padding: 16,
+  }
+  const cartaoPopup: React.CSSProperties = {
+    background: '#FEFEFE', borderRadius: 16, width: '100%', maxWidth: 400,
+    overflow: 'hidden', border: '1px solid #E2E8F0', boxShadow: '0 24px 48px -24px rgba(15,23,42,0.5)',
+    maxHeight: 'calc(100dvh - 32px)', overflowY: 'auto',
+  }
+  const faixaTopo = (cor: string): React.CSSProperties => ({
+    display: 'flex', alignItems: 'baseline', gap: 8, padding: '7px 16px', background: cor, color: '#FEFEFE',
+    fontSize: 13, fontWeight: 500,
+  })
+  const quadradinho = (cor: string): React.CSSProperties => ({
+    width: 44, height: 44, borderRadius: 11, background: cor,
+    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+  })
+  const caixaTexto: React.CSSProperties = {
+    fontSize: 14.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+    background: '#EEF2F6', borderRadius: 12, padding: '12px 14px',
+    border: '1px solid #E2E8F0',
+  }
+  const botaoPopup = (cor: string, ocupado: boolean): React.CSSProperties => ({
+    width: '100%', height: 48, borderRadius: 12,
+    background: cor, color: '#fff', border: 'none',
+    fontSize: 15.5, fontWeight: 500, cursor: ocupado ? 'not-allowed' : 'pointer',
+    opacity: ocupado ? 0.7 : 1,
+  })
+
   return (
-    <div style={{ minHeight: '100vh', paddingBottom: 24, background: '#F5F6F8' }}>
+    <div style={{ minHeight: '100vh', paddingBottom: 24, background: '#EEF2F6' }}>
       <OfflineSync />
 
 
@@ -389,13 +431,15 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
         <Link href="/ocorrencias" style={{
           // top:64 = altura do HeaderMobile (também sticky) — top:0 cobriria
           // o header e o toque no sino cairia neste Link
-          position: 'sticky', top: 64, zIndex: 30,
+          position: 'sticky', top: 'calc(64px + env(safe-area-inset-top, 0px))', zIndex: 30,
           display: 'flex', alignItems: 'center', gap: 10,
           background: '#DC2626', color: '#fff', textDecoration: 'none',
-          padding: '11px 16px', boxShadow: '0 2px 8px rgba(220,38,38,0.35)',
+          padding: '9px 16px',
         }}>
-          <AlertTriangle size={18} color="#fff" style={{ flexShrink: 0 }} />
-          <span style={{ flex: 1, fontSize: 13, fontWeight: 700, lineHeight: 1.4 }}>
+          <span style={{ width: 30, height: 30, borderRadius: 9, background: 'rgba(255,255,255,0.18)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <AlertTriangle size={17} color="#fff" />
+          </span>
+          <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: 500, lineHeight: 1.35 }}>
             Você tem {ocDisciplinares} ocorrência{ocDisciplinares > 1 ? 's' : ''} sem justificativa — toque para justificar
           </span>
           <ChevronRight size={18} color="#fff" style={{ flexShrink: 0 }} />
@@ -404,87 +448,62 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
       <main style={{ padding: 16 }}>
         {checklistPendente && !pathname.startsWith('/checklist-veiculo') ? (
           <div style={{
-            display: 'flex', flexDirection: 'column', alignItems: 'center',
-            justifyContent: 'center', minHeight: '70vh', textAlign: 'center',
-            padding: 20, gap: 24,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '70vh',
           }}>
-            <div style={{
-              width: 80, height: 80, borderRadius: 24,
-              background: 'linear-gradient(135deg, #DC2626, #B91C1C)',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 8px 24px rgba(220,38,38,0.3)',
-            }}>
-              <Car size={40} color="#fff" />
-            </div>
-            <div>
-              <div style={{ fontSize: 20, fontWeight: 800, color: '#111', marginBottom: 8 }}>
-                Checklist do veículo pendente
+            <div style={{ ...cartaoPopup, boxShadow: 'none', maxHeight: 'none', textAlign: 'center' }}>
+              <div style={faixaTopo('#D97706')}>Checklist do mês</div>
+              <div style={{ padding: '22px 18px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16 }}>
+                <div style={{ ...quadradinho('#D97706'), width: 56, height: 56, borderRadius: 16 }}>
+                  <Car size={28} color="#fff" />
+                </div>
+                <div>
+                  <div style={{ fontSize: 19, fontWeight: 500, color: '#0F172A', marginBottom: 6 }}>
+                    Checklist do veículo pendente
+                  </div>
+                  <div style={{ fontSize: 14, color: '#475569', lineHeight: 1.5, maxWidth: 300 }}>
+                    Você precisa completar a inspeção mensal do seu veículo antes de usar o aplicativo.
+                  </div>
+                </div>
+                <Link href="/checklist-veiculo" style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, width: '100%',
+                  height: 48, padding: '0 20px', borderRadius: 12,
+                  background: '#0369A1',
+                  color: '#fff', textDecoration: 'none',
+                  fontSize: 15.5, fontWeight: 500,
+                }}>
+                  <ClipboardCheck size={19} />
+                  Fazer checklist agora
+                </Link>
               </div>
-              <div style={{ fontSize: 14, color: '#6B7280', lineHeight: 1.6, maxWidth: 300 }}>
-                Você precisa completar a inspeção mensal do seu veículo antes de usar o aplicativo.
-              </div>
             </div>
-            <Link href="/checklist-veiculo" style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-              padding: '16px 32px', borderRadius: 16,
-              background: 'linear-gradient(135deg, #DC2626, #B91C1C)',
-              color: '#fff', textDecoration: 'none',
-              fontSize: 16, fontWeight: 800,
-              boxShadow: '0 4px 16px rgba(220,38,38,0.3)',
-            }}>
-              <ClipboardCheck size={20} />
-              Fazer checklist agora
-            </Link>
           </div>
         ) : children}
       </main>
 
       {/* Popup bloqueante de aviso */}
       {avisosPendentes.length > 0 && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000,
-          padding: 16,
-        }}>
+        <div style={fundoPopup}>
           {(() => {
             const aviso = avisosPendentes[0]
             const isUrgente = aviso.prioridade === 'urgente'
+            const cor = isUrgente ? '#DC2626' : '#0369A1'
             return (
-              <div style={{
-                background: '#fff', borderRadius: 20, width: '100%', maxWidth: 400,
-                overflow: 'hidden', boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
-              }}>
-                <div style={{ height: 5, background: isUrgente ? '#DC2626' : '#1E3A5F' }} />
-                <div style={{ padding: '24px 20px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                    <div style={{
-                      width: 48, height: 48, borderRadius: 14,
-                      background: isUrgente ? '#FEE2E2' : '#DBEAFE',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    }}>
-                      <Megaphone size={24} color={isUrgente ? '#DC2626' : '#1E3A5F'} />
+              <div style={cartaoPopup}>
+                <div style={faixaTopo(cor)}>
+                  <span>{isUrgente ? 'Aviso urgente' : 'Aviso importante'}</span>
+                  {avisosPendentes.length > 1 && <span style={{ fontSize: 12, opacity: 0.9 }}>1 de {avisosPendentes.length}</span>}
+                </div>
+                <div style={{ padding: '18px 16px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                    <div style={quadradinho(cor)}>
+                      <Megaphone size={21} color="#fff" />
                     </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: '#9CA3AF', letterSpacing: 1, textTransform: 'uppercase' }}>
-                        Aviso Importante {avisosPendentes.length > 1 ? `(1 de ${avisosPendentes.length})` : ''}
-                      </div>
-                      <div style={{ fontSize: 18, fontWeight: 800, color: '#111' }}>{aviso.titulo}</div>
-                    </div>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 18, fontWeight: 500, color: '#0F172A', lineHeight: 1.3, overflowWrap: 'anywhere' }}>{aviso.titulo}</div>
                   </div>
-                  <div style={{
-                    fontSize: 14, color: '#374151', lineHeight: 1.7, whiteSpace: 'pre-wrap',
-                    maxHeight: 250, overflow: 'auto',
-                    background: '#F9FAFB', borderRadius: 12, padding: '14px 16px',
-                    border: '1px solid #F3F4F6',
-                  }}>
+                  <div style={{ ...caixaTexto, maxHeight: 250, overflow: 'auto' }}>
                     {aviso.mensagem}
                   </div>
-                  <button onClick={confirmarAviso} disabled={confirmando} style={{
-                    width: '100%', marginTop: 20, padding: 15, borderRadius: 14,
-                    background: isUrgente ? '#DC2626' : '#1E3A5F', color: '#fff', border: 'none',
-                    fontSize: 16, fontWeight: 800, cursor: confirmando ? 'not-allowed' : 'pointer',
-                    opacity: confirmando ? 0.7 : 1,
-                  }}>
+                  <button onClick={confirmarAviso} disabled={confirmando} style={{ ...botaoPopup('#0369A1', confirmando), marginTop: 16 }}>
                     {confirmando ? 'Confirmando...' : 'Confirmado'}
                   </button>
                 </div>
@@ -496,42 +515,25 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
 
       {/* Popup bloqueante de OPA */}
       {opasPendentes.length > 0 && avisosPendentes.length === 0 && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000,
-          padding: 16,
-        }}>
+        <div style={fundoPopup}>
           {(() => {
             const opa = opasPendentes[0]
             return (
-              <div style={{
-                background: '#fff', borderRadius: 20, width: '100%', maxWidth: 400,
-                overflow: 'hidden', boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
-              }}>
-                <div style={{ height: 5, background: '#DC2626' }} />
-                <div style={{ padding: '24px 20px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                    <div style={{
-                      width: 48, height: 48, borderRadius: 14, background: '#FEE2E2',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    }}>
-                      <AlertCircle size={24} color="#DC2626" />
+              <div style={cartaoPopup}>
+                <div style={faixaTopo('#DC2626')}>
+                  <span>Opa!</span>
+                  {opasPendentes.length > 1 && <span style={{ fontSize: 12, opacity: 0.9 }}>1 de {opasPendentes.length}</span>}
+                </div>
+                <div style={{ padding: '18px 16px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                    <div style={quadradinho('#DC2626')}>
+                      <AlertCircle size={22} color="#fff" />
                     </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: '#9CA3AF', letterSpacing: 1, textTransform: 'uppercase' }}>
-                        Opa! {opasPendentes.length > 1 ? `(1 de ${opasPendentes.length})` : ''}
-                      </div>
-                      <div style={{ fontSize: 18, fontWeight: 800, color: '#111' }}>{opa.titulo}</div>
-                    </div>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 18, fontWeight: 500, color: '#0F172A', lineHeight: 1.3, overflowWrap: 'anywhere' }}>{opa.titulo}</div>
                   </div>
 
                   {opa.descricao && (
-                    <div style={{
-                      fontSize: 14, color: '#374151', lineHeight: 1.7, whiteSpace: 'pre-wrap',
-                      maxHeight: 120, overflow: 'auto',
-                      background: '#F9FAFB', borderRadius: 12, padding: '14px 16px',
-                      border: '1px solid #F3F4F6', marginBottom: 14,
-                    }}>
+                    <div style={{ ...caixaTexto, maxHeight: 120, overflow: 'auto', marginBottom: 14 }}>
                       {opa.descricao}
                     </div>
                   )}
@@ -543,14 +545,14 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
                         return (
                           <div key={a.id} style={{
                             position: 'relative', width: 100, height: 100, borderRadius: 12,
-                            overflow: 'hidden', border: '1px solid #E5E7EB', background: '#000',
+                            overflow: 'hidden', border: '1px solid #E2E8F0', background: '#0F172A',
                           }}>
                             {isVideo
                               ? <video src={a.url} controls playsInline style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                               : <img src={a.url} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />}
                             <span style={{
-                              position: 'absolute', top: 5, right: 5, background: 'rgba(0,0,0,0.6)',
-                              borderRadius: 5, padding: 3, display: 'flex',
+                              position: 'absolute', top: 5, right: 5, background: 'rgba(15,23,42,0.6)',
+                              borderRadius: 6, padding: 3, display: 'flex',
                             }}>
                               {isVideo ? <Film size={11} color="#fff" /> : <ImageIcon size={11} color="#fff" />}
                             </span>
@@ -560,13 +562,8 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
                     </div>
                   )}
 
-                  <button onClick={confirmarOpa} disabled={opaConfirmando} style={{
-                    width: '100%', padding: 15, borderRadius: 14,
-                    background: '#DC2626', color: '#fff', border: 'none',
-                    fontSize: 16, fontWeight: 800, cursor: opaConfirmando ? 'not-allowed' : 'pointer',
-                    opacity: opaConfirmando ? 0.7 : 1,
-                  }}>
-                    {opaConfirmando ? 'Confirmando...' : 'Li e Entendi'}
+                  <button onClick={confirmarOpa} disabled={opaConfirmando} style={botaoPopup('#0369A1', opaConfirmando)}>
+                    {opaConfirmando ? 'Confirmando...' : 'Li e entendi'}
                   </button>
                 </div>
               </div>
@@ -577,67 +574,50 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
 
       {/* Popup bloqueante de ocorrência OPA */}
       {ocorrenciasPendentes.length > 0 && avisosPendentes.length === 0 && opasPendentes.length === 0 && (
-        <div style={{
-          position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 10000,
-          padding: 16,
-        }}>
+        <div style={{ ...fundoPopup, background: 'rgba(15,23,42,0.65)' }}>
           {(() => {
             const oc = ocorrenciasPendentes[0]
             const dias = oc.tipo === 'opa_dia2' ? 2 : 1
             return (
-              <div style={{
-                background: '#fff', borderRadius: 20, width: '100%', maxWidth: 400,
-                overflow: 'hidden', boxShadow: '0 20px 50px rgba(0,0,0,0.4)',
-              }}>
-                <div style={{ height: 5, background: '#7C2D12' }} />
-                <div style={{ padding: '24px 20px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16 }}>
-                    <div style={{
-                      width: 52, height: 52, borderRadius: 14, background: '#FEF2F2',
-                      display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                    }}>
-                      <AlertTriangle size={28} color="#DC2626" />
+              <div style={cartaoPopup}>
+                <div style={faixaTopo('#DC2626')}>
+                  <span>Ocorrência</span>
+                  {ocorrenciasPendentes.length > 1 && <span style={{ fontSize: 12, opacity: 0.9 }}>1 de {ocorrenciasPendentes.length}</span>}
+                </div>
+                <div style={{ padding: '18px 16px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                    <div style={quadradinho('#DC2626')}>
+                      <AlertTriangle size={22} color="#fff" />
                     </div>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 10, fontWeight: 700, color: '#EF4444', letterSpacing: 1, textTransform: 'uppercase' }}>
-                        Ocorrência {ocorrenciasPendentes.length > 1 ? `(1 de ${ocorrenciasPendentes.length})` : ''}
-                      </div>
-                      <div style={{ fontSize: 17, fontWeight: 800, color: '#111' }}>Você levou uma ocorrência</div>
-                    </div>
+                    <div style={{ flex: 1, minWidth: 0, fontSize: 18, fontWeight: 500, color: '#0F172A' }}>Você levou uma ocorrência</div>
                   </div>
 
                   <div style={{
                     background: '#FEF2F2', border: '1px solid #FECACA', borderRadius: 12,
-                    padding: '14px 16px', marginBottom: 14,
+                    padding: '12px 14px', marginBottom: 12,
                   }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: '#991B1B', marginBottom: 6 }}>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: '#991B1B', marginBottom: 4 }}>
                       OPA não resolvida há {dias} dia(s)
                     </div>
-                    <div style={{ fontSize: 13, color: '#7F1D1D', lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
+                    <div style={{ fontSize: 14, color: '#334155', lineHeight: 1.5, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
                       {oc.descricao}
                     </div>
                   </div>
 
                   <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                    padding: '10px', background: '#FEE2E2', borderRadius: 10, marginBottom: 14,
+                    display: 'flex', alignItems: 'baseline', justifyContent: 'center', gap: 8,
+                    padding: '8px 10px', background: '#FEFEFE', border: '1px solid #FECACA', borderRadius: 12, marginBottom: 10,
                   }}>
-                    <span style={{ fontSize: 22, fontWeight: 900, color: '#DC2626' }}>{oc.pontos}</span>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: '#991B1B' }}>pontos</span>
+                    <span style={{ fontSize: 24, fontWeight: 500, color: '#DC2626' }}>{oc.pontos}</span>
+                    <span style={{ fontSize: 13, color: '#991B1B' }}>pontos</span>
                   </div>
 
-                  <div style={{ fontSize: 11, color: '#9CA3AF', marginBottom: 14, textAlign: 'center' }}>
+                  <div style={{ fontSize: 12.5, color: '#64748B', marginBottom: 14, textAlign: 'center' }}>
                     {new Date(oc.created_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                   </div>
 
-                  <button onClick={confirmarOcorrencia} disabled={ocorrenciaConfirmando} style={{
-                    width: '100%', padding: 15, borderRadius: 14,
-                    background: '#7C2D12', color: '#fff', border: 'none',
-                    fontSize: 16, fontWeight: 800, cursor: ocorrenciaConfirmando ? 'not-allowed' : 'pointer',
-                    opacity: ocorrenciaConfirmando ? 0.7 : 1,
-                  }}>
-                    {ocorrenciaConfirmando ? 'Confirmando...' : 'Li e Entendi'}
+                  <button onClick={confirmarOcorrencia} disabled={ocorrenciaConfirmando} style={botaoPopup('#0369A1', ocorrenciaConfirmando)}>
+                    {ocorrenciaConfirmando ? 'Confirmando...' : 'Li e entendi'}
                   </button>
                 </div>
               </div>

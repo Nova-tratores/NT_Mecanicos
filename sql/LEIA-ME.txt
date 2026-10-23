@@ -1,0 +1,24 @@
+SQL do app dos técnicos (NT_Mecanicos) — José, 23/10/2026
+Projeto Supabase: citrhumdkfivdzbmayde (o MESMO do Portal). Rodar no SQL Editor desse projeto.
+Os arquivos não dependem um do outro; todos podem rodar de novo sem estragar (if not exists).
+O app funciona sem eles (cai no comportamento antigo); cada um só liga uma proteção.
+
+Ordem sugerida:
+
+1) robos-execucoes.sql
+   Cria robos_execucoes: o "Bom dia" das 6h30 não sai em dobro (servidor reiniciando / 2 instâncias).
+
+2) robos-servidor-dedupe.sql
+   APAGA os avisos "Nova OS" repetidos (fica o mais antigo) e cria os índices únicos do Opa e da Nova OS.
+   Rodar o arquivo inteiro de uma vez (a limpeza vem antes do índice).
+
+3) ordem-servico-tecnicos-unico.sql
+   ATENÇÃO: em 23/10/2026 ainda há relatório repetido (OS-0493 x5, OS-0532 x5, OS-0533 x5, OS-0526 x4,
+   OS-0504 x2, OS-0774 x2). Sem limpar, o "create unique index" dá erro. Primeiro rode o SELECT comentado
+   no arquivo, confira, rode o DELETE comentado e só então o create index.
+
+4) sync-failures.sql
+   Cria sync_failures (falhas permanentes da fila offline do celular). Ainda não existe no banco.
+
+5) maxspeed_tile_cache.sql
+   Cache de velocidade das vias (infrações). JÁ EXISTE no banco; rodar de novo só refaz a política.

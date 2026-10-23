@@ -18,4 +18,6 @@ CREATE INDEX IF NOT EXISTS idx_maxspeed_cache_updated
   ON maxspeed_tile_cache (updated_at);
 
 ALTER TABLE maxspeed_tile_cache ENABLE ROW LEVEL SECURITY;
+-- a tabela já existe no banco (23/10/2026): sem o DROP o CREATE POLICY dá erro ao rodar de novo
+DROP POLICY IF EXISTS "allow_all" ON maxspeed_tile_cache;
 CREATE POLICY "allow_all" ON maxspeed_tile_cache FOR ALL USING (true) WITH CHECK (true);

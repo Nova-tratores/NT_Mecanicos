@@ -2,7 +2,13 @@
 import { ReactNode, CSSProperties, ButtonHTMLAttributes, InputHTMLAttributes, TextareaHTMLAttributes } from 'react'
 import Link from 'next/link'
 import { LucideIcon, ChevronRight, X } from 'lucide-react'
-import { colors, radius, shadow, spacing, text, getStatus } from '@/lib/ui'
+import { colors, radius, spacing, text, getStatus } from '@/lib/ui'
+
+/* Estilo POS NewPortal (22/10/2026): cartões brancos cantos 16, sem negrito (máx. 500), sem caixa alta,
+ * botão principal azul do portal, campos brancos com borda clara e foco azul-claro. As props não mudaram. */
+
+/** borda do campo com foco */
+const FOCO = '#38BDF8'
 
 /* ═══════════════════════════════════════════════════════════
  * PageHeader — título + ação opcional
@@ -19,8 +25,8 @@ export function PageHeader({
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md }}>
       <div style={{ minWidth: 0 }}>
-        <h1 style={text.h1}>{title}</h1>
-        {subtitle && <div style={{ ...text.small, marginTop: 2 }}>{subtitle}</div>}
+        <h1 style={{ ...text.h1, fontSize: 21, lineHeight: 1.25 }}>{title}</h1>
+        {subtitle && <div style={{ fontSize: 13.5, color: colors.textMuted, marginTop: 2 }}>{subtitle}</div>}
       </div>
       {action}
     </div>
@@ -28,7 +34,7 @@ export function PageHeader({
 }
 
 /* ═══════════════════════════════════════════════════════════
- * SectionLabel — rótulo uppercase acima de uma lista
+ * SectionLabel — rótulo acima de uma lista (sem caixa alta)
  * ═══════════════════════════════════════════════════════════ */
 export function SectionLabel({
   children,
@@ -42,9 +48,9 @@ export function SectionLabel({
   count?: number
 }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: spacing.sm }}>
-      {Icon && <Icon size={13} color={color || colors.textSubtle} />}
-      <span style={{ ...text.sectionLabel, color: color || colors.textSubtle }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: spacing.sm, padding: '0 2px' }}>
+      {Icon && <Icon size={14} color={color || colors.textMuted} />}
+      <span style={{ ...text.sectionLabel, color: color || colors.textMuted }}>
         {children}{count !== undefined ? ` (${count})` : ''}
       </span>
     </div>
@@ -81,6 +87,7 @@ export function Card({ children, href, onClick, padding = '14px 16px', tone = 'd
     textDecoration: 'none',
     color: 'inherit',
     display: 'block',
+    minWidth: 0,
     cursor: href || onClick ? 'pointer' : 'default',
     ...style,
   }
@@ -102,7 +109,7 @@ export function ListRow({
   onClick,
   icon: Icon,
   iconColor = colors.textMuted,
-  iconBg = colors.border,
+  iconBg = colors.accentBg,
   title,
   subtitle,
   meta,
@@ -127,36 +134,36 @@ export function ListRow({
       <div style={{ display: 'flex', alignItems: 'center', gap: spacing.md }}>
         {Icon && (
           <div style={{
-            width: 42, height: 42, borderRadius: radius.md, flexShrink: 0,
+            width: 40, height: 40, borderRadius: 11, flexShrink: 0,
             background: iconBg,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <Icon size={20} color={iconColor} />
+            <Icon size={19} color={iconColor} />
           </div>
         )}
         <div style={{ flex: 1, minWidth: 0 }}>
           {badge && <div style={{ marginBottom: 3 }}>{badge}</div>}
           <div style={{
-            fontSize: 14, fontWeight: 600, color: colors.text,
+            fontSize: 15, fontWeight: 500, color: colors.text,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
           }}>
             {title}
           </div>
           {subtitle && (
             <div style={{
-              fontSize: 12, color: colors.textSubtle, marginTop: 2,
+              fontSize: 13, color: colors.textMuted, marginTop: 2,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>
               {subtitle}
             </div>
           )}
           {meta && (
-            <div style={{ fontSize: 11, color: colors.textSubtle, marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ fontSize: 12, color: colors.textSubtle, marginTop: 3, display: 'flex', alignItems: 'center', gap: 6 }}>
               {meta}
             </div>
           )}
         </div>
-        {trailing ?? (href || onClick ? <ChevronRight size={18} color={colors.textGhost} style={{ flexShrink: 0 }} /> : null)}
+        {trailing ?? (href || onClick ? <ChevronRight size={18} color="#94A3B8" style={{ flexShrink: 0 }} /> : null)}
       </div>
     </Card>
   )
@@ -186,19 +193,19 @@ export function Badge({
     finalColor = s.color
   }
   const sizeMap = {
-    xs: { fontSize: 9, padding: '2px 6px' },
-    sm: { fontSize: 10, padding: '2px 7px' },
-    md: { fontSize: 11, padding: '3px 9px' },
+    xs: { fontSize: 11, padding: '1px 7px' },
+    sm: { fontSize: 12, padding: '2px 9px' },
+    md: { fontSize: 13, padding: '3px 11px' },
   }
   return (
     <span style={{
       display: 'inline-block',
-      fontWeight: 700,
-      borderRadius: radius.sm,
-      background: finalBg || colors.border,
+      fontWeight: 500,
+      lineHeight: 1.45,
+      borderRadius: radius.pill,
+      background: finalBg || colors.accentBg,
       color: finalColor || colors.textMuted,
-      textTransform: 'uppercase',
-      letterSpacing: 0.5,
+      whiteSpace: 'nowrap',
       ...sizeMap[size],
     }}>
       {children}
@@ -207,7 +214,7 @@ export function Badge({
 }
 
 /* ═══════════════════════════════════════════════════════════
- * StatCard — card de métrica (número grande + label)
+ * StatCard — card de métrica (rótulo + número)
  * ═══════════════════════════════════════════════════════════ */
 export function StatCard({
   value,
@@ -221,7 +228,7 @@ export function StatCard({
   onClick?: () => void
 }) {
   const toneMap = {
-    neutral: { bg: colors.surfaceAlt, color: colors.textGhost, border: colors.border },
+    neutral: { bg: colors.surface, color: colors.textSubtle, border: colors.border },
     warning: { bg: colors.warningBg, color: colors.warning, border: colors.warningBorder },
     danger: { bg: colors.dangerBg, color: colors.danger, border: colors.dangerBorder },
     success: { bg: colors.successBg, color: colors.success, border: colors.successBorder },
@@ -235,14 +242,14 @@ export function StatCard({
       style={{
         background: t.bg,
         borderRadius: radius.lg,
-        padding: '14px 12px',
-        textAlign: 'center',
+        padding: '10px 12px',
         border: `1px solid ${t.border}`,
         cursor: onClick ? 'pointer' : 'default',
+        minWidth: 0,
       }}
     >
-      <div style={{ fontSize: 24, fontWeight: 800, color: t.color, lineHeight: 1 }}>{value}</div>
-      <div style={{ fontSize: 11, fontWeight: 600, color: colors.textSubtle, marginTop: 4 }}>{label}</div>
+      <div style={{ fontSize: 12.5, color: colors.textMuted, lineHeight: 1.2 }}>{label}</div>
+      <div style={{ fontSize: 26, fontWeight: 500, color: t.color, lineHeight: 1.1, marginTop: 4 }}>{value}</div>
     </div>
   )
 }
@@ -269,7 +276,9 @@ export function TabBar<T extends string>({
   return (
     <div style={{
       display: 'flex',
-      background: colors.border,
+      gap: 4,
+      background: colors.surface,
+      border: `1px solid ${colors.border}`,
       borderRadius: radius.lg,
       padding: 4,
     }}>
@@ -283,16 +292,16 @@ export function TabBar<T extends string>({
             onClick={() => onChange(opt.value)}
             style={{
               flex: 1,
-              padding: '11px 0',
+              minWidth: 0,
+              padding: '10px 4px',
               borderRadius: radius.md,
-              fontSize: 13,
-              fontWeight: 700,
+              fontSize: 13.5,
+              fontWeight: isActive ? 500 : 400,
               border: 'none',
               cursor: 'pointer',
               transition: 'all 0.2s',
-              background: isActive ? colors.surface : 'transparent',
-              color: isActive ? colors.text : colors.textSubtle,
-              boxShadow: isActive ? shadow.sm : 'none',
+              background: isActive ? colors.primaryBg : 'transparent',
+              color: isActive ? colors.primary : colors.textSubtle,
               position: 'relative',
               display: 'flex',
               alignItems: 'center',
@@ -300,17 +309,17 @@ export function TabBar<T extends string>({
               gap: 6,
             }}
           >
-            {Icon && <Icon size={14} />}
+            {Icon && <Icon size={15} />}
             {opt.label}
             {opt.badgeCount !== undefined && opt.badgeCount > 0 && (
               <span style={{
                 position: 'absolute',
-                top: 3,
-                right: 8,
+                top: 2,
+                right: 6,
                 background: colors.danger,
                 color: colors.surface,
-                fontSize: 9,
-                fontWeight: 800,
+                fontSize: 10,
+                fontWeight: 500,
                 borderRadius: radius.pill,
                 minWidth: 17,
                 height: 17,
@@ -344,7 +353,7 @@ export function EmptyState({
   tone?: 'neutral' | 'success'
 }) {
   const toneMap = {
-    neutral: { iconBg: colors.surfaceAlt, iconColor: colors.textGhost, titleColor: colors.textSubtle },
+    neutral: { iconBg: colors.accentBg, iconColor: colors.textSubtle, titleColor: colors.textMuted },
     success: { iconBg: colors.successBg, iconColor: colors.success, titleColor: colors.success },
   }
   const t = toneMap[tone]
@@ -352,25 +361,25 @@ export function EmptyState({
     <div style={{
       background: colors.surface,
       borderRadius: radius.xl,
-      padding: '40px 20px',
+      padding: '30px 20px',
       textAlign: 'center',
-      border: `1px solid ${colors.border}`,
+      border: `1px dashed ${colors.borderStrong}`,
     }}>
       <div style={{
-        width: 56, height: 56, borderRadius: radius.lg, background: t.iconBg,
+        width: 44, height: 44, borderRadius: 11, background: t.iconBg,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         margin: '0 auto 12px',
       }}>
-        <Icon size={24} color={t.iconColor} />
+        <Icon size={21} color={t.iconColor} />
       </div>
-      <div style={{ fontSize: 15, fontWeight: 600, color: t.titleColor }}>{title}</div>
-      {subtitle && <div style={{ fontSize: 13, color: colors.textGhost, marginTop: 4 }}>{subtitle}</div>}
+      <div style={{ fontSize: 15, fontWeight: 500, color: t.titleColor }}>{title}</div>
+      {subtitle && <div style={{ fontSize: 13, color: colors.textSubtle, marginTop: 4, lineHeight: 1.4 }}>{subtitle}</div>}
     </div>
   )
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Button — botão primário padronizado
+ * Button — botão padronizado (principal azul do portal; ghost = branco com borda)
  * ═══════════════════════════════════════════════════════════ */
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'success' | 'accent' | 'ghost' | 'danger'
@@ -390,16 +399,16 @@ export function Button({
   ...props
 }: ButtonProps) {
   const variantMap = {
-    primary: { bg: colors.primary, color: '#fff', shadow: shadow.primary },
-    success: { bg: colors.success, color: '#fff', shadow: shadow.success },
-    accent: { bg: colors.accent, color: '#fff', shadow: shadow.accent },
-    ghost: { bg: colors.border, color: colors.textMuted, shadow: 'none' },
-    danger: { bg: colors.danger, color: '#fff', shadow: '0 2px 8px rgba(220,38,38,0.2)' },
+    primary: { bg: colors.primary, color: '#fff', border: colors.primary },
+    success: { bg: colors.success, color: '#fff', border: colors.success },
+    accent: { bg: colors.accent, color: '#fff', border: colors.accent },
+    ghost: { bg: colors.surface, color: colors.text, border: colors.border },
+    danger: { bg: colors.danger, color: '#fff', border: colors.danger },
   }
   const sizeMap = {
-    sm: { padding: '8px 14px', fontSize: 13, iconSize: 14, radius: radius.md },
-    md: { padding: '11px 18px', fontSize: 14, iconSize: 16, radius: radius.md },
-    lg: { padding: '14px 20px', fontSize: 15, iconSize: 18, radius: radius.lg },
+    sm: { padding: '7px 14px', fontSize: 13.5, iconSize: 15, minHeight: 38 },
+    md: { padding: '10px 18px', fontSize: 15, iconSize: 17, minHeight: 46 },
+    lg: { padding: '12px 20px', fontSize: 15.5, iconSize: 18, minHeight: 50 },
   }
   const v = variantMap[variant]
   const s = sizeMap[size]
@@ -413,16 +422,17 @@ export function Button({
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
-        gap: 6,
-        background: isDisabled ? colors.textGhost : v.bg,
-        color: v.color,
-        border: 'none',
-        borderRadius: s.radius,
+        gap: 7,
+        background: isDisabled ? colors.accentBg : v.bg,
+        color: isDisabled ? colors.textSubtle : v.color,
+        border: `1px solid ${isDisabled ? colors.border : v.border}`,
+        borderRadius: radius.md,
         padding: s.padding,
+        minHeight: s.minHeight,
         fontSize: s.fontSize,
-        fontWeight: 700,
+        fontWeight: 500,
         cursor: isDisabled ? 'not-allowed' : 'pointer',
-        boxShadow: isDisabled ? 'none' : v.shadow,
+        boxShadow: 'none',
         transition: 'all 0.15s',
         ...style,
       }}
@@ -438,15 +448,17 @@ export function Button({
  * ═══════════════════════════════════════════════════════════ */
 const fieldInputStyle: CSSProperties = {
   width: '100%',
-  padding: '13px 14px',
+  minHeight: 46,
+  padding: '11px 14px',
   borderRadius: radius.md,
-  border: `1.5px solid ${colors.borderStrong}`,
+  border: `1px solid ${colors.border}`,
   fontSize: 15,
   outline: 'none',
-  background: colors.surfaceAlt,
+  background: colors.surface,
   boxSizing: 'border-box',
   fontFamily: 'inherit',
   color: colors.text,
+  transition: 'border-color 0.15s',
 }
 
 export function FormField({
@@ -461,22 +473,41 @@ export function FormField({
   return (
     <div>
       <label style={{
-        fontSize: 13, fontWeight: 700, color: colors.text,
+        fontSize: 13, fontWeight: 400, color: colors.textMuted,
         marginBottom: 6, display: 'block',
       }}>
-        {label}{required && <span style={{ color: colors.primary }}> *</span>}
+        {label}{required && <span style={{ color: colors.danger }}> *</span>}
       </label>
       {children}
     </div>
   )
 }
 
+/** borda volta ao normal ao sair do campo (respeita uma borda passada em `style`) */
+function bordaNormal(style?: CSSProperties) {
+  return (style?.borderColor as string) || colors.border
+}
+
 export function TextInput(props: InputHTMLAttributes<HTMLInputElement>) {
-  return <input {...props} style={{ ...fieldInputStyle, ...props.style }} />
+  return (
+    <input
+      {...props}
+      onFocus={(e) => { e.currentTarget.style.borderColor = FOCO; props.onFocus?.(e) }}
+      onBlur={(e) => { e.currentTarget.style.borderColor = bordaNormal(props.style); props.onBlur?.(e) }}
+      style={{ ...fieldInputStyle, ...props.style }}
+    />
+  )
 }
 
 export function TextArea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea {...props} style={{ ...fieldInputStyle, resize: 'none', lineHeight: 1.5, ...props.style }} />
+  return (
+    <textarea
+      {...props}
+      onFocus={(e) => { e.currentTarget.style.borderColor = FOCO; props.onFocus?.(e) }}
+      onBlur={(e) => { e.currentTarget.style.borderColor = bordaNormal(props.style); props.onBlur?.(e) }}
+      style={{ ...fieldInputStyle, resize: 'none', lineHeight: 1.5, ...props.style }}
+    />
+  )
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -501,7 +532,7 @@ export function BottomSheet({
       onClick={onClose}
       style={{
         position: 'fixed', inset: 0, zIndex: 100,
-        background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(4px)',
+        background: 'rgba(15,23,42,0.45)', backdropFilter: 'blur(3px)',
         display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
       }}
     >
@@ -509,10 +540,10 @@ export function BottomSheet({
         onClick={(e) => e.stopPropagation()}
         style={{
           background: colors.surface,
-          borderRadius: '24px 24px 0 0',
+          borderRadius: '20px 20px 0 0',
           width: '100%',
           maxWidth: 480,
-          padding: '14px 20px 32px',
+          padding: '12px 18px 30px',
           maxHeight: '88vh',
           overflowY: 'auto',
           animation: 'slideUp 0.22s ease',
@@ -521,19 +552,19 @@ export function BottomSheet({
         <div style={{
           width: 36, height: 4, borderRadius: 2,
           background: colors.borderStrong,
-          margin: '0 auto 18px',
+          margin: '0 auto 16px',
         }} />
         <div style={{
           display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-          gap: spacing.md, marginBottom: spacing.xl,
+          gap: spacing.md, marginBottom: spacing.lg,
         }}>
           <div style={{ minWidth: 0 }}>
             <h2 style={text.h2}>{title}</h2>
-            {subtitle && <div style={{ ...text.small, marginTop: 2 }}>{subtitle}</div>}
+            {subtitle && <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 2 }}>{subtitle}</div>}
           </div>
-          <button type="button" onClick={onClose} style={{
-            width: 34, height: 34, borderRadius: radius.md, border: 'none',
-            background: colors.border, cursor: 'pointer', flexShrink: 0,
+          <button type="button" onClick={onClose} aria-label="fechar" style={{
+            width: 36, height: 36, borderRadius: 11, border: `1px solid ${colors.border}`,
+            background: colors.surface, cursor: 'pointer', flexShrink: 0,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
             <X size={17} color={colors.textMuted} />
@@ -568,11 +599,12 @@ export function SearchInput({
   return (
     <div style={{
       display: 'flex', alignItems: 'center', gap: 10,
-      background: colors.surface, borderRadius: radius.lg,
-      padding: '0 14px',
-      border: `1.5px solid ${colors.borderStrong}`,
+      background: colors.surface, borderRadius: radius.md,
+      padding: '0 14px', minHeight: 46,
+      border: `1px solid ${colors.border}`,
+      transition: 'border-color 0.15s',
     }}>
-      <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={colors.textSubtle} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <svg width={18} height={18} viewBox="0 0 24 24" fill="none" stroke={colors.textSubtle} strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
         <circle cx={11} cy={11} r={8} /><path d="m21 21-4.3-4.3" />
       </svg>
       <input
@@ -580,17 +612,20 @@ export function SearchInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter' && onSubmit) onSubmit() }}
+        onFocus={(e) => { const p = e.currentTarget.parentElement; if (p) p.style.borderColor = FOCO }}
+        onBlur={(e) => { const p = e.currentTarget.parentElement; if (p) p.style.borderColor = colors.border }}
         placeholder={placeholder}
         style={{
-          flex: 1, border: 'none', outline: 'none', fontSize: 15,
-          padding: '13px 0', background: 'transparent', color: colors.text,
+          flex: 1, minWidth: 0, border: 'none', outline: 'none', fontSize: 15,
+          padding: '11px 0', background: 'transparent', color: colors.text,
         }}
       />
       {value.trim() && (
         <button
           type="button"
+          aria-label="limpar"
           onClick={() => onChange('')}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex' }}
         >
           <X size={16} color={colors.textSubtle} />
         </button>

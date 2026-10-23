@@ -4,7 +4,27 @@
  */
 
 import { supabase } from './supabase'
-import { offlineSet, offlineGet } from './offlineCache'
+import { offlineSet, offlineGet, offlineKeys, offlineDelete } from './offlineCache'
+import { hojeBR } from './hoje'
+import { melhorRelatorio } from './diasRelatorio'
+import { tecnicoNoCampo } from '@/components/OsCardTecnico'
+
+/** 1º nome para o ilike, com as vogais (e letras acentuadas) trocadas por '_': o ilike não ignora acento
+ *  ("Jose" × "José"). A consulta traz um pouco a mais; o filtro fino é o tecnicoNoCampo/mesmoNome — a mesma
+ *  regra da tela /os (José, 23/10/2026) */
+export function primeiroNomeIlike(nome: string): string {
+  const p1 = nome.replace(/[,()%*_]/g, ' ').replace(/\s+/g, ' ').trim().split(' ')[0] || ''
+  return p1.replace(/[aeiouyçÀ-ÿ]/gi, '_') || '_'
+}
+
+/** OS que saíram da lista (concluídas/canceladas) não ficam para sempre no aparelho (José, 23/10/2026) */
+// Pelo openDB do offlineCache (indexedDB.open sem versão criava banco vazio v1 e quebrava o cache).
+async function apagarOsQueSairam(atuais: Set<string>): Promise<void> {
+  for (const k of await offlineKeys()) {
+    const m = /^prefetch:os(?:-tec)?:(.+)$/.exec(k)
+    if (m && !atuais.has(m[1])) await offlineDelete(k)
+  }
+}
 
 const PREFETCH_KEY = 'nt-prefetch-timestamp'
 const MIN_INTERVAL = 15 * 60_000 // 15 min entre prefetches
@@ -30,19 +50,25 @@ export async function prefetchAll(
   onProgress?.('Baixando ordens de servico...')
 
   try {
-    // 1. Todas as OS do técnico (ativas)
-    const { data: osList } = await supabase
+    // 1. Todas as OS do técnico (ativas) — busca ampla pelo 1º nome + filtro fino, igual à tela /os; com o
+    //    nome completo a lista daqui era menor e apagava do aparelho OS que a tela mostra (José, 23/10/2026)
+    const p1 = primeiroNomeIlike(nome)
+    const { data: osBruta } = await supabase
       .from('Ordem_Servico')
       .select('*')
       .not('Status', 'in', '("Concluida","Cancelada","Concluída","cancelada")')
-      .or(`Os_Tecnico.ilike.%${nome}%,Os_Tecnico2.ilike.%${nome}%`)
+      .or(`Os_Tecnico.ilike.%${p1}%,Os_Tecnico2.ilike.%${p1}%`)
       .order('Id_Ordem', { ascending: false })
+    const osList = osBruta
+      ? (osBruta as { Os_Tecnico?: unknown; Os_Tecnico2?: unknown }[]).filter((o) => tecnicoNoCampo(o.Os_Tecnico, nome) || tecnicoNoCampo(o.Os_Tecnico2, nome)) as typeof osBruta
+      : osBruta
 
     if (osList && osList.length > 0) {
       await offlineSet('prefetch:os-list', osList)
 
       // Cache individual de cada OS por ID (em paralelo)
       await Promise.all(osList.map((os) => offlineSet(`prefetch:os:${os.Id_Ordem}`, os)))
+      await apagarOsQueSairam(new Set(osList.map((o: { Id_Ordem: string }) => String(o.Id_Ordem))))
 
       const ids = osList.map((o: { Id_Ordem: string }) => o.Id_Ordem)
       const cnpjs = [...new Set(osList.map((o: { Cnpj_Cliente: string }) => o.Cnpj_Cliente).filter(Boolean))]
@@ -55,17 +81,25 @@ export async function prefetchAll(
         .in('Ordem_Servico', ids)
 
       if (tecEntries) {
-        await Promise.all(tecEntries.map((entry) => offlineSet(`prefetch:os-tec:${entry.Ordem_Servico}`, entry)))
+        // OS com mais de um relatório: guarda o melhor (enviado, mais novo) (José, 23/10/2026)
+        const porOS = new Map<string, Record<string, unknown>[]>()
+        for (const e of tecEntries as Record<string, unknown>[]) { const k = String(e.Ordem_Servico); porOS.set(k, [...(porOS.get(k) || []), e]) }
+        await Promise.all([...porOS.entries()].map(([k, rows]) => offlineSet(`prefetch:os-tec:${k}`, melhorRelatorio(rows))))
       }
 
       // 3. Clientes (cidade + coordenadas + nome — necessario p/ jornada/check-in offline)
       let clientesData: { cnpj_cpf: string; cidade: string }[] = []
       if (cnpjs.length > 0) {
         onProgress?.('Baixando clientes...')
-        const { data: clientes } = await supabase
-          .from('Clientes')
-          .select('cnpj_cpf, nome, cidade, latitude, longitude')
+        // A tabela 'Clientes' não existe: o cadastro vem do Omie (José, 23/10/2026)
+        const { data: cadastro } = await supabase
+          .from('portal_nt_clientes_cadastro_omie')
+          .select('cnpj_cpf, nome_fantasia, cidade, estado, lat, lng')
           .in('cnpj_cpf', cnpjs)
+        const clientes = cadastro
+          ? (cadastro as { cnpj_cpf: string; nome_fantasia: string | null; cidade: string | null; estado: string | null; lat: number | null; lng: number | null }[])
+              .map(c => ({ cnpj_cpf: c.cnpj_cpf, nome: c.nome_fantasia || '', cidade: c.cidade || '', estado: c.estado || '', latitude: c.lat ?? undefined, longitude: c.lng ?? undefined }))
+          : null
 
         if (clientes) {
           clientesData = clientes as { cnpj_cpf: string; cidade: string }[]
@@ -81,24 +115,8 @@ export async function prefetchAll(
         }
       }
 
-      // 4. Agenda do técnico (próximos 30 dias)
-      onProgress?.('Baixando agenda...')
-      const hoje = new Date().toISOString().split('T')[0]
-      const fim = new Date(Date.now() + 30 * 86400000).toISOString().split('T')[0]
-      const { data: agenda } = await supabase
-        .from('agenda_tecnico')
-        .select('*')
-        .eq('tecnico_nome', nome)
-        .gte('data_agendada', hoje)
-        .lte('data_agendada', fim)
-        .order('data_agendada')
-
-      if (agenda) {
-        await offlineSet('prefetch:agenda', agenda)
-        for (const ag of agenda) {
-          await offlineSet(`prefetch:agenda:${ag.id_ordem}`, ag)
-        }
-      }
+      const hoje = hojeBR()
+      // 4. Agenda do técnico: é a Lousa (lousa_servicos), que já vem pelo /api/feed — a tabela agenda_tecnico não existe (José, 23/10/2026)
 
       // 5. Movimentações PPV para cada OS que tem PPV
       const osComPPV = osList.filter((o: { ID_PPV?: string }) => o.ID_PPV)
@@ -133,12 +151,6 @@ export async function prefetchAll(
       }
       for (const c of clientesData) {
         if (c.cidade) cidadeMap[c.cnpj_cpf] = c.cidade
-      }
-      if (agenda) {
-        for (const a of agenda) {
-          if (!agendaMap[a.id_ordem]) agendaMap[a.id_ordem] = []
-          agendaMap[a.id_ordem].push(a.data_agendada)
-        }
       }
 
       // Key do useCached na página /os (a tela usa a versao "v2")
@@ -235,7 +247,7 @@ export async function prefetchAll(
 
     // 6b. Check-in de hoje, garantias, requisicoes e fornecedores (telas offline)
     onProgress?.('Baixando jornada e requisicoes...')
-    const hojeRef = new Date().toISOString().split('T')[0]
+    const hojeRef = hojeBR()
     const [checkinsRes, garantiasRes, requisicoesRes, fornecedoresRes, permissoesRes] = await Promise.all([
       supabase.from('checkin_diario').select('*').eq('tecnico_nome', tecnicoNome).eq('data', hojeRef).order('id'),
       tecnicoNome
@@ -268,21 +280,35 @@ export async function prefetchAll(
 
     // 8. Pré-aquecer cache do SW com TODAS as páginas (HTML + JS chunks)
     onProgress?.('Preparando paginas offline...')
+    // Teste offline (22/10/2026): telas sem a página ou sem os arquivos do programa davam "Erro ao carregar a
+    // página" ou abriam a tela inicial. Agora: a página de TODAS as telas e de TODAS as OS (até 40) + os arquivos
+    // de programa que cada uma usa.
     const rotasEstaticas = [
-      '/', '/os', '/os-enviadas', '/requisicoes', '/requisicoes/nova',
-      '/relatorios', '/perfil', '/fotos', '/jornada', '/garantias', '/mapa',
+      '/', '/os', '/os-enviadas', '/requisicoes', '/requisicoes/nova', '/requisicoes-enviadas',
+      '/perfil', '/fotos', '/garantias', '/mapa', '/ocorrencias', '/checklist-veiculo', '/catalogos', '/opa',
     ]
-    // Cachear uma OS e preencher para garantir que os JS chunks dessas rotas dinâmicas fiquem no SW
-    const primeiraOs = osList?.[0]?.Id_Ordem
-    if (primeiraOs) {
-      rotasEstaticas.push(`/os/${primeiraOs}`, `/os/${primeiraOs}/preencher`)
+    // requisições que o técnico ainda precisa completar abrem sem internet (José, 23/10/2026)
+    for (const r of ((requisicoesRes.data || []) as { id: number | string; status?: string; recibo_fornecedor?: string | null }[])
+      .filter((r) => r.status === 'pedido' && !r.recibo_fornecedor).slice(0, 20)) {
+      rotasEstaticas.push(`/requisicoes/atualizar/${r.id}`)
     }
-    await Promise.allSettled(rotasEstaticas.map(r => fetch(r).catch(() => {})))
+    for (const os of (osList || []).slice(0, 40) as { Id_Ordem: string }[]) {
+      rotasEstaticas.push(`/os/${os.Id_Ordem}`, `/os/${os.Id_Ordem}/preencher`)
+    }
+    const arquivos = new Set<string>()
+    await Promise.allSettled(rotasEstaticas.map(async (r) => {
+      const res = await fetch(r)
+      if (!res.ok) return
+      const html = await res.text()
+      for (const m of html.matchAll(/\/_next\/static\/[^"'\s\\)]+\.(?:js|css)/g)) arquivos.add(m[0])
+    }))
+    // os arquivos de programa ficam no cache do service worker (cache-first)
+    await Promise.allSettled([...arquivos].map((a) => fetch(a).catch(() => {})))
 
-    // Cachear RSC payloads para TODAS as OS + preencher (navegação client-side offline)
+    // Dados COMPLETOS da página de cada OS + preencher (o "prefetch" do Next é parcial e não abre a OS offline)
     if (osList && osList.length > 0) {
-      const rscHeaders = { RSC: '1', 'Next-Router-Prefetch': '1' }
-      const rscFetches = osList.slice(0, 12).flatMap((os: { Id_Ordem: string }) => [
+      const rscHeaders = { RSC: '1' }
+      const rscFetches = osList.slice(0, 40).flatMap((os: { Id_Ordem: string }) => [
         fetch(`/os/${os.Id_Ordem}`, { headers: rscHeaders }).catch(() => {}),
         fetch(`/os/${os.Id_Ordem}/preencher`, { headers: rscHeaders }).catch(() => {}),
       ])
@@ -297,6 +323,7 @@ export async function prefetchAll(
       tecnicoNomeReal: tecnicoNome,
     })
 
+    await offlineSet('offline-status', { qtd: (osList || []).length, em: Date.now(), por: 'app aberto' })
     localStorage.setItem(PREFETCH_KEY, String(Date.now()))
     console.log('[prefetch] Dados offline carregados com sucesso')
     onProgress?.('')

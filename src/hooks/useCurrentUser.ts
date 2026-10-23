@@ -3,9 +3,28 @@ import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
 import type { MecanicoProfile } from '@/lib/types'
+import { avisarSessaoExpirada, estaSaindo, limparDadosDoAparelho, marcarSaindo } from '@/lib/sessao'
 
 const PROFILE_KEY = 'nt-mecanicos-profile'
+// Perfil carregado uma vez por abertura: cada tela/componente que usa o hook não refaz as 2-4 consultas
+// (refresh() força de novo) (José, 23/10/2026)
+let perfilCarregadoEm = 0
+const PERFIL_VALIDO_MS = 5 * 60_000
+// Sessão caiu sem o técnico sair (token não renova): avisa "entre de novo" — uma escuta só para o app inteiro
+let escutandoAuth = false
+function escutarSessao() {
+  if (escutandoAuth || typeof window === 'undefined') return
+  escutandoAuth = true
+  supabase.auth.onAuthStateChange((evento) => {
+    if (evento === 'SIGNED_OUT' && !estaSaindo()) { perfilCarregadoEm = 0; avisarSessaoExpirada() }
+  })
+}
 const AUTH_TIMEOUT = 8000
+/** no localhost as páginas de teste (/teste, /previa-…) abrem sem login; em produção sempre vai para o login */
+function irLogin(r: { replace: (u: string) => void }) {
+  if (process.env.NODE_ENV !== 'production' && /^\/(teste|previa)/.test(window.location.pathname)) return
+  r.replace('/login')
+}
 
 function withTimeout<T>(p: PromiseLike<T>): Promise<T> {
   return Promise.race([
@@ -47,9 +66,15 @@ export function useCurrentUser() {
   useEffect(() => {
     let cancelled = false
 
+    escutarSessao()
     const load = async () => {
       // Se offline e tem perfil cacheado, usa direto sem tentar rede
       if (!navigator.onLine && getCachedProfile()) {
+        setLoading(false)
+        return
+      }
+      // já carregado há pouco nesta abertura (outra tela/componente): usa o guardado
+      if (refreshKey === 0 && getCachedProfile() && Date.now() - perfilCarregadoEm < PERFIL_VALIDO_MS) {
         setLoading(false)
         return
       }
@@ -63,10 +88,12 @@ export function useCurrentUser() {
           if (cached) {
             setUser(cached)
             setLoading(false)
+            // com internet e sem sessão = a sessão expirou: avisa (os dados continuam no aparelho)
+            if (navigator.onLine) avisarSessaoExpirada()
             return
           }
           clearCachedProfile()
-          routerRef.current.replace('/login')
+          irLogin(routerRef.current)
           return
         }
 
@@ -102,12 +129,12 @@ export function useCurrentUser() {
           if (portalProfile && (portalProfile as { ativo?: boolean }).ativo === false) {
             clearCachedProfile()
             await supabase.auth.signOut()
-            routerRef.current.replace('/login')
+            irLogin(routerRef.current)
             return
           }
 
           if (perm.is_admin && !perm.mecanico_role) {
-            routerRef.current.replace('/admin')
+            window.location.replace(process.env.NEXT_PUBLIC_PORTAL_URL || 'https://portal.novatratores.com') // só admin: a gestão é no Portal (José, 23/10/2026)
             return
           }
 
@@ -125,6 +152,7 @@ export function useCurrentUser() {
           }
           setUser(profile)
           setCachedProfile(profile)
+          perfilCarregadoEm = Date.now()
           setLoading(false)
           return
         }
@@ -174,6 +202,7 @@ export function useCurrentUser() {
           if (cancelled) return
           setUser(profile)
           setCachedProfile(profile)
+          perfilCarregadoEm = Date.now()
           setLoading(false)
           return
         }
@@ -185,7 +214,7 @@ export function useCurrentUser() {
         }
 
         clearCachedProfile()
-        routerRef.current.replace('/login')
+        irLogin(routerRef.current)
       } catch (err) {
         console.error('Erro ao carregar usuário:', err)
         // Se falhou (offline ou rede instável) e tem cache, usa o cache
@@ -195,7 +224,7 @@ export function useCurrentUser() {
           setLoading(false)
           return
         }
-        if (!cancelled) routerRef.current.replace('/login')
+        if (!cancelled) irLogin(routerRef.current)
       }
     }
     load()
@@ -203,10 +232,15 @@ export function useCurrentUser() {
     return () => { cancelled = true }
   }, [refreshKey])
 
+  // Sair: apaga do aparelho os dados do técnico (celular compartilhado) e recarrega a página inteira para
+  // não sobrar nada na memória (José, 23/10/2026)
   const logout = async () => {
+    marcarSaindo()
+    perfilCarregadoEm = 0
     clearCachedProfile()
-    await supabase.auth.signOut()
-    routerRef.current.replace('/login')
+    await limparDadosDoAparelho().catch(() => {})
+    await supabase.auth.signOut().catch(() => {})
+    window.location.replace('/login')
   }
 
   return { user, loading, logout, refresh }

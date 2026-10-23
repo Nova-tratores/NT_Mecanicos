@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { useCached } from '@/hooks/useCached'
 import { supabase } from '@/lib/supabase'
@@ -7,14 +7,14 @@ import { offlineWrite } from '@/lib/offlineWrite'
 import { cacheInvalidate } from '@/lib/cache'
 import {
   FilePlus, FileCheck, History, ClipboardList, XCircle,
-  CheckCircle2, Clock, Package,
+  CheckCircle2, Clock, Package, ChevronRight, CloudOff, type LucideIcon,
 } from 'lucide-react'
 import Link from 'next/link'
 import { notificarPortalReq } from '@/lib/notificarPortal'
-import {
-  PageHeader, StatCard, TabBar, ListRow, EmptyState, PageSpinner, Badge,
-} from '@/components/ui'
-import { colors, radius, shadow, getStatus } from '@/lib/ui'
+import { TabBar, EmptyState, PageSpinner } from '@/components/ui'
+import { getStatus } from '@/lib/ui'
+import { COR, T, cartao, botaoPerigo, Icone, Pilula, Cabecalho, EstiloCampos, claro, bordaDe } from './_ui'
+import { lerValor, moeda, dataBR, nomeIgual, listarPendentes, enviarPendentes } from './_util'
 
 interface RequisicaoPOS {
   id: number
@@ -27,54 +27,102 @@ interface RequisicaoPOS {
   valor_despeza: string | null
   recibo_fornecedor: string | null
   obs: string | null
+  origem?: string | null
 }
 
 interface ReqData {
   pendentes: RequisicaoPOS[]
-  enviadas: RequisicaoPOS[]
+  emAberto: RequisicaoPOS[]
   historico: RequisicaoPOS[]
 }
 
-async function fetchReqData(nome: string, tecnicoNome: string): Promise<ReqData> {
-  const [pendRes, envRes, histRes] = await Promise.all([
-    supabase
-      .from('Requisicao')
-      .select('id, titulo, tipo, solicitante, data, status, fornecedor, valor_despeza, recibo_fornecedor, obs')
-      .or(`solicitante.ilike.%${nome}%,solicitante.eq.${tecnicoNome}`)
-      .eq('status', 'pedido')
-      .is('recibo_fornecedor', null)
-      .order('data', { ascending: false }),
-    supabase
-      .from('Requisicao')
-      .select('id, titulo, tipo, solicitante, data, status, fornecedor, valor_despeza, recibo_fornecedor, obs')
-      .or(`solicitante.ilike.%${nome}%,solicitante.eq.${tecnicoNome}`)
-      .eq('status', 'pedido')
-      .order('data', { ascending: false }),
-    supabase
-      .from('Requisicao')
-      .select('id, titulo, tipo, solicitante, data, status, fornecedor, valor_despeza, recibo_fornecedor, obs')
-      .or(`solicitante.ilike.%${nome}%,solicitante.eq.${tecnicoNome}`)
-      .not('status', 'in', '("pedido","lixeira")')
-      .order('data', { ascending: false })
-      .limit(50),
-  ])
+// Fases (José, 23/10/2026):
+// Pendentes = o técnico precisa agir (pedido sem comprovante: informar valor, fornecedor e foto);
+// Em aberto = já fez a parte dele, aguardando o escritório (atualizada, aguardando fornecedor, cancelamento pedido);
+// Histórico = finalizadas (financeiro, cancelada).
+const EM_ABERTO = ['completa', 'aguardando', 'cancelar']
 
+async function fetchReqData(nome: string, tecnicoNome: string): Promise<ReqData> {
+  // Busca larga pelo nome e depois casa o nome exato (sem caixa/acento) — "João" não vê as do "João Pedro".
+  const filtros = [nome, tecnicoNome].filter(Boolean).map((n) => `solicitante.ilike.%${n.replace(/[,()]/g, ' ').trim()}%`)
+  const { data, error } = await supabase
+    .from('Requisicao')
+    .select('id, titulo, tipo, solicitante, data, status, fornecedor, valor_despeza, recibo_fornecedor, obs, origem')
+    .or(filtros.join(','))
+    .neq('status', 'lixeira')
+    .order('data', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(300)
+  if (error) throw error // sem internet: o useCached mostra o que está guardado
+  const minhas = ((data || []) as RequisicaoPOS[]).filter((r) => nomeIgual(r.solicitante, nome, tecnicoNome))
+  const st = (r: RequisicaoPOS) => String(r.status || '').toLowerCase()
+  // alimentação aberta sozinha pela OS não pede comprovante do técnico: fica com o escritório
+  const doTecnico = (r: RequisicaoPOS) => st(r) === 'pedido' && !r.recibo_fornecedor && r.origem !== 'auto_alimentacao_os'
   return {
-    pendentes: (pendRes.data || []) as RequisicaoPOS[],
-    enviadas: (envRes.data || []) as RequisicaoPOS[],
-    historico: (histRes.data || []) as RequisicaoPOS[],
+    pendentes: minhas.filter(doTecnico),
+    emAberto: minhas.filter((r) => (st(r) === 'pedido' && !doTecnico(r)) || EM_ABERTO.includes(st(r))),
+    historico: minhas.filter((r) => st(r) !== 'pedido' && !EM_ABERTO.includes(st(r))).slice(0, 50),
   }
 }
 
-/* ─── Card de requisição reutilizável ─── */
-function ReqBadge({ id, status, color = colors.primary }: { id: number; status: string; color?: string }) {
+/* ─── Peças visuais (Estilo POS NewPortal) ─── */
+
+/** número do topo: fundo clarinho na cor, número na cor */
+function Numero({ valor, rotulo, dica, cor }: { valor: number; rotulo: string; dica: string; cor: string }) {
+  const c = valor === 0 ? COR.neutro : cor
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ fontSize: 14, fontWeight: 700, color }}>#{id}</span>
-      <Badge status={status}>{getStatus(status).label}</Badge>
+    <div style={{
+      background: claro(c), border: `1px solid ${bordaDe(c)}`, borderRadius: 16,
+      padding: '10px 12px', display: 'grid', lineHeight: 1.15, minWidth: 0,
+    }}>
+      <small style={{ fontSize: 12.5, color: T.textoMedio }}>{rotulo}</small>
+      <b style={{ fontSize: 26, fontWeight: 500, color: c, marginTop: 4 }}>{valor}</b>
+      <em style={{ fontStyle: 'normal', fontSize: 12, color: T.textoFraco, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{dica}</em>
     </div>
   )
 }
+
+/** cartão de uma requisição: ícone na cor da situação, nº + etiqueta, título e linha de baixo */
+function CartaoReq({ href, icon, cor, id, status, titulo, sub, meta, rodape }: {
+  href?: string; icon: LucideIcon; cor: string; id: number; status: string
+  titulo: string; sub: string; meta?: React.ReactNode; rodape?: React.ReactNode
+}) {
+  const st = getStatus(String(status || '').toLowerCase())
+  const corpo = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+      <Icone icon={icon} cor={cor} />
+      <div style={{ flex: 1, minWidth: 0, display: 'grid', gap: 3 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+          <span style={{ fontSize: 13, color: T.textoFraco, fontVariantNumeric: 'tabular-nums', flex: 'none' }}>#{id}</span>
+          <Pilula cor={st.color}>{st.label}</Pilula>
+        </div>
+        <div style={{ fontSize: 15, fontWeight: 500, color: T.texto, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {titulo}
+        </div>
+        <div style={{ fontSize: 13, color: T.textoFraco, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub}</div>
+        {meta && <div style={{ fontSize: 13, color: T.textoMedio, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{meta}</div>}
+      </div>
+      {href && <ChevronRight size={18} color="#94A3B8" style={{ flex: 'none' }} />}
+    </div>
+  )
+  return (
+    <div style={{ ...cartao, display: 'grid', gap: 12 }}>
+      {href ? (
+        <Link href={href} className="rq-toque" style={{ textDecoration: 'none', color: 'inherit', display: 'block', minWidth: 0 }}>{corpo}</Link>
+      ) : corpo}
+      {rodape}
+    </div>
+  )
+}
+
+/** "fornecedor · R$ 150,00" — tolera valor antigo gravado com vírgula */
+function valorTexto(r: RequisicaoPOS) {
+  const n = lerValor(r.valor_despeza)
+  const v = Number.isFinite(n) ? `R$ ${moeda(n)}` : ''
+  return [r.fornecedor, v].filter(Boolean).join(' · ')
+}
+
+type Aba = 'pendentes' | 'aberto' | 'historico'
 
 export default function RequisicoesHub() {
   const { user } = useCurrentUser()
@@ -87,184 +135,209 @@ export default function RequisicoesHub() {
     { skip: !user },
   )
 
-  const [aba, setAba] = useState<'atualizar' | 'enviadas' | 'historico'>('enviadas')
+  const [aba, setAba] = useState<Aba>('pendentes')
   const [cancelando, setCancelando] = useState<number | null>(null)
+  const [noCelular, setNoCelular] = useState<number[]>([]) // atualizações guardadas sem sinal
 
-  const { pendentes = [], enviadas = [], historico = [] } = data || {}
+  // ?aba=aberto (vindo da antiga "Requisições enviadas")
+  useEffect(() => {
+    const a = new URLSearchParams(window.location.search).get('aba')
+    if (a === 'aberto' || a === 'historico' || a === 'pendentes') setAba(a)
+  }, [])
 
-  const solicitarCancelamento = async (id: number) => {
+  // manda atualizações guardadas no celular e mostra quais ainda estão esperando sinal
+  useEffect(() => {
+    let vivo = true
+    const ver = async () => {
+      const antes = (await listarPendentes()).length
+      const n = await enviarPendentes().catch(() => 0)
+      const lista = await listarPendentes()
+      if (!vivo) return
+      setNoCelular(lista.map((p) => p.reqId))
+      if (n > 0 || lista.length !== antes) { cacheInvalidate(cacheKey); refresh() }
+    }
+    ver()
+    window.addEventListener('online', ver)
+    return () => { vivo = false; window.removeEventListener('online', ver) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheKey])
+
+  const { pendentes = [], emAberto = [], historico = [] } = data || {}
+
+  const solicitarCancelamento = async (req: RequisicaoPOS) => {
     const confirmar = window.confirm('Tem certeza que deseja solicitar o cancelamento desta requisição?')
     if (!confirmar) return
-    setCancelando(id)
-    const req = enviadas.find(r => r.id === id)
+    setCancelando(req.id)
     const res = await offlineWrite({
-      table: 'Requisicao', action: 'update', data: { status: 'cancelar' }, match: { id },
+      table: 'Requisicao', action: 'update', data: { status: 'cancelar' }, match: { id: req.id },
     })
     if (!res.ok) {
-      alert('Erro ao solicitar cancelamento. Tente novamente.')
+      alert(`Erro ao solicitar cancelamento: ${res.error || 'tente novamente.'}`)
     } else {
       notificarPortalReq(
         'Solicitação de Cancelamento',
-        `Técnico ${nome} solicitou cancelamento da requisição #${id}${req ? ` — ${req.titulo}` : ''}`
+        `Técnico ${nome} solicitou cancelamento da requisição #${req.id} — ${req.titulo}`
       )
+      if (res.queued) alert('Salvo no celular, vai quando tiver sinal.')
       cacheInvalidate(cacheKey)
       refresh()
     }
     setCancelando(null)
   }
 
+  const botaoCancelar = (req: RequisicaoPOS) => (
+    <button
+      onClick={() => solicitarCancelamento(req)}
+      disabled={cancelando === req.id}
+      style={{
+        ...botaoPerigo, minHeight: 40, fontSize: 14,
+        background: cancelando === req.id ? claro(COR.erro) : T.cartao,
+        cursor: cancelando === req.id ? 'not-allowed' : 'pointer',
+      }}
+    >
+      <XCircle size={15} />
+      {cancelando === req.id ? 'Cancelando...' : 'Solicitar cancelamento'}
+    </button>
+  )
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0 }}>
+      <EstiloCampos />
       {refreshing && <div className="refresh-bar" />}
 
-      <PageHeader
-        title="Requisições"
-        action={
+      <Cabecalho
+        icon={ClipboardList}
+        titulo="Requisições"
+        subtitulo="Peças, ferramentas e despesas"
+        acao={
           <Link href="/requisicoes/nova" style={{
-            background: colors.primary, borderRadius: radius.md, padding: '10px 16px',
-            color: '#fff', textDecoration: 'none',
+            background: COR.principal, borderRadius: 12, padding: '0 14px', height: 42,
+            color: '#fff', textDecoration: 'none', flex: 'none',
             display: 'flex', alignItems: 'center', gap: 6,
-            fontSize: 13, fontWeight: 700,
-            boxShadow: shadow.primary,
+            fontSize: 14, fontWeight: 500,
           }}>
-            <FilePlus size={15} />
+            <FilePlus size={16} />
             Nova
           </Link>
         }
       />
 
-      {/* Métricas */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-        <StatCard value={pendentes.length} label="Pendentes" tone="warning" />
-        <StatCard value={enviadas.length} label="Em aberto" tone="info" />
-        <StatCard value={historico.length} label="Histórico" tone="success" />
+      {/* Números */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
+        <Numero valor={pendentes.length} rotulo="Pendentes" dica="você precisa agir" cor={COR.pendente} />
+        <Numero valor={emAberto.length} rotulo="Em aberto" dica="com o escritório" cor={COR.andamento} />
+        <Numero valor={historico.length} rotulo="Histórico" dica="finalizadas" cor={COR.feita} />
       </div>
+
+      {noCelular.length > 0 && (
+        <div style={{ ...cartao, display: 'flex', alignItems: 'center', gap: 10, background: claro(COR.pendente), border: `1px solid ${bordaDe(COR.pendente)}` }}>
+          <CloudOff size={18} color={COR.pendente} style={{ flex: 'none' }} />
+          <span style={{ fontSize: 13.5, color: T.texto }}>
+            {noCelular.length === 1 ? 'Uma atualização está salva' : `${noCelular.length} atualizações estão salvas`} no celular, vai quando tiver sinal.
+          </span>
+        </div>
+      )}
 
       {/* Tabs */}
       <TabBar
         value={aba}
         onChange={setAba}
         options={[
-          { value: 'atualizar', label: 'Atualizar', badgeCount: pendentes.length },
-          { value: 'enviadas', label: 'Enviadas' },
+          { value: 'pendentes', label: 'Pendentes', badgeCount: pendentes.length },
+          { value: 'aberto', label: 'Em aberto' },
           { value: 'historico', label: 'Histórico' },
         ]}
       />
 
-      {/* ═══ ABA ATUALIZAR ═══ */}
-      {aba === 'atualizar' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* ═══ PENDENTES: o técnico precisa informar valor/fornecedor/comprovante ═══ */}
+      {aba === 'pendentes' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {loading ? (
             <PageSpinner />
           ) : pendentes.length === 0 ? (
             <EmptyState
               icon={CheckCircle2}
               title="Tudo em dia!"
-              subtitle="Nenhuma pendente de atualização"
+              subtitle="Nenhuma requisição esperando por você"
               tone="success"
             />
           ) : (
-            pendentes.map((req) => (
-              <ListRow
-                key={req.id}
-                href={`/requisicoes/atualizar/${req.id}`}
-                icon={Clock}
-                iconColor={colors.warning}
-                iconBg={colors.warningBg}
-                badge={<ReqBadge id={req.id} status="pendente" />}
-                title={req.titulo}
-                subtitle={`${req.tipo} · ${new Date(req.data).toLocaleDateString('pt-BR')}`}
-              />
-            ))
-          )}
-        </div>
-      )}
-
-      {/* ═══ ABA ENVIADAS ═══ */}
-      {aba === 'enviadas' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {loading ? (
-            <PageSpinner />
-          ) : enviadas.length === 0 ? (
-            <EmptyState
-              icon={Package}
-              title="Nenhuma requisição enviada"
-              subtitle="Suas solicitações aparecerão aqui"
-            />
-          ) : (
-            enviadas.map((req) => {
-              const st = getStatus(req.status)
-              const podeCancelar = req.status === 'pedido'
+            pendentes.map((req) => {
+              const guardada = noCelular.includes(req.id)
+              const temValor = Number.isFinite(lerValor(req.valor_despeza))
               return (
-                <div key={req.id} style={{
-                  background: colors.surface,
-                  borderRadius: radius.xl,
-                  border: `1px solid ${colors.border}`,
-                  overflow: 'hidden',
-                }}>
-                  <ListRow
-                    href={`/requisicoes/atualizar/${req.id}`}
-                    icon={ClipboardList}
-                    iconColor={st.color}
-                    iconBg={st.bg}
-                    badge={<ReqBadge id={req.id} status={req.status} />}
-                    title={req.titulo}
-                    subtitle={`${req.tipo} · ${req.data ? new Date(req.data).toLocaleDateString('pt-BR') : ''}`}
-                  />
-                  {podeCancelar && (
-                    <div style={{ padding: '0 14px 12px' }}>
-                      <button
-                        onClick={() => solicitarCancelamento(req.id)}
-                        disabled={cancelando === req.id}
-                        style={{
-                          width: '100%', padding: '9px 0',
-                          borderRadius: radius.md,
-                          border: `1px solid ${colors.dangerBorder}`,
-                          background: cancelando === req.id ? colors.dangerBg : colors.surface,
-                          color: colors.danger, fontSize: 12, fontWeight: 700,
-                          cursor: cancelando === req.id ? 'not-allowed' : 'pointer',
-                          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                        }}
-                      >
-                        <XCircle size={13} />
-                        {cancelando === req.id ? 'Cancelando...' : 'Solicitar Cancelamento'}
-                      </button>
-                    </div>
-                  )}
-                </div>
+                <CartaoReq
+                  key={req.id}
+                  href={`/requisicoes/atualizar/${req.id}`}
+                  icon={Clock}
+                  cor={COR.pendente}
+                  id={req.id}
+                  status="pedido"
+                  titulo={req.titulo}
+                  sub={`${req.tipo} · ${dataBR(req.data)}`}
+                  meta={guardada
+                    ? <span style={{ color: COR.pendente }}>Salvo no celular, vai quando tiver sinal</span>
+                    : <span style={{ color: COR.pendente }}>{temValor ? `${valorTexto(req)} · falta o comprovante` : 'Toque para informar valor, fornecedor e comprovante'}</span>}
+                  rodape={botaoCancelar(req)}
+                />
               )
             })
           )}
         </div>
       )}
 
-      {/* ═══ ABA HISTÓRICO ═══ */}
+      {/* ═══ EM ABERTO: aguardando o escritório (só consulta) ═══ */}
+      {aba === 'aberto' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {loading ? (
+            <PageSpinner />
+          ) : emAberto.length === 0 ? (
+            <EmptyState
+              icon={Package}
+              title="Nada em aberto"
+              subtitle="O que você atualizar aparece aqui até o escritório finalizar"
+            />
+          ) : (
+            emAberto.map((req) => {
+              const st = getStatus(String(req.status || '').toLowerCase())
+              return (
+                <CartaoReq
+                  key={req.id}
+                  icon={ClipboardList}
+                  cor={st.color}
+                  id={req.id}
+                  status={req.status}
+                  titulo={req.titulo}
+                  sub={`${req.tipo}${req.data ? ` · ${dataBR(req.data)}` : ''}`}
+                  meta={valorTexto(req) || undefined}
+                  rodape={req.status === 'pedido' ? botaoCancelar(req) : undefined}
+                />
+              )
+            })
+          )}
+        </div>
+      )}
+
+      {/* ═══ HISTÓRICO ═══ */}
       {aba === 'historico' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {loading ? (
             <PageSpinner />
           ) : historico.length === 0 ? (
             <EmptyState icon={History} title="Nenhuma no histórico" />
           ) : (
             historico.map((req) => {
-              const st = getStatus(req.status)
+              const st = getStatus(String(req.status || '').toLowerCase())
               return (
-                <ListRow
+                <CartaoReq
                   key={req.id}
                   icon={FileCheck}
-                  iconColor={st.color}
-                  iconBg={st.bg}
-                  badge={<ReqBadge id={req.id} status={req.status} color={colors.accent} />}
-                  title={req.titulo}
-                  subtitle={`${req.tipo} · ${new Date(req.data).toLocaleDateString('pt-BR')}`}
-                  meta={
-                    req.fornecedor && (
-                      <span style={{ color: colors.success, fontWeight: 600 }}>
-                        {req.fornecedor}
-                        {req.valor_despeza ? ` · R$ ${Number(req.valor_despeza).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : ''}
-                      </span>
-                    )
-                  }
+                  cor={st.color}
+                  id={req.id}
+                  status={req.status}
+                  titulo={req.titulo}
+                  sub={`${req.tipo} · ${dataBR(req.data)}`}
+                  meta={valorTexto(req) || undefined}
                 />
               )
             })

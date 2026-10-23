@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { exigirAdmin } from '@/lib/apiAuth'
 import { createClient } from '@supabase/supabase-js'
 
 const supabase = createClient(
@@ -20,6 +21,7 @@ function extractModelo(servicos: any): string {
 }
 
 export async function GET(req: NextRequest) {
+  const adm = await exigirAdmin(req); if (adm instanceof NextResponse) return adm // só admin: era tela do /admin, desligado (José, 23/10/2026)
   const nome = req.nextUrl.searchParams.get('nome')
   const empresa = req.nextUrl.searchParams.get('empresa') || 'Nova Tratores'
 

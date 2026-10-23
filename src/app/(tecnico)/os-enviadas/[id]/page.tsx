@@ -1,4 +1,6 @@
 'use client'
+import { diasDoRegistro, buscarRelatorioDaOS } from '@/lib/diasRelatorio'
+import { downloadFotoRelatorio, cidadeDoCliente, fotosExtrasDoRegistro } from '@/lib/gerarEAnexarRelatorio'
 import { useEffect, useState } from 'react'
 import { use } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
@@ -6,7 +8,8 @@ import { supabase } from '@/lib/supabase'
 import { offlineWrite } from '@/lib/offlineWrite'
 import { getCachedOS, getCachedOSTec, getCachedCliente } from '@/lib/prefetch'
 import { gerarPdfRelatorio } from '@/lib/gerarPdfRelatorio'
-import { ArrowLeft, FileDown, Eye, Loader2, FileEdit, Send, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, FileDown, Loader2, FileEdit, Send, CheckCircle2, FileText, User, Tractor, Wrench, CalendarClock, Package, Camera, AlertTriangle, PenLine } from 'lucide-react'
+import { colors } from '@/lib/ui'
 import Link from 'next/link'
 
 interface PecaInfo {
@@ -71,31 +74,20 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
     const carregar = async () => {
       if (!navigator.onLine) { await carregarDoCache(); return }
       try {
-        // Buscar o registro técnico pela Ordem_Servico
-        const { data: reg } = await supabase
-          .from('Ordem_Servico_Tecnicos')
-          .select('*')
-          .eq('Ordem_Servico', id)
-          .maybeSingle()
+        // Buscar o registro técnico pela Ordem_Servico (a melhor linha: com 2 linhas o .maybeSingle() quebrava)
+        const { data: reg } = await buscarRelatorioDaOS(id)
 
         if (!reg) { await carregarDoCache(); return }
 
         // Buscar dados da OS original
-        const { data: osData } = await supabase
-          .from('Ordem_Servico')
-          .select('*')
-          .eq('Id_Ordem', id)
-          .maybeSingle()
+        const { data: osLinhas } = await Promise.race([
+          supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).limit(1),
+          new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+        ])
+        const osData = ((osLinhas || [])[0] as Record<string, unknown> | undefined) || null
 
-        let cidadeCli = ''
-        if (osData?.Cnpj_Cliente) {
-          const { data: cli } = await supabase
-            .from('Clientes')
-            .select('cidade')
-            .eq('cnpj_cpf', osData.Cnpj_Cliente)
-            .maybeSingle()
-          cidadeCli = cli?.cidade || ''
-        }
+        // cidade: cadastro do Omie no portal (a tabela "Clientes" não existe)
+        const cidadeCli = await cidadeDoCliente(osData?.Cnpj_Cliente as string | undefined)
         aplicar(reg, osData, cidadeCli)
       } catch {
         await carregarDoCache()
@@ -110,12 +102,13 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
       return
     }
     setSalvandoCarta(true)
-    await offlineWrite({
+    const res = await offlineWrite({
       table: 'Ordem_Servico_Tecnicos',
       action: 'update',
       data: { CartaCorrecao: cartaCorrecao.trim() },
       match: { Ordem_Servico: id },
     })
+    if (!res.ok) { setSalvandoCarta(false); alert('Erro ao enviar a carta: ' + (res.error || 'tente de novo')); return }
     setCartaSalva(cartaCorrecao.trim())
     setSalvandoCarta(false)
   }
@@ -124,49 +117,13 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
     if (!registro) return
     setGerandoPdf(true)
 
-    const dias = []
-    if (registro.DataInicio) {
-      dias.push({
-        data: (registro.DataInicio as string) || '',
-        horaInicio: (registro.InicioHora as string) || '',
-        horaFim: (registro.FinalHora as string) || '',
-        kmTotal: (registro.InicioKm as string) || (registro.TotalKm as string) || '',
-      })
-    }
-    if (registro.AdicionarData2 && registro.DataInicio2) {
-      dias.push({
-        data: (registro.DataInicio2 as string) || '',
-        horaInicio: (registro.InicioHora2 as string) || '',
-        horaFim: (registro.FinalHora2 as string) || '',
-        kmTotal: (registro.InicioKm2 as string) || '',
-      })
-    }
-    if (registro.AdicionarData3 && registro.DataInicio3) {
-      dias.push({
-        data: (registro.DataInicio3 as string) || '',
-        horaInicio: (registro.InicioHora3 as string) || '',
-        horaFim: (registro.FinaHora3 as string) || '',
-        kmTotal: (registro.InicioKm3 as string) || '',
-      })
-    }
+    const dias = diasDoRegistro(registro)
     if (dias.length === 0) {
       dias.push({ data: '', horaInicio: '', horaFim: '', kmTotal: '' })
     }
 
-    const downloadFoto = async (url: string): Promise<string | null> => {
-      if (!url) return null
-      const match = url.match(/\/object\/public\/requisicoes\/(.+?)(\?|$)/)
-      if (!match) return null
-      const path = decodeURIComponent(match[1])
-      const { data: blob, error } = await supabase.storage.from('requisicoes').download(path)
-      if (error || !blob) return null
-      return new Promise((resolve) => {
-        const reader = new FileReader()
-        reader.onloadend = () => resolve(reader.result as string)
-        reader.onerror = () => resolve(null)
-        reader.readAsDataURL(blob)
-      })
-    }
+    // aceita todas as formas de URL do storage (antes só a pública)
+    const downloadFoto = downloadFotoRelatorio
 
     try {
       await gerarPdfRelatorio({
@@ -211,7 +168,7 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
         fotoPecaNova2: (registro.FotoPecaNova2 as string) || '',
         fotoPecaInstalada1: (registro.FotoPecaInstalada1 as string) || '',
         fotoPecaInstalada2: (registro.FotoPecaInstalada2 as string) || '',
-        fotosExtras: Array.isArray(registro.FotosExtras) ? (registro.FotosExtras as string[]).filter(Boolean) : [],
+        fotosExtras: fotosExtrasDoRegistro(registro),
         assCliente: (registro.AssCliente as string) || '',
         assTecnico: (registro.AssTecnico as string) || '',
         nomResp: (registro.NomResp as string) || '',
@@ -243,28 +200,42 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
 
   if (!registro) {
     return (
-      <div style={{ padding: 20 }}>
-        <Link href="/os-enviadas" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#C41E2A', fontSize: 15, fontWeight: 600, textDecoration: 'none', marginBottom: 20 }}>
+      <div style={{ padding: '8px 0' }}>
+        <Link href="/os-enviadas" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: colors.primary, fontSize: 15, fontWeight: 500, textDecoration: 'none', marginBottom: 16, padding: '8px 0' }}>
           <ArrowLeft size={20} /> Voltar
         </Link>
-        <div style={{ background: '#fff', borderRadius: 18, padding: 48, textAlign: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
-          <div style={{ fontSize: 16, fontWeight: 600, color: '#6B7280' }}>Relatório não encontrado</div>
+        <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 40, textAlign: 'center' }}>
+          <div style={{ fontSize: 16, fontWeight: 500, color: colors.textMuted }}>Relatório não encontrado</div>
         </div>
       </div>
     )
   }
 
+  /* ── Estilo POS NewPortal (22/10/2026): cartões brancos, títulos com ícone em quadradinho, sem negrito ── */
   const sectionStyle: React.CSSProperties = {
-    background: '#fff', borderRadius: 16, padding: 18,
-    boxShadow: '0 2px 8px rgba(0,0,0,0.06)', marginBottom: 14,
+    background: colors.surface, borderRadius: 16, padding: 16, minWidth: 0,
+    border: `1px solid ${colors.border}`, marginBottom: 12,
+    boxShadow: '0 10px 24px -20px rgba(15,23,42,.5)',
   }
-  const fieldLabel: React.CSSProperties = { fontSize: 11, color: '#6B7280', marginBottom: 2 }
-  const fieldValue: React.CSSProperties = { fontSize: 14, fontWeight: 600, color: '#1F2937', marginBottom: 10 }
+  const fieldLabel: React.CSSProperties = { fontSize: 12.5, color: colors.textSubtle, marginBottom: 2 }
+  const fieldValue: React.CSSProperties = { fontSize: 15, fontWeight: 400, color: colors.text, marginBottom: 12, overflowWrap: 'anywhere' }
+  const duasCol: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: '0 14px' }
+  const titulo = (Icon: typeof FileDown, texto: string, cor: string = colors.primary, extra?: React.ReactNode) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 11, minWidth: 0 }}>
+        <span style={{
+          width: 36, height: 36, borderRadius: 11, flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          background: `color-mix(in srgb, ${cor} 9%, #FEFEFE)`, border: `1px solid color-mix(in srgb, ${cor} 16%, transparent)`, color: cor,
+        }}>
+          <Icon size={18} />
+        </span>
+        <span style={{ fontSize: 16, fontWeight: 500, color: colors.text }}>{texto}</span>
+      </div>
+      {extra}
+    </div>
+  )
 
-  const dias = []
-  if (registro.DataInicio) dias.push({ data: registro.DataInicio as string, hi: registro.InicioHora as string, hf: registro.FinalHora as string, kmTotal: (registro.InicioKm as string) || '' })
-  if (registro.AdicionarData2 && registro.DataInicio2) dias.push({ data: registro.DataInicio2 as string, hi: registro.InicioHora2 as string, hf: registro.FinalHora2 as string, kmTotal: (registro.InicioKm2 as string) || '' })
-  if (registro.AdicionarData3 && registro.DataInicio3) dias.push({ data: registro.DataInicio3 as string, hi: registro.InicioHora3 as string, hf: registro.FinaHora3 as string, kmTotal: (registro.InicioKm3 as string) || '' })
+  const dias = diasDoRegistro(registro).map((d) => ({ data: d.data, hi: d.horaInicio, hf: d.horaFim, kmTotal: d.kmTotal }))
 
   const fotos = [
     { label: 'Horímetro', url: registro.FotoHorimetro as string },
@@ -282,25 +253,55 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
     { label: 'Peça Nova 2', url: registro.FotoPecaNova2 as string },
     { label: 'Peça Instalada 1', url: registro.FotoPecaInstalada1 as string },
     { label: 'Peça Instalada 2', url: registro.FotoPecaInstalada2 as string },
-    { label: 'Nota Alimentação', url: registro.FotoAlmoco as string },
+    // fotos/vídeos do serviço (FotosExtras) e as notas de almoço de cada dia (AlmocosFotos) — 23/10/2026
+    ...fotosExtrasDoRegistro(registro).map((url, i) => ({ label: `Serviço ${i + 1}`, url })),
+    ...(() => {
+      let alm = registro.AlmocosFotos as unknown
+      if (typeof alm === 'string') { try { alm = JSON.parse(alm) } catch { alm = null } }
+      const lista = (Array.isArray(alm) ? alm : []) as { data?: string; valor?: number; foto?: string }[]
+      if (lista.length === 0) return [{ label: 'Nota alimentação', url: registro.FotoAlmoco as string }]
+      return lista.filter((a) => a?.foto).map((a) => ({
+        label: `Almoço ${String(a.data || '').slice(8, 10)}/${String(a.data || '').slice(5, 7)}${a.valor ? ` · R$ ${Number(a.valor).toFixed(2)}` : ''}`,
+        url: String(a.foto),
+      }))
+    })(),
   ].filter(f => f.url)
 
   return (
-    <div>
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', minWidth: 0 }}>
+      <style>{`.ose-campo:focus { border-color: #38BDF8 !important; box-shadow: 0 0 0 3px rgba(14,165,233,.15) }`}</style>
       <Link href="/os-enviadas" style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6,
-        color: '#C41E2A', fontSize: 15, fontWeight: 600,
-        textDecoration: 'none', marginBottom: 16, padding: '8px 0',
+        display: 'inline-flex', alignItems: 'center', gap: 6, justifySelf: 'start',
+        color: colors.primary, fontSize: 15, fontWeight: 500,
+        textDecoration: 'none', marginBottom: 10, padding: '8px 0',
       }}>
         <ArrowLeft size={20} /> Voltar
       </Link>
 
-      <h1 style={{ fontSize: 20, fontWeight: 700, color: '#C41E2A', marginBottom: 4 }}>
-        Relatório OS — {id}
-      </h1>
-      <p style={{ fontSize: 13, color: '#6B7280', marginBottom: 16 }}>
-        {(osInfo?.Os_Cliente as string) || ''} {cidade ? `• ${cidade}` : ''}
-      </p>
+      {/* Cabeçalho: faixa verde no topo (relatório enviado) + etiqueta da OS */}
+      <div style={{ ...sectionStyle, padding: 0, overflow: 'hidden' }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '7px 16px', background: colors.osFeita, color: '#FEFEFE' }}>
+          <span style={{ fontSize: 13.5, fontWeight: 500 }}>Relatório enviado</span>
+          {(registro.Data as string) && <span style={{ fontSize: 12.5, opacity: 0.9 }}>em {formatarDataBR((registro.Data as string) || '')}</span>}
+        </div>
+        <div style={{ padding: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ width: 44, height: 44, borderRadius: 12, flexShrink: 0, background: colors.osFeita, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <CheckCircle2 size={22} />
+          </span>
+          <div style={{ display: 'grid', gap: 5, minWidth: 0 }}>
+            <span style={{
+              justifySelf: 'start', fontSize: 14, padding: '1px 9px', borderRadius: 8, color: colors.text, fontVariantNumeric: 'tabular-nums',
+              background: colors.successBg, border: `1px solid ${colors.successBorder}`,
+            }}>
+              <span style={{ fontSize: 11.5, color: colors.osFeita, marginRight: 5 }}>OS</span>{String(id).replace(/^OS-?/i, '')}
+            </span>
+            <span style={{ fontSize: 18, fontWeight: 500, color: colors.text, lineHeight: 1.25, overflowWrap: 'anywhere' }}>
+              {(osInfo?.Os_Cliente as string) || 'Relatório OS'}
+            </span>
+            {cidade && <span style={{ fontSize: 13.5, color: colors.textMuted }}>{cidade}</span>}
+          </div>
+        </div>
+      </div>
 
       {/* Botões: Editar + Gerar PDF */}
       {(() => {
@@ -308,74 +309,83 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
         const envio = dataEnvio ? new Date(dataEnvio + 'T00:00:00') : null
         const dentroPrazo = envio ? (Date.now() - envio.getTime()) < 48 * 60 * 60 * 1000 : false
         return (
-          <div style={{ display: 'flex', gap: 10, marginBottom: 20 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 8, marginBottom: 14 }}>
             {dentroPrazo ? (
               <Link href={`/os/${id}/preencher`} style={{
-                flex: 1, padding: '16px 0', borderRadius: 14,
-                background: '#D97706', color: '#fff', border: 'none',
-                fontSize: 16, fontWeight: 700, textDecoration: 'none',
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                minHeight: 48, padding: '0 10px', borderRadius: 12,
+                background: colors.surface, color: colors.text, border: `1px solid ${colors.border}`,
+                fontSize: 15.5, fontWeight: 500, textDecoration: 'none',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               }}>
-                <FileEdit size={20} /> Editar OS
+                <FileEdit size={19} color={colors.osPecas} /> Editar OS
               </Link>
             ) : (
               <div style={{
-                flex: 1, padding: '16px 0', borderRadius: 14,
-                background: '#E5E7EB', color: '#9CA3AF',
-                fontSize: 14, fontWeight: 700,
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                minHeight: 48, padding: '0 10px', borderRadius: 12,
+                background: colors.surfaceAlt, color: colors.textSubtle, border: `1px solid ${colors.border}`,
+                fontSize: 14.5, fontWeight: 400,
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
               }}>
-                <FileEdit size={20} /> Prazo expirado
+                <FileEdit size={18} /> Prazo expirado
               </div>
             )}
             <button onClick={handleGerarPdf} disabled={gerandoPdf} style={{
-              flex: 1, padding: '16px 0', borderRadius: 14,
-              background: '#1E3A5F', color: '#fff', border: 'none',
-              fontSize: 16, fontWeight: 700, cursor: gerandoPdf ? 'not-allowed' : 'pointer',
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+              minHeight: 48, padding: '0 10px', borderRadius: 12,
+              background: gerandoPdf ? colors.textGhost : colors.primary, color: '#fff', border: 'none',
+              fontSize: 15.5, fontWeight: 500, cursor: gerandoPdf ? 'not-allowed' : 'pointer',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             }}>
-              {gerandoPdf ? <Loader2 size={20} className="spinner" /> : <FileDown size={20} />}
+              {gerandoPdf ? <Loader2 size={19} className="spin" /> : <FileDown size={19} />}
               {gerandoPdf ? 'Gerando...' : 'Baixar PDF'}
             </button>
           </div>
         )
       })()}
 
-      {/* Preview dos dados */}
       {/* Dados da Ordem */}
       <div style={sectionStyle}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>Dados da Ordem</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
+        {titulo(FileText, 'Dados da ordem')}
+        <div style={duasCol}>
           <div><div style={fieldLabel}>OS</div><div style={fieldValue}>{id}</div></div>
           <div><div style={fieldLabel}>Preenchido em</div><div style={fieldValue}>{formatarDataBR((registro.Data as string) || '')}</div></div>
-          <div><div style={fieldLabel}>Tipo Serviço</div><div style={fieldValue}>{(registro.TipoServico as string) || '-'}</div></div>
+          <div><div style={fieldLabel}>Tipo de serviço</div><div style={fieldValue}>{(registro.TipoServico as string) || '-'}</div></div>
           <div><div style={fieldLabel}>Projeto</div><div style={fieldValue}>{(registro.Projeto as string) || '-'}</div></div>
         </div>
         {(osInfo?.ID_PPV as string) && (
-          <div><div style={fieldLabel}>PPV</div><div style={fieldValue}>{osInfo?.ID_PPV as string}</div></div>
+          <div><div style={fieldLabel}>PPV</div><div style={{ ...fieldValue, marginBottom: 0 }}>{osInfo?.ID_PPV as string}</div></div>
         )}
       </div>
 
       {/* Técnicos */}
       <div style={sectionStyle}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>Técnicos</div>
-        <div><div style={fieldLabel}>Responsável</div><div style={fieldValue}>{(registro.TecResp1 as string) || '-'}</div></div>
+        {titulo(User, 'Técnicos')}
+        <div style={duasCol}>
+          <div><div style={fieldLabel}>Responsável</div><div style={fieldValue}>{(registro.TecResp1 as string) || '-'}</div></div>
+          <div><div style={fieldLabel}>Placa</div><div style={fieldValue}>{(registro.NumPlaca as string) || '-'}</div></div>
+        </div>
         {Boolean(registro.TemTec) && (
-          <div><div style={fieldLabel}>Técnico 2</div><div style={fieldValue}>{(registro.TecResp2 as string) || '-'}</div></div>
+          <div><div style={fieldLabel}>Técnico 2</div><div style={{ ...fieldValue, marginBottom: 0 }}>{(registro.TecResp2 as string) || '-'}</div></div>
         )}
-        <div><div style={fieldLabel}>Placa</div><div style={fieldValue}>{(registro.NumPlaca as string) || '-'}</div></div>
       </div>
 
       {/* Equipamento */}
       <div style={sectionStyle}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>Equipamento</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px' }}>
+        {titulo(Tractor, 'Equipamento', colors.primary, (
+          <span style={{
+            fontSize: 12.5, padding: '3px 10px', borderRadius: 999, flexShrink: 0,
+            background: registro.Garantia ? colors.osFeita : colors.surfaceAlt,
+            color: registro.Garantia ? '#fff' : colors.textMuted,
+            border: registro.Garantia ? 'none' : `1px solid ${colors.border}`,
+          }}>
+            {registro.Garantia ? 'Garantia: sim' : 'Garantia: não'}
+          </span>
+        ))}
+        <div style={duasCol}>
           <div><div style={fieldLabel}>Chassis</div><div style={fieldValue}>{(registro.Chassis as string) || '-'}</div></div>
           <div><div style={fieldLabel}>Horímetro</div><div style={fieldValue}>{(registro.Horimetro as string) || '-'}</div></div>
-          <div><div style={fieldLabel}>Garantia</div><div style={{ ...fieldValue, color: registro.Garantia ? '#059669' : '#6B7280' }}>{registro.Garantia ? 'SIM' : 'NÃO'}</div></div>
         </div>
         {((registro.Fazenda as string) || (registro.Cidade as string)) && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 16px', marginTop: 4 }}>
+          <div style={duasCol}>
             <div><div style={fieldLabel}>Fazenda</div><div style={fieldValue}>{(registro.Fazenda as string) || '-'}</div></div>
             <div><div style={fieldLabel}>Cidade</div><div style={fieldValue}>{(registro.Cidade as string) || '-'}</div></div>
           </div>
@@ -387,41 +397,47 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
 
       {/* Diagnóstico */}
       <div style={sectionStyle}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>Diagnóstico e Serviço</div>
-        <div><div style={fieldLabel}>Diagnóstico / Motivo</div><div style={{ ...fieldValue, whiteSpace: 'pre-wrap' }}>{(registro.Motivo as string) || '-'}</div></div>
-        <div><div style={fieldLabel}>Serviço Realizado</div><div style={{ ...fieldValue, whiteSpace: 'pre-wrap' }}>{(registro.ServicoRealizado as string) || '-'}</div></div>
+        {titulo(Wrench, 'Diagnóstico e serviço')}
+        <div><div style={fieldLabel}>Diagnóstico / motivo</div><div style={{ ...fieldValue, whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{(registro.Motivo as string) || '-'}</div></div>
+        <div><div style={fieldLabel}>Serviço realizado</div><div style={{ ...fieldValue, whiteSpace: 'pre-wrap', lineHeight: 1.5, marginBottom: (registro.TipoRev as string) ? 12 : 0 }}>{(registro.ServicoRealizado as string) || '-'}</div></div>
         {(registro.TipoRev as string) && (
-          <div><div style={fieldLabel}>Tipo Revisão</div><div style={fieldValue}>{registro.TipoRev as string}</div></div>
+          <div><div style={fieldLabel}>Tipo de revisão</div><div style={{ ...fieldValue, marginBottom: 0 }}>{registro.TipoRev as string}</div></div>
         )}
       </div>
 
       {/* Dias */}
       {dias.length > 0 && (
         <div style={sectionStyle}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>Dias de Serviço</div>
-          {dias.map((d, i) => (
-            <div key={i} style={{
-              background: '#F9FAFB', borderRadius: 10, padding: 12, marginBottom: 8,
-              border: '1px solid #E5E7EB',
-            }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: '#6B7280', marginBottom: 6 }}>
-                Dia {i + 1} — {formatarDataBR(d.data)}
+          {titulo(CalendarClock, 'Dias de serviço')}
+          <div style={{ display: 'grid', gap: 8 }}>
+            {dias.map((d, i) => (
+              <div key={i} style={{
+                background: '#F8FAFC', borderRadius: 12, padding: 12,
+                border: `1px solid ${colors.border}`, minWidth: 0,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                  <span style={{
+                    fontSize: 12.5, fontWeight: 500, color: colors.primary, padding: '1px 9px', borderRadius: 999,
+                    background: colors.primaryBg, border: `1px solid ${colors.primaryBorder}`,
+                  }}>Dia {i + 1}</span>
+                  <span style={{ fontSize: 14.5, color: colors.text }}>{formatarDataBR(d.data)}</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, fontSize: 14 }}>
+                  <div><div style={fieldLabel}>Início</div><div style={{ color: colors.text, fontWeight: 500 }}>{d.hi || '-'}</div></div>
+                  <div><div style={fieldLabel}>Fim</div><div style={{ color: colors.text, fontWeight: 500 }}>{d.hf || '-'}</div></div>
+                  <div><div style={fieldLabel}>KM</div><div style={{ color: colors.text, fontWeight: 500, overflowWrap: 'anywhere' }}>{d.kmTotal || '-'}</div></div>
+                </div>
               </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px 16px', fontSize: 13 }}>
-                <div><span style={{ color: '#9CA3AF' }}>Hora início: </span><strong>{d.hi || '-'}</strong></div>
-                <div><span style={{ color: '#9CA3AF' }}>Hora fim: </span><strong>{d.hf || '-'}</strong></div>
-                <div style={{ gridColumn: '1 / -1' }}><span style={{ color: '#9CA3AF' }}>Total KM: </span><strong>{d.kmTotal || '-'}</strong></div>
-              </div>
+            ))}
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 8, marginTop: 10 }}>
+            <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: '10px 12px' }}>
+              <div style={{ fontSize: 13, color: colors.textMuted }}>Total de horas</div>
+              <div style={{ fontSize: 24, fontWeight: 500, color: colors.text, lineHeight: 1.2 }}>{(registro.TotalHora as string) || '-'}</div>
             </div>
-          ))}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 6 }}>
-            <div style={{ background: '#DBEAFE', borderRadius: 8, padding: '8px 12px', textAlign: 'center' }}>
-              <div style={{ fontSize: 10, color: '#6B7280' }}>Total Horas</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: '#1E3A5F' }}>{(registro.TotalHora as string) || '-'}</div>
-            </div>
-            <div style={{ background: '#DBEAFE', borderRadius: 8, padding: '8px 12px', textAlign: 'center' }}>
-              <div style={{ fontSize: 10, color: '#6B7280' }}>Total KM</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: '#1E3A5F' }}>{(registro.TotalKm as string) || '-'}</div>
+            <div style={{ background: colors.surfaceAlt, borderRadius: 12, padding: '10px 12px' }}>
+              <div style={{ fontSize: 13, color: colors.textMuted }}>Total de KM</div>
+              <div style={{ fontSize: 24, fontWeight: 500, color: colors.text, lineHeight: 1.2, overflowWrap: 'anywhere' }}>{(registro.TotalKm as string) || '-'}</div>
             </div>
           </div>
         </div>
@@ -430,38 +446,52 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
       {/* Peças */}
       {pecas.length > 0 && (
         <div style={sectionStyle}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>Peças</div>
-          {pecas.filter(p => !p.naoUsada).map((p, i) => (
-            <div key={i} style={{
-              background: '#F9FAFB', borderRadius: 10, padding: 12, marginBottom: 6,
-              border: '1px solid #E5E7EB', fontSize: 13,
-            }}>
-              <div style={{ fontWeight: 700, color: '#1F2937', marginBottom: 4 }}>{p.descricao}</div>
-              <div style={{ display: 'flex', gap: 16, color: '#6B7280' }}>
-                {p.codigo && <span>Cód: {p.codigo}</span>}
-                <span>Qtd: {p.qtdUsada}</span>
-                <span style={{ fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 4, background: p.origem === 'ppv' ? '#DBEAFE' : '#F3F4F6', color: p.origem === 'ppv' ? '#2563EB' : '#6B7280' }}>
-                  {p.origem === 'ppv' ? 'PPV' : 'Manual'}
-                </span>
+          {titulo(Package, 'Peças')}
+          <div style={{ display: 'grid', gap: 8 }}>
+            {pecas.filter(p => !p.naoUsada).map((p, i) => (
+              <div key={i} style={{
+                background: '#F8FAFC', borderRadius: 12, padding: 12,
+                border: `1px solid ${colors.border}`, fontSize: 13.5, minWidth: 0,
+              }}>
+                <div style={{ fontSize: 15, fontWeight: 500, color: colors.text, marginBottom: 6, overflowWrap: 'anywhere' }}>{p.descricao}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '4px 14px', color: colors.textMuted }}>
+                  {p.codigo && <span style={{ overflowWrap: 'anywhere' }}>Cód: {p.codigo}</span>}
+                  <span>Qtd: {p.qtdUsada}</span>
+                  <span style={{
+                    fontSize: 12, padding: '1px 9px', borderRadius: 999,
+                    background: p.origem === 'ppv' ? colors.primaryBg : colors.warningBg,
+                    color: p.origem === 'ppv' ? colors.primary : '#9A3412',
+                    border: `1px solid ${p.origem === 'ppv' ? colors.primaryBorder : colors.warningBorder}`,
+                  }}>
+                    {p.origem === 'ppv' ? 'PPV' : 'Manual'}
+                  </span>
+                </div>
+                {p.devolvida && <div style={{ color: '#9A3412', marginTop: 6 }}>Devolvida: {p.qtdDevolvida}</div>}
               </div>
-              {p.devolvida && <div style={{ color: '#D97706', marginTop: 4 }}>Devolvida: {p.qtdDevolvida}</div>}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 
       {/* Fotos */}
       {fotos.length > 0 && (
         <div style={sectionStyle}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>Fotos</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+          {titulo(Camera, 'Fotos')}
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 10 }}>
             {fotos.map((f, i) => (
-              <div key={i}>
-                <div style={{ fontSize: 10, color: '#6B7280', marginBottom: 4 }}>{f.label}</div>
-                <img src={f.url} alt={f.label} style={{
-                  width: '100%', borderRadius: 8, objectFit: 'cover',
-                  aspectRatio: '4/3', background: '#F3F4F6',
-                }} />
+              <div key={i} style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: colors.textMuted, marginBottom: 4 }}>{f.label}</div>
+                {/\.(mp4|mov|webm|avi|mkv|3gp)(\?|$)/i.test(f.url) ? (
+                  <video src={f.url} controls playsInline preload="metadata" style={{
+                    width: '100%', borderRadius: 12, objectFit: 'cover', display: 'block',
+                    aspectRatio: '4/3', background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
+                  }} />
+                ) : (
+                  <img src={f.url} alt={f.label} style={{
+                    width: '100%', borderRadius: 12, objectFit: 'cover', display: 'block',
+                    aspectRatio: '4/3', background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
+                  }} />
+                )}
               </div>
             ))}
           </div>
@@ -470,15 +500,17 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
 
       {/* Justificativa de Atraso */}
       {(registro.JustificativaAtraso as string) && (
-        <div style={sectionStyle}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#DC2626', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            Justificativa de Atraso
+        <div style={{ ...sectionStyle, background: colors.dangerBg, border: `1px solid ${colors.dangerBorder}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 10 }}>
+            <span style={{ width: 36, height: 36, borderRadius: 11, flexShrink: 0, background: colors.osAtrasada, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <AlertTriangle size={18} />
+            </span>
+            <span style={{ fontSize: 16, fontWeight: 500, color: '#991B1B' }}>Justificativa de atraso</span>
           </div>
           <div style={{
-            background: '#FEF2F2', borderRadius: 10, padding: 14,
-            border: '1px solid #FECACA', fontSize: 14, color: '#991B1B',
-            lineHeight: 1.6, whiteSpace: 'pre-wrap',
+            background: '#fff', borderRadius: 12, padding: 12,
+            border: `1px solid ${colors.dangerBorder}`, fontSize: 14.5, color: colors.text,
+            lineHeight: 1.55, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
           }}>
             {registro.JustificativaAtraso as string}
           </div>
@@ -488,21 +520,21 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
       {/* Assinaturas */}
       {((registro.AssCliente as string) || (registro.AssTecnico as string)) && (
         <div style={sectionStyle}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: '#1E3A5F', marginBottom: 12 }}>Assinaturas</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
-            <div>
+          {titulo(PenLine, 'Assinaturas')}
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)', gap: 12 }}>
+            <div style={{ minWidth: 0 }}>
               <div style={fieldLabel}>Cliente</div>
               {(registro.AssCliente as string) ? (
-                <img src={registro.AssCliente as string} alt="Assinatura cliente" style={{ width: '100%', borderRadius: 8, border: '1px solid #E5E7EB' }} />
-              ) : <div style={{ color: '#D1D5DB', fontSize: 13 }}>Sem assinatura</div>}
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#1F2937', marginTop: 4, textAlign: 'center' }}>{(registro.NomResp as string) || '-'}</div>
+                <img src={registro.AssCliente as string} alt="Assinatura cliente" style={{ width: '100%', borderRadius: 12, border: `1px solid ${colors.border}`, background: '#fff', display: 'block' }} />
+              ) : <div style={{ color: colors.textGhost, fontSize: 14 }}>Sem assinatura</div>}
+              <div style={{ fontSize: 13, color: colors.text, marginTop: 6, textAlign: 'center', overflowWrap: 'anywhere' }}>{(registro.NomResp as string) || '-'}</div>
             </div>
-            <div>
+            <div style={{ minWidth: 0 }}>
               <div style={fieldLabel}>Técnico</div>
               {(registro.AssTecnico as string) ? (
-                <img src={registro.AssTecnico as string} alt="Assinatura técnico" style={{ width: '100%', borderRadius: 8, border: '1px solid #E5E7EB' }} />
-              ) : <div style={{ color: '#D1D5DB', fontSize: 13 }}>Sem assinatura</div>}
-              <div style={{ fontSize: 12, fontWeight: 600, color: '#1F2937', marginTop: 4, textAlign: 'center' }}>{(registro.TecResp1 as string) || '-'}</div>
+                <img src={registro.AssTecnico as string} alt="Assinatura técnico" style={{ width: '100%', borderRadius: 12, border: `1px solid ${colors.border}`, background: '#fff', display: 'block' }} />
+              ) : <div style={{ color: colors.textGhost, fontSize: 14 }}>Sem assinatura</div>}
+              <div style={{ fontSize: 13, color: colors.text, marginTop: 6, textAlign: 'center', overflowWrap: 'anywhere' }}>{(registro.TecResp1 as string) || '-'}</div>
             </div>
           </div>
         </div>
@@ -510,38 +542,32 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
 
       {/* Carta de Correção */}
       <div style={sectionStyle}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <FileEdit size={18} color="#D97706" />
-            <span style={{ fontSize: 15, fontWeight: 700, color: '#D97706' }}>Carta de Correção</span>
-          </div>
-          {cartaSalva && (
-            <span style={{
-              fontSize: 10, fontWeight: 700, padding: '3px 8px', borderRadius: 6,
-              background: '#D1FAE5', color: '#059669',
-            }}>Enviada</span>
-          )}
-        </div>
+        {titulo(FileEdit, 'Carta de correção', colors.osPecas, cartaSalva ? (
+          <span style={{
+            fontSize: 12.5, fontWeight: 500, padding: '3px 10px', borderRadius: 999, flexShrink: 0,
+            background: colors.osFeita, color: '#fff',
+          }}>Enviada</span>
+        ) : undefined)}
 
         {cartaSalva && !mostrarCarta ? (
           <div>
             <div style={{
-              background: '#FFFBEB', borderRadius: 10, padding: 14,
-              border: '1px solid #FDE68A', fontSize: 14, color: '#92400E',
-              lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 10,
+              background: colors.warningBg, borderRadius: 12, padding: 12,
+              border: `1px solid ${colors.warningBorder}`, fontSize: 14.5, color: colors.text,
+              lineHeight: 1.55, whiteSpace: 'pre-wrap', marginBottom: 10, overflowWrap: 'anywhere',
             }}>
               {cartaSalva}
             </div>
             <button type="button" onClick={() => setMostrarCarta(true)} style={{
-              fontSize: 13, color: '#D97706', background: 'none', border: 'none',
-              cursor: 'pointer', fontWeight: 600, padding: 0,
+              fontSize: 15, color: colors.primary, background: 'none', border: 'none',
+              cursor: 'pointer', fontWeight: 500, padding: '6px 0',
             }}>
               Editar carta
             </button>
           </div>
         ) : (
           <div>
-            <p style={{ fontSize: 12, color: '#6B7280', marginBottom: 10 }}>
+            <p style={{ fontSize: 14, color: colors.textMuted, margin: '0 0 10px', lineHeight: 1.45 }}>
               Se precisar corrigir alguma informação do relatório, descreva aqui. A carta ficará anexada junto ao relatório no portal.
             </p>
             <textarea
@@ -549,47 +575,48 @@ export default function OsEnviadaDetalhe({ params }: { params: Promise<{ id: str
               onChange={(e) => setCartaCorrecao(e.target.value)}
               placeholder="Descreva a correção necessária..."
               rows={4}
+              className="ose-campo"
               style={{
                 width: '100%', padding: '12px 14px', borderRadius: 12,
-                border: '2px solid #FDE68A', fontSize: 14, outline: 'none',
-                background: '#FFFBEB', boxSizing: 'border-box', resize: 'vertical',
+                border: `1px solid ${colors.border}`, fontSize: 16, outline: 'none', color: colors.text,
+                background: '#fff', boxSizing: 'border-box', resize: 'vertical',
                 lineHeight: 1.5,
               }}
             />
             <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
               {cartaSalva && (
                 <button type="button" onClick={() => { setMostrarCarta(false); setCartaCorrecao(cartaSalva) }} style={{
-                  flex: 1, padding: '12px 0', borderRadius: 10,
-                  background: '#F3F4F6', color: '#6B7280', border: 'none',
-                  fontSize: 14, fontWeight: 700, cursor: 'pointer',
+                  flex: 1, minHeight: 46, borderRadius: 12,
+                  background: '#fff', color: colors.text, border: `1px solid ${colors.border}`,
+                  fontSize: 15, fontWeight: 500, cursor: 'pointer',
                 }}>
                   Cancelar
                 </button>
               )}
               <button type="button" onClick={salvarCartaCorrecao} disabled={salvandoCarta || !cartaCorrecao.trim()} style={{
-                flex: 1, padding: '12px 0', borderRadius: 10,
-                background: !cartaCorrecao.trim() ? '#E5E7EB' : '#D97706', color: '#fff', border: 'none',
-                fontSize: 14, fontWeight: 700, cursor: salvandoCarta ? 'wait' : 'pointer',
+                flex: 1, minHeight: 46, borderRadius: 12,
+                background: !cartaCorrecao.trim() ? colors.textGhost : colors.primary, color: '#fff', border: 'none',
+                fontSize: 15, fontWeight: 500, cursor: salvandoCarta ? 'wait' : 'pointer',
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                 opacity: salvandoCarta ? 0.7 : 1,
               }}>
                 <Send size={16} />
-                {salvandoCarta ? 'Enviando...' : 'Enviar Carta'}
+                {salvandoCarta ? 'Enviando...' : 'Enviar carta'}
               </button>
             </div>
           </div>
         )}
       </div>
 
-      {/* Botão PDF fixo no final */}
+      {/* Botão PDF no final */}
       <button onClick={handleGerarPdf} disabled={gerandoPdf} style={{
-        width: '100%', padding: '16px 0', borderRadius: 14,
-        background: '#C41E2A', color: '#fff', border: 'none',
-        fontSize: 16, fontWeight: 700, cursor: gerandoPdf ? 'not-allowed' : 'pointer',
+        width: '100%', minHeight: 48, borderRadius: 12,
+        background: gerandoPdf ? colors.textGhost : colors.primary, color: '#fff', border: 'none',
+        fontSize: 16, fontWeight: 500, cursor: gerandoPdf ? 'not-allowed' : 'pointer',
         display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
-        marginTop: 8, marginBottom: 20,
+        marginTop: 4, marginBottom: 20,
       }}>
-        {gerandoPdf ? <Loader2 size={20} className="spinner" /> : <FileDown size={20} />}
+        {gerandoPdf ? <Loader2 size={20} className="spin" /> : <FileDown size={20} />}
         {gerandoPdf ? 'Gerando PDF...' : 'Baixar PDF'}
       </button>
     </div>

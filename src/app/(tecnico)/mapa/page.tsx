@@ -72,6 +72,10 @@ export default function MapaPage() {
   const leafletRef = useRef<any>(null)
   const infracaoMarkerRef = useRef<any>(null)
   const rotaHistoricaRef = useRef<any>(null)
+  // mapa pronto (instância viva no div atual) e se já fez o enquadramento inicial (José, 23/10/2026):
+  // o fitBounds rodava a cada 60 s e desfazia o zoom; offline/"Tentar novamente" deixava o mapa cinza
+  const [mapReady, setMapReady] = useState(false)
+  const ajustouRef = useRef(false)
 
   // Deep-link: ?placa=X&data=YYYY-MM-DD&infracao=lat,lng — vem do relatório
   const searchParams = useSearchParams()
@@ -205,9 +209,23 @@ export default function MapaPage() {
     setLoadingRota(false)
   }, [rotaVeiculoId])
 
+  // Sem internet ou carregando, o div do mapa sai da tela: destrói a instância para recriar no div novo
+  useEffect(() => {
+    if (!(offline || loading) || !mapInstanceRef.current) return
+    mapInstanceRef.current.remove()
+    mapInstanceRef.current = null
+    markersRef.current = []
+    clienteMarkersRef.current = []
+    infracaoMarkerRef.current = null
+    rotaHistoricaRef.current = null
+    rotaLayerRef.current = null
+    ajustouRef.current = false
+    setMapReady(false)
+  }, [offline, loading])
+
   // Renderizar mapa
   useEffect(() => {
-    if (!mapRef.current || veiculos.length === 0) return
+    if (!mapRef.current || veiculos.length === 0 || offline || loading) return
 
     import('leaflet').then((L) => {
       if (!mapRef.current) return
@@ -220,6 +238,7 @@ export default function MapaPage() {
         }).addTo(map)
         L.control.zoom({ position: 'bottomright' }).addTo(map)
         mapInstanceRef.current = map
+        setMapReady(true)
       }
 
       const map = mapInstanceRef.current
@@ -268,12 +287,13 @@ export default function MapaPage() {
         markersRef.current.push(marker)
       })
 
-      if (bounds.length > 0 && !(markersRef.current as any)._fitted) {
-        map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 })
-        ;(markersRef.current as any)._fitted = true
+      // enquadra só na primeira vez (e não por cima do link de infração)
+      if (bounds.length > 0 && !ajustouRef.current) {
+        if (!deeplink) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 13 })
+        ajustouRef.current = true
       }
     })
-  }, [veiculos, rotaVeiculoId])
+  }, [veiculos, rotaVeiculoId, offline, loading, deeplink])
 
   // Renderizar clientes no mapa
   useEffect(() => {
@@ -309,7 +329,7 @@ export default function MapaPage() {
 
       clienteMarkersRef.current.push(marker)
     })
-  }, [clientes, showClientes])
+  }, [clientes, showClientes, mapReady])
 
   useEffect(() => {
     return () => {
@@ -358,7 +378,7 @@ export default function MapaPage() {
         infracaoMarkerRef.current = null
       }
     }
-  }, [deeplink, veiculos])
+  }, [deeplink, mapReady])
 
   // Deep-link com placa + data: carrega rota histórica + todas as infrações do dia
   useEffect(() => {
@@ -444,7 +464,7 @@ export default function MapaPage() {
         rotaHistoricaRef.current = null
       }
     }
-  }, [deeplink, veiculos])
+  }, [deeplink, mapReady])
 
   // Listas filtradas
   const tecnicos = [...new Map(
@@ -467,25 +487,50 @@ export default function MapaPage() {
     c.cidade.toLowerCase().includes(buscaLower)
   )
 
+  // Estilo POS NewPortal (22/10/2026): só a casca (cabeçalho, painéis, botões). O mapa Leaflet não mudou.
+  const botaoTopo = (ativo: boolean): React.CSSProperties => ({
+    background: ativo ? colors.primary : colors.surface,
+    border: `1px solid ${ativo ? colors.primary : colors.border}`,
+    borderRadius: 11, height: 36, padding: '0 10px', cursor: 'pointer', flexShrink: 0,
+    display: 'flex', alignItems: 'center', gap: 5, fontSize: 13, fontWeight: 500,
+    color: ativo ? '#fff' : colors.textMuted,
+  })
+  const linhaLista: React.CSSProperties = {
+    display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
+    background: colors.surface, borderRadius: 14, border: `1px solid ${colors.border}`,
+    cursor: 'pointer', textAlign: 'left', width: '100%', minWidth: 0,
+  }
+  const vazio: React.CSSProperties = { textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 14 }
+  const folha: React.CSSProperties = {
+    position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 1000,
+    background: colors.surface, borderRadius: '20px 20px 0 0',
+    borderTop: `1px solid ${colors.border}`,
+    boxShadow: '0 -12px 30px -18px rgba(15,23,42,0.45)',
+  }
+  const caixaNumero: React.CSSProperties = {
+    flex: 1, minWidth: 0, background: colors.surfaceAlt, borderRadius: 12, padding: '8px 10px',
+    border: `1px solid ${colors.border}`,
+  }
+
   if (offline) {
     return (
       <div style={{
         display: 'flex', flexDirection: 'column', alignItems: 'center',
-        justifyContent: 'center', minHeight: '60vh', gap: 16, padding: 32, textAlign: 'center',
+        justifyContent: 'center', minHeight: '60vh', gap: 14, padding: 32, textAlign: 'center',
       }}>
-        <div style={{ width: 72, height: 72, borderRadius: '50%', background: colors.warningBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <WifiOff size={32} color={colors.warning} />
+        <div style={{ width: 56, height: 56, borderRadius: 16, background: colors.warning, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <WifiOff size={26} color="#fff" />
         </div>
-        <div style={{ fontSize: 18, fontWeight: 700, color: colors.text }}>Sem conexao</div>
-        <div style={{ fontSize: 14, color: colors.textMuted, lineHeight: 1.6 }}>O mapa precisa de internet.</div>
+        <div style={{ fontSize: 18, fontWeight: 500, color: colors.text }}>Sem conexao</div>
+        <div style={{ fontSize: 14, color: colors.textMuted, lineHeight: 1.5 }}>O mapa precisa de internet.</div>
         <button onClick={() => carregarVeiculos()} style={{
-          marginTop: 8, padding: '12px 24px', borderRadius: 12,
+          marginTop: 6, height: 46, padding: '0 22px', borderRadius: 12,
           background: colors.primary, color: '#fff', border: 'none',
-          fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
+          fontSize: 15, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 8,
         }}>
           <RefreshCw size={16} /> Tentar novamente
         </button>
-        <Link href="/" style={{ fontSize: 13, color: colors.textSubtle, marginTop: 8 }}>Voltar</Link>
+        <Link href="/" style={{ fontSize: 14, color: colors.primary, marginTop: 6, textDecoration: 'none' }}>Voltar</Link>
       </div>
     )
   }
@@ -496,80 +541,66 @@ export default function MapaPage() {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 0, margin: -16 }}>
       {/* Header */}
       <div style={{
-        padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '10px 12px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
         background: colors.surface, borderBottom: `1px solid ${colors.border}`, zIndex: 500,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <Link href="/" style={{
-            width: 34, height: 34, borderRadius: 10,
-            background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+          <Link href="/" aria-label="voltar" style={{
+            width: 36, height: 36, borderRadius: 11, flexShrink: 0,
+            background: colors.surface, border: `1px solid ${colors.border}`,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: colors.textSubtle, textDecoration: 'none',
+            color: colors.text, textDecoration: 'none',
           }}>
-            <ArrowLeft size={16} />
+            <ArrowLeft size={17} />
           </Link>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: colors.text }}>Mapa de Veiculos</div>
-            <div style={{ fontSize: 10, color: colors.textMuted }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 16, fontWeight: 500, color: colors.text, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Mapa de veiculos</div>
+            <div style={{ fontSize: 12, color: colors.textMuted, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
               {veiculos.length} veiculo{veiculos.length !== 1 ? 's' : ''} · {tecnicos.length} tecnico{tecnicos.length !== 1 ? 's' : ''} · {clientes.length} cliente{clientes.length !== 1 ? 's' : ''}
             </div>
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button onClick={() => setShowClientes(!showClientes)} style={{
-            background: showClientes ? '#3B82F6' : colors.surfaceAlt,
-            border: `1px solid ${showClientes ? '#3B82F6' : colors.border}`,
-            borderRadius: 10, padding: '7px 10px', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600,
-            color: showClientes ? '#fff' : colors.textSubtle,
-          }}>
-            <MapPin size={14} /> Clientes
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+          <button onClick={() => setShowClientes(!showClientes)} aria-label="clientes" style={botaoTopo(showClientes)}>
+            <MapPin size={15} /> Clientes
           </button>
-          <button onClick={() => { setPainelAberto(!painelAberto); setSelectedVeiculo(null) }} style={{
-            background: painelAberto ? colors.primary : colors.surfaceAlt,
-            border: `1px solid ${painelAberto ? colors.primary : colors.border}`,
-            borderRadius: 10, padding: '7px 10px', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 5, fontSize: 12, fontWeight: 600,
-            color: painelAberto ? '#fff' : colors.textSubtle,
-          }}>
-            <Search size={14} /> Buscar
+          <button onClick={() => { setPainelAberto(!painelAberto); setSelectedVeiculo(null) }} aria-label="buscar" style={{ ...botaoTopo(painelAberto), width: 36, padding: 0, justifyContent: 'center' }}>
+            <Search size={16} />
           </button>
-          <button onClick={() => carregarVeiculos(true)} disabled={refreshing} style={{
-            background: colors.surfaceAlt, border: `1px solid ${colors.border}`,
-            borderRadius: 10, padding: '7px 10px', cursor: 'pointer',
-            display: 'flex', alignItems: 'center', fontSize: 12, fontWeight: 600, color: colors.textSubtle,
-          }}>
-            <RefreshCw size={14} className={refreshing ? 'spinner' : ''} />
+          <button onClick={() => carregarVeiculos(true)} disabled={refreshing} aria-label="atualizar" style={{ ...botaoTopo(false), width: 36, padding: 0, justifyContent: 'center' }}>
+            <RefreshCw size={15} className={refreshing ? 'spinner' : ''} />
           </button>
         </div>
       </div>
 
       {erro && (
-        <div style={{ padding: '8px 16px', background: colors.dangerBg, color: colors.danger, fontSize: 12, fontWeight: 600, textAlign: 'center' }}>
+        <div style={{ padding: '8px 16px', background: colors.dangerBg, color: colors.danger, fontSize: 13, textAlign: 'center', borderBottom: `1px solid ${colors.dangerBorder}` }}>
           {erro}
         </div>
       )}
 
       {deeplink && (
         <div style={{
-          padding: '10px 16px', background: colors.dangerBg,
+          padding: '10px 12px', background: colors.dangerBg,
           borderBottom: `1px solid ${colors.dangerBorder}`,
           display: 'flex', alignItems: 'center', gap: 10,
         }}>
-          <AlertTriangle size={16} color={colors.danger} style={{ flexShrink: 0 }} />
+          <div style={{ width: 36, height: 36, borderRadius: 11, background: colors.danger, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <AlertTriangle size={17} color="#fff" />
+          </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: colors.danger }}>
+            <div style={{ fontSize: 14, fontWeight: 500, color: colors.danger }}>
               Visualizando infração
             </div>
-            <div style={{ fontSize: 11, color: colors.textMuted }}>
+            <div style={{ fontSize: 12.5, color: colors.textMuted }}>
               {deeplink.placa && `Placa ${deeplink.placa}`}
               {deeplink.data && ` · ${new Date(deeplink.data + 'T00:00:00').toLocaleDateString('pt-BR')}`}
             </div>
           </div>
-          <Link href="/relatorios" style={{
-            fontSize: 11, fontWeight: 700, color: colors.danger,
-            background: '#fff', padding: '5px 10px', borderRadius: 8,
-            border: `1px solid ${colors.dangerBorder}`, textDecoration: 'none',
+          <Link href="/" style={{
+            fontSize: 13, fontWeight: 500, color: colors.text,
+            background: colors.surface, padding: '6px 12px', borderRadius: 10,
+            border: `1px solid ${colors.border}`, textDecoration: 'none',
             flexShrink: 0,
           }}>
             Voltar
@@ -578,28 +609,22 @@ export default function MapaPage() {
       )}
 
       {/* Mapa */}
-      <div ref={mapRef} style={{ width: '100%', height: 'calc(100vh - 160px)', minHeight: 400 }} />
+      <div ref={mapRef} style={{ width: '100%', height: 'calc(100dvh - 160px)', minHeight: 400 }} />
 
       {/* Painel de Busca */}
       {painelAberto && (
-        <div style={{
-          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 1000,
-          background: '#fff', borderRadius: '16px 16px 0 0',
-          boxShadow: '0 -4px 20px rgba(0,0,0,0.15)',
-          maxHeight: '55vh', display: 'flex', flexDirection: 'column',
-        }}>
-          <div style={{ padding: '12px 16px 0', flexShrink: 0 }}>
-            <div style={{ width: 36, height: 4, borderRadius: 2, background: '#D1D5DB', margin: '0 auto 10px' }} />
+        <div style={{ ...folha, maxHeight: '55vh', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ padding: '10px 14px 0', flexShrink: 0 }}>
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: colors.borderStrong, margin: '0 auto 10px' }} />
 
             {/* Tabs */}
-            <div style={{ display: 'flex', gap: 0, marginBottom: 10, background: colors.surfaceAlt, borderRadius: 10, padding: 3 }}>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 10, background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 14, padding: 4 }}>
               {(['tecnicos', 'veiculos', 'clientes'] as const).map((tab) => (
                 <button key={tab} onClick={() => setAbaAtiva(tab)} style={{
-                  flex: 1, padding: '8px 0', borderRadius: 8, border: 'none', cursor: 'pointer',
-                  fontSize: 12, fontWeight: 700,
-                  background: abaAtiva === tab ? '#fff' : 'transparent',
+                  flex: 1, minWidth: 0, padding: '8px 0', borderRadius: 10, border: 'none', cursor: 'pointer',
+                  fontSize: 13, fontWeight: abaAtiva === tab ? 500 : 400,
+                  background: abaAtiva === tab ? colors.primaryBg : 'transparent',
                   color: abaAtiva === tab ? colors.primary : colors.textSubtle,
-                  boxShadow: abaAtiva === tab ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
                 }}>
                   {tab === 'tecnicos' ? `Tec (${tecnicos.length})` : tab === 'veiculos' ? `Veic (${veiculos.length})` : `Cli (${clientes.length})`}
                 </button>
@@ -607,33 +632,35 @@ export default function MapaPage() {
             </div>
 
             {/* Busca */}
-            <div style={{ position: 'relative', marginBottom: 8 }}>
-              <Search size={14} color={colors.textSubtle} style={{ position: 'absolute', left: 12, top: 10 }} />
+            <div style={{ position: 'relative', marginBottom: 10 }}>
+              <Search size={16} color={colors.textSubtle} style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)' }} />
               <input
                 value={busca}
                 onChange={(e) => setBusca(e.target.value)}
                 placeholder={abaAtiva === 'tecnicos' ? 'Buscar tecnico...' : 'Buscar placa...'}
+                onFocus={e => { e.currentTarget.style.borderColor = '#38BDF8' }}
+                onBlur={e => { e.currentTarget.style.borderColor = colors.border }}
                 style={{
-                  width: '100%', padding: '9px 12px 9px 34px', borderRadius: 10,
-                  border: `1.5px solid ${colors.border}`, fontSize: 13, outline: 'none',
-                  background: '#FAFAFA', boxSizing: 'border-box',
+                  width: '100%', height: 44, padding: '0 38px 0 38px', borderRadius: 12,
+                  border: `1px solid ${colors.border}`, fontSize: 15, outline: 'none', color: colors.text,
+                  background: colors.surface, boxSizing: 'border-box',
                 }}
               />
               {busca && (
-                <button onClick={() => setBusca('')} style={{
-                  position: 'absolute', right: 10, top: 8, background: 'none', border: 'none', cursor: 'pointer',
+                <button onClick={() => setBusca('')} aria-label="limpar" style={{
+                  position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex',
                 }}>
-                  <X size={14} color={colors.textSubtle} />
+                  <X size={16} color={colors.textSubtle} />
                 </button>
               )}
             </div>
           </div>
 
           {/* Lista */}
-          <div style={{ flex: 1, overflow: 'auto', padding: '0 12px 16px' }}>
+          <div style={{ flex: 1, overflow: 'auto', padding: '0 14px 16px' }}>
             {abaAtiva === 'clientes' ? (
               clientesFiltrados.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 13 }}>
+                <div style={vazio}>
                   {clientes.length === 0 ? 'Carregando clientes...' : 'Nenhum resultado'}
                 </div>
               ) : (
@@ -645,27 +672,23 @@ export default function MapaPage() {
                         setPainelAberto(false)
                         if (!showClientes) setShowClientes(true)
                       }
-                    }} style={{
-                      display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
-                      background: '#fff', borderRadius: 12, border: `1px solid ${colors.border}`,
-                      cursor: 'pointer', textAlign: 'left', width: '100%',
-                    }}>
+                    }} style={linhaLista}>
                       <div style={{
-                        width: 38, height: 38, borderRadius: 12,
-                        background: '#DBEAFE', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                        width: 38, height: 38, borderRadius: 11,
+                        background: colors.infoBg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                       }}>
-                        <MapPin size={18} color="#3B82F6" />
+                        <MapPin size={18} color={colors.info} />
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 14, fontWeight: 700, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.nome}</div>
-                        <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+                        <div style={{ fontSize: 15, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.nome}</div>
+                        <div style={{ fontSize: 12.5, color: colors.textMuted, marginTop: 1 }}>
                           {c.cidade}{c.estado ? ` - ${c.estado}` : ''}
                         </div>
                       </div>
                     </button>
                   ))}
                   {clientesFiltrados.length > 50 && (
-                    <div style={{ textAlign: 'center', padding: 8, color: colors.textSubtle, fontSize: 11 }}>
+                    <div style={{ textAlign: 'center', padding: 8, color: colors.textSubtle, fontSize: 12.5 }}>
                       Mostrando 50 de {clientesFiltrados.length} — use a busca para filtrar
                     </div>
                   )}
@@ -673,7 +696,7 @@ export default function MapaPage() {
               )
             ) : abaAtiva === 'tecnicos' ? (
               tecnicosFiltrados.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 13 }}>
+                <div style={vazio}>
                   {tecnicos.length === 0 ? 'Nenhum tecnico com check-in hoje' : 'Nenhum resultado'}
                 </div>
               ) : (
@@ -682,23 +705,19 @@ export default function MapaPage() {
                     const isOn = v.ignicao === 1
                     const isMoving = v.velocidade > 0
                     return (
-                      <button key={v.motorista} onClick={() => focarTecnico(v.motorista)} style={{
-                        display: 'flex', alignItems: 'center', gap: 12, padding: '10px 12px',
-                        background: '#fff', borderRadius: 12, border: `1px solid ${colors.border}`,
-                        cursor: 'pointer', textAlign: 'left', width: '100%',
-                      }}>
+                      <button key={v.motorista} onClick={() => focarTecnico(v.motorista)} style={linhaLista}>
                         <div style={{
-                          width: 38, height: 38, borderRadius: 12,
-                          background: colors.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                          width: 38, height: 38, borderRadius: 11,
+                          background: colors.primaryBg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                         }}>
-                          <User size={18} color={colors.accent} />
+                          <User size={18} color={colors.primary} />
                         </div>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>{v.motorista}</div>
-                          <div style={{ fontSize: 11, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
-                            <Car size={11} /> {v.placa}
-                            <span style={{ color: colors.border }}>|</span>
-                            {v.cliente || 'Sem destino'}
+                          <div style={{ fontSize: 15, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.motorista}</div>
+                          <div style={{ fontSize: 12.5, color: colors.textMuted, display: 'flex', alignItems: 'center', gap: 6, marginTop: 1, minWidth: 0 }}>
+                            <Car size={12} style={{ flexShrink: 0 }} /> {v.placa}
+                            <span style={{ color: colors.borderStrong }}>|</span>
+                            <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.cliente || 'Sem destino'}</span>
                           </div>
                         </div>
                         <div style={{
@@ -712,7 +731,7 @@ export default function MapaPage() {
               )
             ) : (
               veiculosFiltrados.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: 20, color: colors.textMuted, fontSize: 13 }}>Nenhum resultado</div>
+                <div style={vazio}>Nenhum resultado</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {veiculosFiltrados.map((v) => {
@@ -722,38 +741,39 @@ export default function MapaPage() {
                     return (
                       <div key={v.id} style={{
                         display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-                        background: temRota ? colors.accentBg : '#fff', borderRadius: 12,
-                        border: `1px solid ${temRota ? colors.accent : colors.border}`,
+                        background: temRota ? colors.primaryBg : colors.surface, borderRadius: 14,
+                        border: `1px solid ${temRota ? colors.primaryBorder : colors.border}`, minWidth: 0,
                       }}>
                         <button onClick={() => focarVeiculo(v)} style={{
-                          display: 'flex', alignItems: 'center', gap: 10, flex: 1,
+                          display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0,
                           background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left', padding: 0,
                         }}>
                           <div style={{
-                            width: 38, height: 38, borderRadius: 12, flexShrink: 0,
-                            background: isOn ? (isMoving ? colors.successBg : colors.warningBg) : colors.surfaceAlt,
+                            width: 38, height: 38, borderRadius: 11, flexShrink: 0,
+                            background: isOn ? (isMoving ? colors.successBg : colors.warningBg) : colors.accentBg,
                             display: 'flex', alignItems: 'center', justifyContent: 'center',
                           }}>
                             <Car size={18} color={isOn ? (isMoving ? colors.success : colors.warning) : colors.textSubtle} />
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>{v.placa}</div>
-                            <div style={{ fontSize: 11, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <div style={{ fontSize: 15, fontWeight: 500, color: colors.text }}>{v.placa}</div>
+                            <div style={{ fontSize: 12.5, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {v.motorista || v.descricao || v.modelo || 'Sem motorista'}
                               {v.cliente ? ` · ${v.cliente}` : ''}
                             </div>
                           </div>
                         </button>
                         <button onClick={() => carregarRota(v)} disabled={loadingRota && rotaVeiculoId !== v.id} style={{
-                          padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                          background: temRota ? colors.accent : colors.surfaceAlt,
-                          color: temRota ? '#fff' : colors.textSubtle,
-                          fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
+                          height: 34, padding: '0 10px', borderRadius: 10, cursor: 'pointer',
+                          border: `1px solid ${temRota ? colors.primary : colors.border}`,
+                          background: temRota ? colors.primary : colors.surface,
+                          color: temRota ? '#fff' : colors.primary,
+                          fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0,
                         }}>
                           {loadingRota && rotaVeiculoId === v.id ? (
-                            <Loader2 size={12} className="spinner" />
+                            <Loader2 size={13} className="spinner" />
                           ) : (
-                            <><Route size={12} /> {temRota ? 'Ocultar' : 'Rota'}</>
+                            <><Route size={13} /> {temRota ? 'Ocultar' : 'Rota'}</>
                           )}
                         </button>
                       </div>
@@ -768,54 +788,52 @@ export default function MapaPage() {
 
       {/* Painel do veiculo selecionado */}
       {selectedVeiculo && !painelAberto && (
-        <div style={{
-          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 1000,
-          background: '#fff', borderRadius: '16px 16px 0 0', padding: '14px 20px 22px',
-          boxShadow: '0 -4px 20px rgba(0,0,0,0.15)',
-        }}>
-          <div style={{ width: 36, height: 4, borderRadius: 2, background: '#D1D5DB', margin: '0 auto 10px' }} />
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ ...folha, padding: '10px 16px 22px' }}>
+          <div style={{ width: 36, height: 4, borderRadius: 2, background: colors.borderStrong, margin: '0 auto 10px' }} />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
               <div style={{
-                width: 44, height: 44, borderRadius: 14,
-                background: selectedVeiculo.ignicao ? (selectedVeiculo.velocidade > 0 ? colors.successBg : colors.warningBg) : colors.surfaceAlt,
+                width: 44, height: 44, borderRadius: 11, flexShrink: 0,
+                background: selectedVeiculo.ignicao ? (selectedVeiculo.velocidade > 0 ? colors.success : colors.warning) : colors.textSubtle,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
-                <Car size={22} color={selectedVeiculo.ignicao ? (selectedVeiculo.velocidade > 0 ? colors.success : colors.warning) : colors.textSubtle} />
+                <Car size={22} color="#fff" />
               </div>
-              <div>
-                <div style={{ fontSize: 16, fontWeight: 800, color: colors.text }}>{selectedVeiculo.placa}</div>
-                <div style={{ fontSize: 11, color: colors.textMuted }}>{selectedVeiculo.descricao || selectedVeiculo.modelo}</div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 17, fontWeight: 500, color: colors.text }}>{selectedVeiculo.placa}</div>
+                <div style={{ fontSize: 12.5, color: colors.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selectedVeiculo.descricao || selectedVeiculo.modelo}</div>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
               <button onClick={() => carregarRota(selectedVeiculo)} style={{
-                padding: '6px 10px', borderRadius: 8, border: 'none', cursor: 'pointer',
-                background: rotaVeiculoId === selectedVeiculo.id ? colors.accent : colors.surfaceAlt,
-                color: rotaVeiculoId === selectedVeiculo.id ? '#fff' : colors.textSubtle,
-                fontSize: 11, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 4,
+                height: 36, padding: '0 11px', borderRadius: 11, cursor: 'pointer',
+                border: `1px solid ${rotaVeiculoId === selectedVeiculo.id ? colors.primary : colors.border}`,
+                background: rotaVeiculoId === selectedVeiculo.id ? colors.primary : colors.surface,
+                color: rotaVeiculoId === selectedVeiculo.id ? '#fff' : colors.primary,
+                fontSize: 13, fontWeight: 500, display: 'flex', alignItems: 'center', gap: 5,
               }}>
-                {loadingRota ? <Loader2 size={12} className="spinner" /> : <Route size={12} />}
+                {loadingRota ? <Loader2 size={13} className="spinner" /> : <Route size={13} />}
                 {rotaVeiculoId === selectedVeiculo.id ? 'Ocultar rota' : 'Ver rota'}
               </button>
-              <button onClick={() => setSelectedVeiculo(null)} style={{
-                background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: colors.textSubtle, padding: 4,
-              }}>x</button>
+              <button onClick={() => setSelectedVeiculo(null)} aria-label="fechar" style={{
+                width: 36, height: 36, borderRadius: 11, border: `1px solid ${colors.border}`, background: colors.surface,
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 0,
+              }}><X size={17} color={colors.textMuted} /></button>
             </div>
           </div>
 
           {(selectedVeiculo.motorista || selectedVeiculo.cliente) && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 10 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 12 }}>
               {selectedVeiculo.motorista && (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <User size={13} color={colors.primary} />
-                  <span style={{ fontSize: 13, fontWeight: 700, color: colors.text }}>{selectedVeiculo.motorista}</span>
+                  <User size={14} color={colors.primary} />
+                  <span style={{ fontSize: 14, fontWeight: 500, color: colors.text }}>{selectedVeiculo.motorista}</span>
                 </div>
               )}
               {selectedVeiculo.cliente && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <Briefcase size={13} color={colors.accent} />
-                  <span style={{ fontSize: 12, fontWeight: 600, color: colors.textMuted }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <Briefcase size={14} color={colors.textMuted} style={{ flexShrink: 0 }} />
+                  <span style={{ fontSize: 13.5, color: colors.textMuted, overflowWrap: 'anywhere' }}>
                     {selectedVeiculo.id_ordem && selectedVeiculo.id_ordem !== 'OFICINA' ? `OS ${selectedVeiculo.id_ordem} - ` : ''}
                     {selectedVeiculo.cliente}
                   </span>
@@ -824,35 +842,26 @@ export default function MapaPage() {
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-            <div style={{
-              flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '8px 10px',
-              textAlign: 'center', border: `1px solid ${colors.border}`,
-            }}>
-              <div style={{ fontSize: 16, fontWeight: 800, color: selectedVeiculo.ignicao ? colors.success : colors.textSubtle }}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <div style={caixaNumero}>
+              <div style={{ fontSize: 12, color: colors.textMuted }}>Ignicao</div>
+              <div style={{ fontSize: 15, fontWeight: 500, color: selectedVeiculo.ignicao ? colors.success : colors.textSubtle, marginTop: 2 }}>
                 {selectedVeiculo.ignicao ? 'Ligado' : 'Desligado'}
               </div>
-              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Ignicao</div>
             </div>
-            <div style={{
-              flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '8px 10px',
-              textAlign: 'center', border: `1px solid ${colors.border}`,
-            }}>
-              <div style={{ fontSize: 16, fontWeight: 800, color: selectedVeiculo.velocidade > 0 ? colors.primary : colors.textSubtle }}>
+            <div style={caixaNumero}>
+              <div style={{ fontSize: 12, color: colors.textMuted }}>Velocidade</div>
+              <div style={{ fontSize: 15, fontWeight: 500, color: selectedVeiculo.velocidade > 0 ? colors.info : colors.textSubtle, marginTop: 2 }}>
                 {selectedVeiculo.velocidade} km/h
               </div>
-              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Velocidade</div>
             </div>
-            <div style={{
-              flex: 1, background: colors.surfaceAlt, borderRadius: 10, padding: '8px 10px',
-              textAlign: 'center', border: `1px solid ${colors.border}`,
-            }}>
-              <div style={{ fontSize: 14, fontWeight: 800, color: colors.textSubtle }}>
+            <div style={caixaNumero}>
+              <div style={{ fontSize: 12, color: colors.textMuted }}>Ultima pos.</div>
+              <div style={{ fontSize: 15, fontWeight: 500, color: colors.text, marginTop: 2 }}>
                 {selectedVeiculo.dt_posicao
                   ? new Date(selectedVeiculo.dt_posicao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
                   : '--'}
               </div>
-              <div style={{ fontSize: 9, color: colors.textMuted, marginTop: 2 }}>Ultima pos.</div>
             </div>
           </div>
         </div>

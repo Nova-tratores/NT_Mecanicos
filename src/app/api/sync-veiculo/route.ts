@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
+import { exigirUsuario, nomeDoUsuario } from '@/lib/apiAuth'
 
 const API_URL = process.env.ROTAEXATA_API_URL || 'https://api.rotaexata.com.br'
 const EMAIL = process.env.ROTAEXATA_EMAIL || ''
@@ -38,8 +39,13 @@ async function getToken(): Promise<string> {
  * placa vem no formato "MONTANA - FHY8D25" ou "FHY8D25"
  */
 export async function POST(req: NextRequest) {
+  // só o próprio técnico logado troca o carro dele (José, 23/10/2026): o nome da tela vale só se for um dos dele
+  const u = await exigirUsuario(req)
+  if (u instanceof NextResponse) return u
   try {
-    const { tecnico_nome, placa: placaRaw } = await req.json()
+    const body = await req.json()
+    const placaRaw = body.placa
+    const tecnico_nome = nomeDoUsuario(u, body.tecnico_nome)
     if (!tecnico_nome || !placaRaw) {
       return NextResponse.json({ error: 'tecnico_nome e placa obrigatorios' }, { status: 400 })
     }

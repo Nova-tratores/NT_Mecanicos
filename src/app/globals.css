@@ -1,14 +1,15 @@
 @import "tailwindcss";
 
+/* Estilo POS NewPortal (22/10/2026): azul do portal, fundo cinza-azulado, texto escuro */
 :root {
-  --primary: #C41E2A;
-  --primary-light: #E02D3A;
-  --accent: #1E3A5F;
-  --surface: #FFFFFF;
-  --surface-alt: #F8F9FA;
-  --border: #E5E7EB;
-  --text: #1F2937;
-  --text-light: #6B7280;
+  --primary: #0369A1;
+  --primary-light: #0EA5E9;
+  --accent: #0F172A;
+  --surface: #FEFEFE;
+  --surface-alt: #EEF2F6;
+  --border: #E2E8F0;
+  --text: #0F172A;
+  --text-light: #475569;
   --success: #10B981;
   --warning: #F59E0B;
   --danger: #EF4444;
@@ -30,6 +31,14 @@ body {
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
 }
+
+/* Sem negrito e sem CAIXA ALTA no app inteiro (o estilo escrito na própria tela também — o React grava
+   "font-weight:700" sem espaço). Ícones (svg do lucide) não usam font-weight. */
+b, strong, h1, h2, h3, h4, th, label { font-weight: 500; }
+[style*="font-weight:6"], [style*="font-weight:7"], [style*="font-weight:8"], [style*="font-weight:9"],
+[style*="font-weight: 6"], [style*="font-weight: 7"], [style*="font-weight: 8"], [style*="font-weight: 9"] { font-weight: 500 !important; }
+[style*="text-transform:uppercase"], [style*="text-transform: uppercase"] { text-transform: none !important; letter-spacing: 0 !important; }
+input, select, textarea, button { font-family: inherit; }
 
 /* Mobile-first utilities */
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0); }
@@ -66,7 +75,7 @@ body {
   right: 0;
   height: 3px;
   z-index: 45;
-  background: linear-gradient(90deg, transparent, #C41E2A, #E02D3A, #C41E2A, transparent);
+  background: linear-gradient(90deg, transparent, #0369A1, #38BDF8, #0369A1, transparent);
   background-size: 200% 100%;
   animation: refresh-slide 1.2s ease-in-out infinite;
 }

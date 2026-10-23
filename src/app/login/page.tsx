@@ -2,6 +2,7 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import { limparDadosDoAparelho } from '@/lib/sessao'
 import Image from 'next/image'
 
 export default function LoginPage() {
@@ -21,7 +22,7 @@ export default function LoginPage() {
           const cached = localStorage.getItem('nt-mecanicos-profile')
           if (cached) {
             const profile = JSON.parse(cached)
-            router.replace(profile.role === 'admin' ? '/admin' : '/')
+            router.replace('/') // a área /admin saiu do app; useCurrentUser manda quem é só admin para o Portal
             return
           }
         } catch { /* */ }
@@ -55,7 +56,10 @@ export default function LoginPage() {
       })
 
       if (loginError) {
-        setErro('E-mail ou senha incorretos')
+        // sem sinal não é senha errada (José, 23/10/2026)
+        const semRede = !navigator.onLine || loginError.name === 'AuthRetryableFetchError'
+          || (loginError as { status?: number }).status === 0 || /fetch|network|rede/i.test(loginError.message || '')
+        setErro(semRede ? 'Sem internet. Conecte e tente de novo.' : 'E-mail ou senha incorretos')
         setLoading(false)
         return
       }
@@ -67,6 +71,12 @@ export default function LoginPage() {
         return
       }
 
+      // Outro técnico entrando neste celular: apaga o que ficou do anterior (José, 23/10/2026)
+      try {
+        const anterior = JSON.parse(localStorage.getItem('nt-mecanicos-profile') || 'null') as { id?: string } | null
+        if (anterior?.id && anterior.id !== uid) await limparDadosDoAparelho()
+      } catch { /* sem perfil guardado */ }
+
       // 1. Checar portal_permissoes
       const { data: perm } = await supabase
         .from('portal_permissoes')
@@ -76,8 +86,8 @@ export default function LoginPage() {
 
       if (perm) {
         // Admin do portal → admin do mecânicos
-        if (perm.is_admin) {
-          router.push('/admin')
+        if (perm.is_admin && !perm.mecanico_role) {
+          window.location.replace(process.env.NEXT_PUBLIC_PORTAL_URL || 'https://portal.novatratores.com') // gestão é no Portal (José, 23/10/2026)
           return
         }
         // Tem papel no app mecânicos
@@ -95,7 +105,8 @@ export default function LoginPage() {
         .single()
 
       if (perfil) {
-        router.push(perfil.role === 'admin' ? '/admin' : '/')
+        if (perfil.role === 'admin') { window.location.replace(process.env.NEXT_PUBLIC_PORTAL_URL || 'https://portal.novatratores.com'); return }
+        router.push('/')
         return
       }
 
@@ -103,7 +114,7 @@ export default function LoginPage() {
       await supabase.auth.signOut()
       setErro('Sem acesso ao app. Solicite ao administrador do portal.')
     } catch {
-      setErro('Erro de conexão')
+      setErro(navigator.onLine ? 'Erro de conexão. Tente de novo.' : 'Sem internet. Conecte e tente de novo.')
     }
     setLoading(false)
   }

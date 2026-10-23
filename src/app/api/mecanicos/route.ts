@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { exigirAdmin } from '@/lib/apiAuth'
 import { supabase } from '@/lib/supabase'
 import { normName, cleanName, namesMatch, splitTecnicos, nomesBatem } from '@/lib/tecnico-utils'
 
 export async function GET(req: NextRequest) {
+  const adm = await exigirAdmin(req); if (adm instanceof NextResponse) return adm // só admin: era tela do /admin, desligado (José, 23/10/2026)
   const nome = req.nextUrl.searchParams.get('nome')
 
   try {
@@ -331,6 +333,7 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
+  const adm = await exigirAdmin(req); if (adm instanceof NextResponse) return adm // só admin: era tela do /admin, desligado (José, 23/10/2026)
   try {
     const body = await req.json()
     const { acao } = body

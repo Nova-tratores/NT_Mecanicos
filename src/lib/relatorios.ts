@@ -1,4 +1,5 @@
 import { supabase } from '@/lib/supabase'
+import { hojeBR } from '@/lib/hoje'
 import type {
   RelatorioMes,
   ResumoOficina,
@@ -661,7 +662,8 @@ async function fetchOcorrenciasMes(
   const nome = profile.nome_pos || profile.tecnico_nome
   if (!nome) return { qtd: 0, pontos: 0, lista: [] }
 
-  const nextDay = new Date(new Date(lastISO).getTime() + 86400000).toISOString().split('T')[0]
+  // dia seguinte no horário de Brasília (meio-dia evita virar o dia pelo fuso) (José, 23/10/2026)
+  const nextDay = hojeBR(new Date(new Date(`${lastISO.slice(0, 10)}T12:00:00-03:00`).getTime() + 86400000))
 
   try {
     const { data, error } = await supabase

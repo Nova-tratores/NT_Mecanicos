@@ -164,3 +164,50 @@ export async function removePendingPdf(osId: string): Promise<void> {
   const list = (await offlineGet<string[]>(PENDING_PDF_KEY)) || []
   await offlineSet(PENDING_PDF_KEY, list.filter((x) => x !== osId))
 }
+
+// ═══ Gravação que AVISA quando falha (backup do formulário — José, 23/10/2026) ═══
+// offlineSet engole o erro; aqui o erro sobe (ex.: QuotaExceededError = celular sem espaço).
+export async function offlineSetOuErro<T>(key: string, data: T): Promise<void> {
+  const db = await openDB()
+  const tx = db.transaction(STORE_CACHE, 'readwrite')
+  tx.objectStore(STORE_CACHE).put({ key, data, timestamp: Date.now() })
+  await awaitTx(tx)
+}
+
+export async function offlineDelete(key: string): Promise<void> {
+  try {
+    const db = await openDB()
+    const tx = db.transaction(STORE_CACHE, 'readwrite')
+    tx.objectStore(STORE_CACHE).delete(key)
+    await awaitTx(tx)
+  } catch (err) {
+    console.error('[offline] Erro ao apagar do cache:', err)
+  }
+}
+
+// ═══ Chaves e limpeza do cache pelo mesmo openDB (José, 23/10/2026) ═══
+// indexedDB.open sem versão em outros arquivos criava o banco vazio (v1 sem stores) e quebrava este openDB.
+export async function offlineKeys(): Promise<string[]> {
+  try {
+    const db = await openDB()
+    return await new Promise((resolve) => {
+      const req = db.transaction(STORE_CACHE, 'readonly').objectStore(STORE_CACHE).getAllKeys()
+      req.onsuccess = () => resolve((req.result || []).map(String))
+      req.onerror = () => resolve([])
+    })
+  } catch {
+    return []
+  }
+}
+
+/** apaga todo o store 'cache' (a fila 'syncQueue' fica) */
+export async function offlineClearCache(): Promise<void> {
+  try {
+    const db = await openDB()
+    const tx = db.transaction(STORE_CACHE, 'readwrite')
+    tx.objectStore(STORE_CACHE).clear()
+    await awaitTx(tx)
+  } catch (err) {
+    console.error('[offline] Erro ao limpar cache:', err)
+  }
+}

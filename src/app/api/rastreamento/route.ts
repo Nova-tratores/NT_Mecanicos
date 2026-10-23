@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { exigirAdmin } from '@/lib/apiAuth'
 import { supabase } from '@/lib/supabase'
 
 const API_URL = process.env.ROTAEXATA_API_URL || 'https://api.rotaexata.com.br'
@@ -54,6 +55,7 @@ function naLoja(lat: number, lng: number): boolean {
 
 // ---------- GET ----------
 export async function GET(req: NextRequest) {
+  const adm = await exigirAdmin(req); if (adm instanceof NextResponse) return adm // só admin: era tela do /admin, desligado (José, 23/10/2026)
   try {
     const sp = req.nextUrl.searchParams
     const acao = sp.get('acao') || 'veiculos'
@@ -291,6 +293,7 @@ export async function GET(req: NextRequest) {
 
 // ---------- POST ----------
 export async function POST(req: NextRequest) {
+  const adm = await exigirAdmin(req); if (adm instanceof NextResponse) return adm // só admin: era tela do /admin, desligado (José, 23/10/2026)
   try {
     const body = await req.json()
     const { acao } = body

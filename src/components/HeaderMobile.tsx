@@ -98,34 +98,37 @@ export default function HeaderMobile({
     <>
       <header style={{
         position: 'sticky', top: 0, zIndex: 40,
-        background: '#C41E2A', color: '#fff',
+        background: '#FEFEFE', color: '#0F172A',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 16px', height: 64,
-        boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+        // iPhone com notch: desce o conteúdo para fora da barra de status (viewportFit 'cover') (José, 23/10/2026)
+        padding: '0 16px', paddingTop: 'env(safe-area-inset-top, 0px)',
+        height: 'calc(64px + env(safe-area-inset-top, 0px))', boxSizing: 'border-box',
+        borderBottom: '1px solid #E2E8F0',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div style={{
-            width: 36, height: 36, borderRadius: '50%', overflow: 'hidden', flexShrink: 0,
-            background: avatarUrl ? 'transparent' : 'rgba(255,255,255,0.25)',
+            width: 38, height: 38, borderRadius: 11, overflow: 'hidden', flexShrink: 0,
+            background: avatarUrl ? 'transparent' : '#E0F2FE',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            border: '2px solid rgba(255,255,255,0.4)',
+            border: '1px solid #BAE6FD',
           }}>
             {avatarUrl ? (
               <img src={avatarUrl} alt="Perfil" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
             ) : (
-              <span style={{ color: '#fff', fontSize: 14, fontWeight: 700 }}>
+              <span style={{ color: '#0369A1', fontSize: 15, fontWeight: 500 }}>
                 {userName?.charAt(0)?.toUpperCase() || 'T'}
               </span>
             )}
           </div>
           <Link href="/">
-            <Image src="/Logo_Nova.png" alt="Nova Tratores" width={120} height={42} style={{ objectFit: 'contain', filter: 'brightness(0) invert(1)' }} />
+            <Image src="/Logo_Nova.png" alt="Nova Tratores" width={120} height={42} style={{ objectFit: 'contain' }} />
           </Link>
         </div>
 
         <button onClick={abrirPainel} style={{
-          position: 'relative', background: 'none', border: 'none',
-          color: '#fff', cursor: 'pointer', padding: 8,
+          position: 'relative', background: '#FEFEFE', border: '1px solid #E2E8F0', borderRadius: '50%',
+          width: 42, height: 42, display: 'grid', placeItems: 'center',
+          color: '#0F172A', cursor: 'pointer', padding: 0,
         }}>
           <Bell size={22} />
           {naoLidas > 0 && (
@@ -135,7 +138,7 @@ export default function HeaderMobile({
               fontWeight: 700, borderRadius: 10, minWidth: 16,
               height: 16, display: 'flex', alignItems: 'center',
               justifyContent: 'center', padding: '0 4px',
-              border: '1.5px solid #C41E2A',
+              border: '1.5px solid #FEFEFE',
             }}>
               {naoLidas}
             </span>
@@ -160,7 +163,7 @@ export default function HeaderMobile({
           >
             {/* Header */}
             <div style={{
-              padding: '18px 18px 14px', background: '#fff',
+              padding: '18px 18px 14px', paddingTop: 'calc(18px + env(safe-area-inset-top, 0px))', background: '#fff',
               borderBottom: `1px solid ${colors.border}`, flexShrink: 0,
             }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>

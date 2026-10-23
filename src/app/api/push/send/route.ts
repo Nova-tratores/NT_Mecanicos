@@ -1,100 +1,36 @@
-import webpush from 'web-push'
-import { createClient } from '@supabase/supabase-js'
+// Push para um técnico (José, 23/10/2026). Quem pode chamar:
+//  - servidor (Portal, robôs): header "x-push-secret" = env PUSH_SECRET;
+//  - usuário logado do app (ex.: Lousa avisa o técnico do lançamento).
+// Enquanto PUSH_SECRET não estiver configurado no servidor, aceita sem login para não quebrar o Portal (aviso no log).
+// QUANDO PUSH_SECRET EXISTIR no app: sem o header x-push-secret certo E sem login válido → 401. O Portal manda o
+// header (src/lib/push-mecanicos.ts) se tiver o MESMO PUSH_SECRET no env dele (José, 23/10/2026).
+// Não manda mais cópia para os admins (a gestão é no Portal). Casa o nome sem texto cru no filtro do banco.
+import { NextResponse } from 'next/server'
+import { exigirUsuario, segredoServidor } from '@/lib/apiAuth'
 import { serverEnv } from '@/lib/server-env'
+import { pushParaTecnico } from '@/lib/push-server'
 
 export const dynamic = 'force-dynamic'
 
-function getSupabase() {
-  return createClient(
-    serverEnv('NEXT_PUBLIC_SUPABASE_URL'),
-    serverEnv('SUPABASE_SERVICE_ROLE_KEY') || serverEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY'),
-  )
-}
-
-function initVapid() {
-  const publicKey = serverEnv('NEXT_PUBLIC_VAPID_PUBLIC_KEY')
-  const privateKey = serverEnv('VAPID_PRIVATE_KEY')
-  if (publicKey && privateKey) {
-    webpush.setVapidDetails('mailto:suporte@novatratores.com.br', publicKey, privateKey)
-  }
-}
-
-async function getAdminNames(): Promise<string[]> {
-  const supabase = getSupabase()
-  const { data: admins } = await supabase
-    .from('portal_permissoes')
-    .select('user_id')
-    .eq('is_admin', true)
-  if (!admins?.length) return []
-  const { data: profiles } = await supabase
-    .from('financeiro_usu')
-    .select('nome')
-    .in('id', admins.map(a => a.user_id))
-  return (profiles || []).map(p => p.nome).filter(Boolean)
-}
+const linkSeguro = (l: unknown) => (typeof l === 'string' && /^\/(?!\/)/.test(l) ? l : '/')
 
 export async function POST(request: Request) {
-  initVapid()
-  const supabase = getSupabase()
-  const { tecnico_nome, titulo, descricao, link } = await request.json()
-
-  if (!tecnico_nome || !titulo) {
-    return Response.json({ error: 'Dados inválidos' }, { status: 400 })
-  }
-
-  const nomesAlvo = new Set<string>([tecnico_nome])
-
-  const adminNames = await getAdminNames()
-  adminNames.forEach(n => nomesAlvo.add(n))
-
-  const filters = [...nomesAlvo].map(n => `tecnico_nome.ilike.${n}`).join(',')
-  const { data: subs, error: subsError } = await supabase
-    .from('push_subscriptions')
-    .select('*')
-    .or(filters)
-
-  if (subsError) {
-    return Response.json({ error: subsError.message, hint: subsError.hint }, { status: 500 })
-  }
-
-  if (!subs || subs.length === 0) {
-    return Response.json({ sent: 0, debug: `nenhuma sub para: ${[...nomesAlvo].join(', ')}` })
-  }
-
-  const payload = JSON.stringify({
-    title: titulo,
-    body: descricao || '',
-    icon: '/capa_app.png',
-    badge: '/capa_app.png',
-    data: { url: link || '/' },
-  })
-
-  let sent = 0
-  const expired: number[] = []
-  const errors: string[] = []
-
-  for (const sub of subs) {
-    try {
-      await webpush.sendNotification(
-        {
-          endpoint: sub.endpoint,
-          keys: { p256dh: sub.p256dh, auth: sub.auth },
-        },
-        payload,
-      )
-      sent++
-    } catch (err: unknown) {
-      const e = err as { statusCode?: number; message?: string }
-      if (e.statusCode === 410 || e.statusCode === 404) {
-        expired.push(sub.id)
-      }
-      errors.push(`${sub.tecnico_nome}: ${e.statusCode || ''} ${e.message || ''}`)
+  if (!segredoServidor(request)) {
+    if (serverEnv('PUSH_SECRET') || request.headers.get('authorization')) {
+      const u = await exigirUsuario(request)
+      if (u instanceof NextResponse) return u
+    } else {
+      console.warn('[push/send] chamada sem segredo — configure PUSH_SECRET no app e no Portal')
     }
   }
+  const { tecnico_nome, titulo, descricao, link } = await request.json()
+  if (!tecnico_nome || !titulo) return Response.json({ error: 'Dados inválidos' }, { status: 400 })
 
-  if (expired.length > 0) {
-    await supabase.from('push_subscriptions').delete().in('id', expired)
-  }
-
-  return Response.json({ sent, expired: expired.length, total_subs: subs.length, errors })
+  const sent = await pushParaTecnico(String(tecnico_nome), {
+    titulo: String(titulo).slice(0, 120),
+    corpo: String(descricao || '').slice(0, 300),
+    url: linkSeguro(link),
+    baixar: false,
+  })
+  return Response.json({ sent })
 }

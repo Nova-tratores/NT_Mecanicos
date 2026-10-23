@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { hojeBR } from '@/lib/hoje'
 import {
   ChevronLeft, ChevronRight, CheckCircle, XCircle, Package, Calendar,
   Plus, X, Trash2, Search, Wrench, Ban, Sun, LogOut, Bell, User,
@@ -68,7 +69,8 @@ function getSegunda(d: Date): Date {
   return date
 }
 function addDays(d: Date, n: number): Date { const r = new Date(d); r.setDate(r.getDate() + n); return r }
-function fmtDate(d: Date): string { return d.toISOString().slice(0, 10) }
+// Dia no horário de Brasília — toISOString (UTC) pulava para amanhã depois das 21h (José, 23/10/2026)
+function fmtDate(d: Date): string { return hojeBR(d) }
 function fmtDateBR(d: Date): string { return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }) }
 
 // ── Props ───────────────────────────────────────────────────────────
@@ -145,14 +147,16 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
     let ppvMap: Record<string, boolean> = {}
 
     if (cnpjs.length > 0) {
-      const { data: ordens } = await supabase.from('Ordem_Servico')
-        .select('Id_Ordem, CNPJ_CPF_Cliente, Status').in('CNPJ_CPF_Cliente', cnpjs)
+      // A coluna é Cnpj_Cliente (CNPJ_CPF_Cliente não existe e a consulta falhava calada) (José, 23/10/2026)
+      const { data: ordens, error: errOrdens } = await supabase.from('Ordem_Servico')
+        .select('Id_Ordem, Cnpj_Cliente, Status').in('Cnpj_Cliente', cnpjs)
         .not('Status', 'in', '("Concluída","Cancelada")')
+      if (errOrdens) console.warn('[Lousa] OS abertas:', errOrdens.message)
 
       const ordensList = ordens || []
       for (const o of ordensList) {
-        if (!osMap[o.CNPJ_CPF_Cliente]) osMap[o.CNPJ_CPF_Cliente] = []
-        osMap[o.CNPJ_CPF_Cliente].push({ id_ordem: String(o.Id_Ordem), status: o.Status })
+        if (!osMap[o.Cnpj_Cliente]) osMap[o.Cnpj_Cliente] = []
+        osMap[o.Cnpj_Cliente].push({ id_ordem: String(o.Id_Ordem), status: o.Status })
       }
 
       const osIds = ordensList.map(o => String(o.Id_Ordem))
@@ -160,7 +164,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
         const { data: peds } = await supabase.from('pedidos').select('Id_Os').in('Id_Os', osIds)
         const pedOsSet = new Set((peds || []).map(p => String(p.Id_Os)))
         for (const o of ordensList) {
-          if (pedOsSet.has(String(o.Id_Ordem))) ppvMap[o.CNPJ_CPF_Cliente] = true
+          if (pedOsSet.has(String(o.Id_Ordem))) ppvMap[o.Cnpj_Cliente] = true
         }
       }
     }
@@ -488,7 +492,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
     <div
       onTouchStart={onTouchStart}
       onTouchEnd={onTouchEnd}
-      style={{ minHeight: 'calc(100vh - 80px)', display: 'flex', flexDirection: 'column' }}
+      style={{ minHeight: 'calc(100dvh - 80px)', display: 'flex', flexDirection: 'column' }}
     >
       {/* ─── Header ─── */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
@@ -839,7 +843,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                           </div>
                           <div style={{ fontSize: 11, color: '#6B7280' }}>
                             {os.Tipo_Servico || '---'} · {os.Os_Tecnico || 'Sem técnico'}
-                            {os.Previsao_Execucao && ` · Prev: ${new Date(os.Previsao_Execucao).toLocaleDateString('pt-BR')}`}
+                            {os.Previsao_Execucao && ` · Prev: ${new Date(String(os.Previsao_Execucao).slice(0, 10) + 'T12:00:00').toLocaleDateString('pt-BR')}`}
                           </div>
                         </div>
                       ))}
@@ -1087,7 +1091,7 @@ export default function LousaVirtual({ userId, userName, isAdmin, defaultTecnico
                       <div>
                         <span style={{ color: '#9CA3AF', fontWeight: 600, fontSize: 10 }}>PREVISÃO</span>
                         <div style={{ fontWeight: 600, color: '#374151' }}>
-                          {os.Previsao_Execucao ? new Date(os.Previsao_Execucao).toLocaleDateString('pt-BR') : '---'}
+                          {os.Previsao_Execucao ? new Date(String(os.Previsao_Execucao).slice(0, 10) + 'T12:00:00').toLocaleDateString('pt-BR') : '---'}
                         </div>
                       </div>
                       <div>

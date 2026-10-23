@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useCurrentUser } from '@/hooks/useCurrentUser'
 import { supabase } from '@/lib/supabase'
-import { colors, shadow } from '@/lib/ui'
+import { colors } from '@/lib/ui'
 import {
   Camera, ChevronRight, ChevronLeft, Check, AlertCircle,
   Share2, Download, X, Car, Shield, Clock, History,
@@ -100,6 +100,29 @@ const MOLDES: Record<string, { svg: string; dica: string }> = {
   },
 }
 
+const LADO_MAX_FOTO = 1600
+
+/** reduz a foto para no máximo 1600 px no lado maior (JPEG 0,85); se não der, devolve a original */
+async function reduzirFoto(file: File): Promise<File> {
+  try {
+    const url = URL.createObjectURL(file)
+    const img = await new Promise<HTMLImageElement>((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url })
+    URL.revokeObjectURL(url)
+    const escala = Math.min(1, LADO_MAX_FOTO / Math.max(img.naturalWidth, img.naturalHeight))
+    if (escala >= 1 && file.size < 1.5 * 1024 * 1024) return file
+    const canvas = document.createElement('canvas')
+    canvas.width = Math.round(img.naturalWidth * escala)
+    canvas.height = Math.round(img.naturalHeight * escala)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return file
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/jpeg', 0.85))
+    return blob ? new File([blob], `checklist-${Date.now()}.jpg`, { type: 'image/jpeg' }) : file
+  } catch {
+    return file
+  }
+}
+
 export default function ChecklistVeiculoPage() {
   const { user } = useCurrentUser()
   const nome = user?.nome_pos || user?.tecnico_nome || ''
@@ -167,13 +190,26 @@ export default function ChecklistVeiculoPage() {
       loc = { lat: pos.coords.latitude, lng: pos.coords.longitude }
     } catch {}
 
-    const res = await fetch('/api/checklist-veiculo', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'iniciar', tecnico_nome: nome, placa: veiculo.placa, loc, km: km || null }),
-    })
-    const data = await res.json()
-    setChecklistId(data.id)
+    // confere a resposta: antes um erro caía no "Resumo 0/0" (José, 23/10/2026)
+    let data: { id?: string; items?: CheckItem[]; itens?: SavedItem[]; error?: string }
+    try {
+      const res = await fetch('/api/checklist-veiculo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'iniciar', tecnico_nome: nome, placa: veiculo.placa, loc, km: km || null }),
+      })
+      data = await res.json().catch(() => ({}))
+      if (!res.ok || !data.id || !(data.items || []).length) {
+        alert(`Não foi possível iniciar o checklist: ${data.error || `erro ${res.status}`}. Tente de novo.`)
+        setLoading(false)
+        return
+      }
+    } catch {
+      alert('Sem conexão. O checklist precisa de internet — tente de novo quando tiver sinal.')
+      setLoading(false)
+      return
+    }
+    setChecklistId(data.id!)
     setItems(data.items || [])
     const map = new Map<string, SavedItem>()
     for (const it of data.itens || []) map.set(it.item_key, it)
@@ -292,12 +328,15 @@ export default function ChecklistVeiculoPage() {
     setFoto(null)
   }, [step, items, savedItems])
 
-  const handleFoto = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+  // Plano B (câmera do sistema): a foto vem em resolução cheia (>4,5 MB dava 413 "Erro de conexão") —
+  // reduz para ~1600 px antes de enviar (José, 23/10/2026)
+  const handleFoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const original = e.target.files?.[0]
+    e.target.value = ''
+    if (!original) return
+    const file = await reduzirFoto(original)
     setFoto(file)
     setFotoPreview(URL.createObjectURL(file))
-    e.target.value = ''
   }
 
   const abrirCamera = async () => {
@@ -324,15 +363,22 @@ export default function ChecklistVeiculoPage() {
     setCameraAberta(false)
   }
 
+  // saiu da tela com a câmera aberta: desliga (a luz da câmera ficava acesa) (José, 23/10/2026)
+  useEffect(() => () => {
+    streamRef.current?.getTracks().forEach(t => t.stop())
+    streamRef.current = null
+  }, [])
+
   const capturarFoto = () => {
     const video = videoRef.current
     if (!video) return
     const canvas = document.createElement('canvas')
-    canvas.width = video.videoWidth
-    canvas.height = video.videoHeight
+    const escala = Math.min(1, LADO_MAX_FOTO / Math.max(video.videoWidth, video.videoHeight))
+    canvas.width = Math.round(video.videoWidth * escala)
+    canvas.height = Math.round(video.videoHeight * escala)
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    ctx.drawImage(video, 0, 0)
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     canvas.toBlob(blob => {
       if (!blob) return
       const file = new File([blob], `checklist-${Date.now()}.jpg`, { type: 'image/jpeg' })
@@ -357,15 +403,17 @@ export default function ChecklistVeiculoPage() {
 
   if (!veiculo) {
     return (
-      <div style={{ padding: 20, textAlign: 'center' }}>
-        <Car size={48} color={colors.textMuted} style={{ margin: '40px auto 16px' }} />
-        <div style={{ fontSize: 16, fontWeight: 600, color: colors.text }}>Sem veículo atribuído</div>
-        <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 6 }}>
+      <div style={{ background: colors.surface, border: `1px dashed ${colors.borderStrong}`, borderRadius: 16, padding: '30px 20px', textAlign: 'center' }}>
+        <div style={{ width: 48, height: 48, borderRadius: 13, background: colors.accentBg, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 14px' }}>
+          <Car size={24} color={colors.textSubtle} />
+        </div>
+        <div style={{ fontSize: 16, fontWeight: 500, color: colors.text }}>Sem veículo atribuído</div>
+        <div style={{ fontSize: 13.5, color: colors.textMuted, marginTop: 6, lineHeight: 1.45 }}>
           Você precisa ter um veículo atribuído para realizar o checklist
         </div>
         <Link href="/" style={{
-          display: 'inline-block', marginTop: 20, padding: '10px 20px', borderRadius: 12,
-          background: colors.primary, color: '#fff', textDecoration: 'none', fontSize: 14, fontWeight: 600,
+          display: 'inline-flex', alignItems: 'center', marginTop: 18, padding: '0 22px', height: 46, borderRadius: 12,
+          background: colors.primary, color: '#fff', textDecoration: 'none', fontSize: 15, fontWeight: 500,
         }}>Voltar</Link>
       </div>
     )
@@ -376,40 +424,42 @@ export default function ChecklistVeiculoPage() {
     const scoreColor = resultado.score >= 70 ? colors.success : resultado.score >= 50 ? colors.warning : colors.danger
     const scoreLabel = resultado.score >= 70 ? 'Confiável' : resultado.score >= 50 ? 'Atenção' : 'Suspeito'
     return (
-      <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ textAlign: 'center', padding: '22px 16px', background: colors.surface, borderRadius: 16, border: `1px solid ${colors.border}` }}>
           <div style={{
-            width: 80, height: 80, borderRadius: '50%', margin: '0 auto 16px',
+            width: 64, height: 64, borderRadius: 18, margin: '0 auto 14px',
             background: scoreColor, display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            {resultado.score >= 70 ? <Check size={40} color="#fff" /> : <AlertCircle size={40} color="#fff" />}
+            {resultado.score >= 70 ? <Check size={32} color="#fff" /> : <AlertCircle size={32} color="#fff" />}
           </div>
-          <div style={{ fontSize: 24, fontWeight: 800, color: colors.text }}>Checklist {resultado.status === 'completo' ? 'Concluído' : 'Enviado'}</div>
+          <div style={{ fontSize: 21, fontWeight: 500, color: colors.text }}>Checklist {resultado.status === 'completo' ? 'concluído' : 'enviado'}</div>
           {resultado.titulo && (
-            <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, marginTop: 6 }}>{resultado.titulo}</div>
+            <div style={{ fontSize: 14, color: colors.text, marginTop: 6 }}>{resultado.titulo}</div>
           )}
-          <div style={{ fontSize: 14, color: colors.textMuted, marginTop: 4 }}>
+          <div style={{ fontSize: 13.5, color: colors.textMuted, marginTop: 4 }}>
             {Math.floor((resultado as any).duracao / 60)}min {(resultado as any).duracao % 60}s de duração
           </div>
         </div>
 
         <div style={{
-          background: colors.surfaceAlt, borderRadius: 16, padding: 20,
-          border: `1px solid ${colors.border}`, textAlign: 'center',
+          background: `color-mix(in srgb, ${scoreColor} 6%, #FEFEFE)`, borderRadius: 16, padding: 18,
+          border: `1px solid color-mix(in srgb, ${scoreColor} 25%, #E2E8F0)`, textAlign: 'center',
         }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, marginBottom: 8 }}>ÍNDICE DE CONFIANÇA</div>
-          <div style={{ fontSize: 48, fontWeight: 800, color: scoreColor }}>{resultado.score}</div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: scoreColor }}>{scoreLabel}</div>
+          <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 6 }}>Índice de confiança</div>
+          <div style={{ fontSize: 44, fontWeight: 500, color: scoreColor, lineHeight: 1.1 }}>{resultado.score}</div>
+          <span style={{ display: 'inline-block', marginTop: 6, fontSize: 13, fontWeight: 500, color: '#fff', background: scoreColor, padding: '2px 11px', borderRadius: 999 }}>{scoreLabel}</span>
         </div>
 
         {resultado.alertas.length > 0 && (
           <div style={{
-            background: colors.warningBg, borderRadius: 12, padding: 14,
+            background: colors.warningBg, borderRadius: 16, padding: 14,
             border: `1px solid ${colors.warningBorder}`,
           }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: colors.warning, marginBottom: 6 }}>Observações da análise</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 14, fontWeight: 500, color: colors.warning, marginBottom: 6 }}>
+              <AlertCircle size={16} /> Observações da análise
+            </div>
             {resultado.alertas.map((a, i) => (
-              <div key={i} style={{ fontSize: 11, color: colors.text, padding: '3px 0' }}>• {a}</div>
+              <div key={i} style={{ fontSize: 13.5, color: colors.text, padding: '3px 0', lineHeight: 1.4 }}>• {a}</div>
             ))}
           </div>
         )}
@@ -417,15 +467,15 @@ export default function ChecklistVeiculoPage() {
         <div style={{ display: 'flex', gap: 10 }}>
           <button onClick={compartilhar} style={{
             flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            padding: '12px 16px', borderRadius: 14, border: `1px solid ${colors.border}`,
-            background: colors.surface, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: colors.text,
+            height: 46, padding: '0 14px', borderRadius: 12, border: `1px solid ${colors.border}`,
+            background: colors.surface, cursor: 'pointer', fontSize: 15, fontWeight: 500, color: colors.text,
           }}>
             <Share2 size={16} /> Compartilhar
           </button>
           <Link href="/" style={{
             flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            padding: '12px 16px', borderRadius: 14, background: colors.primary,
-            color: '#fff', textDecoration: 'none', fontSize: 14, fontWeight: 600,
+            height: 46, padding: '0 14px', borderRadius: 12, background: colors.primary,
+            color: '#fff', textDecoration: 'none', fontSize: 15, fontWeight: 500,
           }}>
             <Check size={16} /> Voltar
           </Link>
@@ -442,86 +492,91 @@ export default function ChecklistVeiculoPage() {
     const hoje = new Date()
     const mesLabel = hoje.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })
     return (
-      <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <Link href="/" style={{ color: colors.textMuted, textDecoration: 'none', fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}>
-          <ChevronLeft size={16} /> Voltar
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <Link href="/" style={{ color: colors.primary, textDecoration: 'none', fontSize: 14, display: 'flex', alignItems: 'center', gap: 4, alignSelf: 'flex-start' }}>
+          <ChevronLeft size={17} /> Voltar
         </Link>
 
-        <div style={{ textAlign: 'center', padding: '20px 0' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{
-            width: 72, height: 72, borderRadius: '50%', margin: '0 auto 16px',
-            background: colors.primaryBg, display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: 44, height: 44, borderRadius: 11, flexShrink: 0,
+            background: colors.primary, display: 'flex', alignItems: 'center', justifyContent: 'center',
           }}>
-            <Shield size={36} color={colors.primary} />
+            <Shield size={22} color="#fff" />
           </div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: colors.text }}>Checklist do Veículo</div>
-          <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4, textTransform: 'capitalize' }}>{mesLabel}</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 20, fontWeight: 500, color: colors.text }}>Checklist do veículo</div>
+            <div style={{ fontSize: 13, color: colors.textMuted, textTransform: 'capitalize' }}>{mesLabel}</div>
+          </div>
         </div>
 
         <div style={{
-          background: colors.surfaceAlt, borderRadius: 16, padding: 16,
+          background: colors.surface, borderRadius: 16, padding: 14,
           border: `1px solid ${colors.border}`, display: 'flex', alignItems: 'center', gap: 12,
         }}>
-          <Car size={24} color={colors.primary} />
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>{modelo || veiculo.placa}</div>
-            <div style={{ fontSize: 12, color: colors.textMuted }}>{placaNum}</div>
+          <div style={{ width: 40, height: 40, borderRadius: 11, flexShrink: 0, background: colors.primaryBg, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Car size={20} color={colors.primary} />
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 500, color: colors.text, overflowWrap: 'anywhere' }}>{modelo || veiculo.placa}</div>
+            <div style={{ fontSize: 13, color: colors.textMuted }}>{placaNum}</div>
           </div>
         </div>
 
         {/* KM input */}
         <div style={{
-          background: colors.surfaceAlt, borderRadius: 16, padding: 16,
+          background: colors.surface, borderRadius: 16, padding: 14,
           border: `1px solid ${colors.border}`,
         }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, marginBottom: 8 }}>Quilometragem atual:</div>
+          <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 6 }}>Quilometragem atual</div>
           <input
             type="number"
             inputMode="numeric"
             value={km}
             onChange={e => setKm(e.target.value)}
             placeholder="Ex: 45230"
+            onFocus={e => { e.currentTarget.style.borderColor = '#38BDF8' }}
+            onBlur={e => { e.currentTarget.style.borderColor = colors.border }}
             style={{
-              width: '100%', padding: '12px 14px', borderRadius: 12,
+              width: '100%', height: 46, padding: '0 14px', borderRadius: 12,
               border: `1px solid ${colors.border}`, background: colors.surface,
-              fontSize: 16, fontWeight: 600, color: colors.text,
+              fontSize: 16, color: colors.text, outline: 'none', boxSizing: 'border-box',
               fontFamily: 'inherit',
             }}
           />
-          <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 4 }}>
+          <div style={{ fontSize: 12.5, color: colors.textSubtle, marginTop: 5 }}>
             Informe o KM do hodômetro
           </div>
         </div>
 
         <div style={{
-          background: colors.surfaceAlt, borderRadius: 16, padding: 16,
+          background: colors.surface, borderRadius: 16, padding: 14,
           border: `1px solid ${colors.border}`,
         }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: colors.text, marginBottom: 8 }}>Como funciona:</div>
-          <div style={{ fontSize: 12, color: colors.textMuted, lineHeight: 1.8 }}>
-            • São 20 itens para inspecionar{'\n'}
-            • Cada item exige uma foto{'\n'}
-            • Marque como OK ou Problema{'\n'}
-            • Adicione observações quando necessário{'\n'}
-            • Tempo estimado: 15-20 minutos
+          <div style={{ fontSize: 15, fontWeight: 500, color: colors.text, marginBottom: 8 }}>Como funciona</div>
+          <div style={{ fontSize: 13.5, color: colors.textMuted, lineHeight: 1.7 }}>
+            {['São 20 itens para inspecionar', 'Cada item exige uma foto', 'Marque como OK ou Problema', 'Adicione observações quando necessário', 'Tempo estimado: 15-20 minutos'].map(t => (
+              <div key={t}>• {t}</div>
+            ))}
           </div>
         </div>
 
         <button onClick={iniciar} disabled={loading || !km} style={{
-          width: '100%', padding: '14px 20px', borderRadius: 14,
-          background: km ? colors.primary : colors.border, color: km ? '#fff' : colors.textMuted, border: 'none',
-          fontSize: 16, fontWeight: 700, cursor: km ? 'pointer' : 'default',
+          width: '100%', height: 48, padding: '0 20px', borderRadius: 12,
+          background: km ? colors.primary : colors.accentBg, color: km ? '#fff' : colors.textSubtle,
+          border: km ? 'none' : `1px solid ${colors.border}`,
+          fontSize: 15.5, fontWeight: 500, cursor: km ? 'pointer' : 'default',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
         }}>
-          <Camera size={20} /> Iniciar Checklist
+          <Camera size={19} /> Iniciar checklist
         </button>
 
         {/* Histórico de checklists anteriores */}
         {historico.length > 0 && (
-          <div style={{ marginTop: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-              <History size={16} color={colors.textSubtle} />
-              <span style={{ fontSize: 14, fontWeight: 700, color: colors.text }}>Anteriores</span>
+          <div style={{ marginTop: 6 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10, padding: '0 2px' }}>
+              <History size={16} color={colors.textMuted} />
+              <span style={{ fontSize: 16, fontWeight: 500, color: colors.text }}>Anteriores</span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {historico.filter(h => h.status === 'completo' || h.status === 'suspeito').map(h => {
@@ -536,25 +591,25 @@ export default function ChecklistVeiculoPage() {
                     href={`/checklist-veiculo/ver?token=${h.share_token}`}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px',
-                      borderRadius: 12, border: `1px solid ${colors.border}`,
+                      borderRadius: 16, border: `1px solid ${colors.border}`,
                       background: colors.surface, textDecoration: 'none',
                     }}
                   >
                     <div style={{
-                      width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+                      width: 38, height: 38, borderRadius: 11, flexShrink: 0,
                       background: sColor, display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
-                      <span style={{ fontSize: 13, fontWeight: 800, color: '#fff' }}>{h.score_confianca ?? '—'}</span>
+                      <span style={{ fontSize: 14, fontWeight: 500, color: '#fff' }}>{h.score_confianca ?? '—'}</span>
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: colors.text }}>
+                      <div style={{ fontSize: 15, fontWeight: 500, color: colors.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {h.titulo || `Checklist de ${mesNome}`}
                       </div>
-                      <div style={{ fontSize: 11, color: colors.textMuted, marginTop: 2 }}>
+                      <div style={{ fontSize: 12.5, color: colors.textMuted, marginTop: 2 }}>
                         {mesNome}{h.km ? ` · ${Number(h.km).toLocaleString('pt-BR')} km` : ''}
                       </div>
                     </div>
-                    <ChevronRight size={16} color={colors.textSubtle} />
+                    <ChevronRight size={18} color="#94A3B8" style={{ flexShrink: 0 }} />
                   </a>
                 )
               })}
@@ -573,21 +628,21 @@ export default function ChecklistVeiculoPage() {
     const faltam = total - respondidos
 
     return (
-      <div style={{ padding: 20, display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div style={{ fontSize: 20, fontWeight: 800, color: colors.text }}>Resumo</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ fontSize: 20, fontWeight: 500, color: colors.text }}>Resumo</div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
           {[
             { label: 'Respondidos', value: respondidos, color: colors.success },
             { label: 'Problemas', value: problemas, color: colors.danger },
             { label: 'Faltam', value: faltam, color: colors.warning },
           ].map(s => (
             <div key={s.label} style={{
-              background: colors.surfaceAlt, borderRadius: 12, padding: 14, textAlign: 'center',
-              border: `1px solid ${colors.border}`,
+              background: `color-mix(in srgb, ${s.color} 7%, #FEFEFE)`, borderRadius: 16, padding: '10px 12px',
+              border: `1px solid color-mix(in srgb, ${s.color} 22%, #E2E8F0)`,
             }}>
-              <div style={{ fontSize: 24, fontWeight: 800, color: s.color }}>{s.value}</div>
-              <div style={{ fontSize: 11, color: colors.textMuted }}>{s.label}</div>
+              <div style={{ fontSize: 12.5, color: colors.textMuted }}>{s.label}</div>
+              <div style={{ fontSize: 26, fontWeight: 500, color: s.color, lineHeight: 1.15, marginTop: 2 }}>{s.value}</div>
             </div>
           ))}
         </div>
@@ -600,29 +655,30 @@ export default function ChecklistVeiculoPage() {
                 key={item.key}
                 onClick={() => setStep(i)}
                 style={{
-                  display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
-                  borderRadius: 10, border: `1px solid ${colors.border}`,
+                  display: 'flex', alignItems: 'center', gap: 10, padding: '9px 12px',
+                  borderRadius: 12, border: `1px solid ${saved ? colors.border : colors.warningBorder}`,
                   background: saved ? colors.surface : colors.warningBg,
                   cursor: 'pointer', textAlign: 'left', width: '100%',
                 }}
               >
                 <div style={{
-                  width: 28, height: 28, borderRadius: 8, flexShrink: 0,
+                  width: 32, height: 32, borderRadius: 10, flexShrink: 0,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   background: saved
-                    ? (saved.resposta === 'ok' ? colors.successBg : colors.dangerBg)
-                    : colors.warningBg,
+                    ? (saved.resposta === 'ok' ? colors.success : colors.danger)
+                    : colors.surface,
+                  border: saved ? 'none' : `1px solid ${colors.warningBorder}`,
                 }}>
                   {saved ? (
                     saved.resposta === 'ok'
-                      ? <Check size={14} color={colors.success} />
-                      : <AlertCircle size={14} color={colors.danger} />
+                      ? <Check size={16} color="#fff" />
+                      : <AlertCircle size={16} color="#fff" />
                   ) : (
-                    <span style={{ fontSize: 11, fontWeight: 700, color: colors.warning }}>{i + 1}</span>
+                    <span style={{ fontSize: 12.5, fontWeight: 500, color: colors.warning }}>{i + 1}</span>
                   )}
                 </div>
-                <span style={{ fontSize: 12, color: colors.text, flex: 1 }}>{item.titulo}</span>
-                <ChevronRight size={14} color={colors.textSubtle} />
+                <span style={{ fontSize: 14, color: colors.text, flex: 1, minWidth: 0 }}>{item.titulo}</span>
+                <ChevronRight size={16} color="#94A3B8" style={{ flexShrink: 0 }} />
               </button>
             )
           })}
@@ -631,22 +687,22 @@ export default function ChecklistVeiculoPage() {
         {faltam > 0 ? (
           <div style={{
             background: colors.warningBg, borderRadius: 12, padding: 12, textAlign: 'center',
-            fontSize: 13, color: colors.warning, fontWeight: 600,
+            border: `1px solid ${colors.warningBorder}`, fontSize: 14, color: colors.warning,
           }}>
             Faltam {faltam} {faltam === 1 ? 'item' : 'itens'} para concluir
           </div>
         ) : (
           <button onClick={concluir} disabled={saving} style={{
-            width: '100%', padding: '14px 20px', borderRadius: 14,
-            background: colors.success, color: '#fff', border: 'none',
-            fontSize: 16, fontWeight: 700, cursor: 'pointer',
+            width: '100%', height: 48, padding: '0 20px', borderRadius: 12,
+            background: colors.primary, color: '#fff', border: 'none',
+            fontSize: 15.5, fontWeight: 500, cursor: 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             opacity: saving ? 0.6 : 1,
           }}>
             {saving ? (
               <><div className="spinner" style={{ width: 18, height: 18 }} /> Finalizando...</>
             ) : (
-              <><Check size={20} /> Concluir Checklist</>
+              <><Check size={19} /> Concluir checklist</>
             )}
           </button>
         )}
@@ -664,41 +720,38 @@ export default function ChecklistVeiculoPage() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>
       {/* Header */}
-      <div style={{ padding: '12px 16px', borderBottom: `1px solid ${colors.border}`, flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+      <div style={{ padding: '12px 14px', background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 16, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, gap: 8 }}>
           <button onClick={() => step > 0 ? setStep(step - 1) : setStep(-1)} style={{
             background: 'none', border: 'none', cursor: 'pointer', padding: 4, display: 'flex', alignItems: 'center', gap: 4,
-            fontSize: 13, color: colors.textMuted,
+            fontSize: 14, color: colors.textMuted,
           }}>
-            <ChevronLeft size={16} /> {step > 0 ? 'Anterior' : 'Voltar'}
+            <ChevronLeft size={17} /> {step > 0 ? 'Anterior' : 'Voltar'}
           </button>
-          <span style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle }}>{step + 1} / {items.length}</span>
+          <span style={{ fontSize: 13, color: colors.textMuted, fontVariantNumeric: 'tabular-nums' }}>{step + 1} / {items.length}</span>
           <button onClick={() => setStep(items.length)} style={{
             background: 'none', border: 'none', cursor: 'pointer', padding: 4,
-            fontSize: 13, color: colors.primary, fontWeight: 600,
+            fontSize: 14, color: colors.primary, fontWeight: 500,
           }}>
             Resumo
           </button>
         </div>
         {/* Progress bar */}
-        <div style={{ height: 4, background: colors.border, borderRadius: 2, overflow: 'hidden' }}>
-          <div style={{ height: '100%', width: `${progresso}%`, background: colors.primary, borderRadius: 2, transition: 'width 0.3s' }} />
+        <div style={{ height: 6, background: colors.accentBg, borderRadius: 999, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${progresso}%`, background: colors.primary, borderRadius: 999, transition: 'width 0.3s' }} />
         </div>
       </div>
 
       {/* Content */}
-      <div style={{ flex: 1, padding: 16, display: 'flex', flexDirection: 'column', gap: 16, overflowY: 'auto' }}>
-        {/* Category badge */}
-        <div>
+      <div style={{ flex: 1, padding: '14px 0', display: 'flex', flexDirection: 'column', gap: 14, overflowY: 'auto' }}>
+        <div style={{ background: colors.surface, border: `1px solid ${colors.border}`, borderRadius: 16, padding: 14 }}>
+          {/* Category badge */}
           <span style={{
-            fontSize: 10, fontWeight: 700, color: colors.primary, background: colors.primaryBg,
-            padding: '3px 8px', borderRadius: 6, textTransform: 'uppercase', letterSpacing: 0.5,
+            fontSize: 12, fontWeight: 500, color: colors.primary, background: colors.primaryBg,
+            padding: '2px 9px', borderRadius: 999,
           }}>{item.cat}</span>
-        </div>
-
-        <div>
-          <div style={{ fontSize: 20, fontWeight: 800, color: colors.text }}>{item.titulo}</div>
-          <div style={{ fontSize: 13, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{item.desc}</div>
+          <div style={{ fontSize: 19, fontWeight: 500, color: colors.text, marginTop: 8 }}>{item.titulo}</div>
+          <div style={{ fontSize: 14, color: colors.textMuted, marginTop: 4, lineHeight: 1.5 }}>{item.desc}</div>
         </div>
 
         {/* Photo */}
@@ -706,35 +759,37 @@ export default function ChecklistVeiculoPage() {
         {fotoPreview ? (
           <div style={{ position: 'relative' }}>
             <img src={fotoPreview} alt="" style={{
-              width: '100%', borderRadius: 16, maxHeight: 260, objectFit: 'cover',
-              border: `2px solid ${colors.border}`,
+              width: '100%', borderRadius: 16, maxHeight: 260, objectFit: 'cover', display: 'block',
+              border: `1px solid ${colors.border}`,
             }} />
             <button
               onClick={abrirCamera}
               style={{
-                position: 'absolute', bottom: 10, right: 10, background: 'rgba(0,0,0,0.6)',
-                color: '#fff', border: 'none', borderRadius: 10, padding: '6px 12px',
-                fontSize: 11, fontWeight: 600, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
+                position: 'absolute', bottom: 10, right: 10, background: 'rgba(15,23,42,0.65)',
+                color: '#fff', border: 'none', borderRadius: 10, padding: '7px 12px',
+                fontSize: 13, fontWeight: 500, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 5,
               }}
             >
-              <Camera size={12} /> Refazer
+              <Camera size={14} /> Refazer
             </button>
           </div>
         ) : (
           <button
             onClick={abrirCamera}
             style={{
-              width: '100%', padding: '28px 20px', borderRadius: 16,
-              border: `2px dashed ${colors.border}`, background: colors.surfaceAlt,
-              cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8,
+              width: '100%', padding: '24px 16px', borderRadius: 16,
+              border: `1px dashed ${colors.borderStrong}`, background: colors.surface,
+              cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7,
             }}
           >
-            <Camera size={32} color={colors.textMuted} />
-            <span style={{ fontSize: 14, fontWeight: 600, color: colors.text }}>Tirar foto</span>
+            <span style={{ width: 44, height: 44, borderRadius: 11, background: colors.primary, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Camera size={21} color="#fff" />
+            </span>
+            <span style={{ fontSize: 15, fontWeight: 500, color: colors.text }}>Tirar foto</span>
             {MOLDES[item.key] && (
-              <span style={{ fontSize: 11, color: colors.primary, fontWeight: 600 }}>{MOLDES[item.key].dica}</span>
+              <span style={{ fontSize: 13, color: colors.primary }}>{MOLDES[item.key].dica}</span>
             )}
-            <span style={{ fontSize: 11, color: colors.textMuted }}>Obrigatório</span>
+            <span style={{ fontSize: 12, color: colors.textSubtle }}>Obrigatório</span>
           </button>
         )}
 
@@ -764,7 +819,7 @@ export default function ChecklistVeiculoPage() {
               {MOLDES[item.key] && (
                 <div style={{
                   position: 'absolute', bottom: 90, left: 0, right: 0,
-                  textAlign: 'center', color: '#fff', fontSize: 14, fontWeight: 700,
+                  textAlign: 'center', color: '#fff', fontSize: 15, fontWeight: 500,
                   textShadow: '0 1px 6px rgba(0,0,0,0.8)',
                 }}>
                   {MOLDES[item.key].dica}
@@ -778,7 +833,7 @@ export default function ChecklistVeiculoPage() {
             }}>
               <button onClick={fecharCamera} style={{
                 background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
-                borderRadius: 12, padding: '10px 18px', color: '#fff', fontSize: 14, fontWeight: 700,
+                borderRadius: 12, padding: '10px 18px', color: '#fff', fontSize: 15, fontWeight: 500,
                 cursor: 'pointer',
               }}>
                 Cancelar
@@ -795,7 +850,7 @@ export default function ChecklistVeiculoPage() {
 
         {/* Resposta */}
         <div>
-          <div style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, marginBottom: 8 }}>Estado:</div>
+          <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 6 }}>Estado</div>
           <div style={{ display: 'flex', gap: 10 }}>
             {[
               { val: 'ok', label: 'OK', icon: <Check size={18} />, bg: colors.successBg, color: colors.success, border: colors.successBorder || '#BBF7D0' },
@@ -805,11 +860,11 @@ export default function ChecklistVeiculoPage() {
                 key={r.val}
                 onClick={() => setResposta(r.val)}
                 style={{
-                  flex: 1, padding: '14px 16px', borderRadius: 14, cursor: 'pointer',
+                  flex: 1, height: 50, padding: '0 14px', borderRadius: 12, cursor: 'pointer',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-                  border: resposta === r.val ? `2px solid ${r.color}` : `1px solid ${colors.border}`,
-                  background: resposta === r.val ? r.bg : colors.surface,
-                  fontSize: 14, fontWeight: 600, color: resposta === r.val ? r.color : colors.textMuted,
+                  border: `1px solid ${resposta === r.val ? r.color : colors.border}`,
+                  background: resposta === r.val ? r.color : colors.surface,
+                  fontSize: 15, fontWeight: 500, color: resposta === r.val ? '#fff' : colors.textMuted,
                 }}
               >
                 {r.icon} {r.label}
@@ -820,33 +875,35 @@ export default function ChecklistVeiculoPage() {
 
         {/* Observacao */}
         <div>
-          <div style={{ fontSize: 12, fontWeight: 600, color: colors.textSubtle, marginBottom: 8 }}>
-            Observação {resposta === 'problema' ? '' : '(opcional)'}:
+          <div style={{ fontSize: 13, color: colors.textMuted, marginBottom: 6 }}>
+            Observação {resposta === 'problema' ? '' : '(opcional)'}
           </div>
           <textarea
             value={obs}
             onChange={e => setObs(e.target.value)}
             placeholder="Descreva o estado ou problema encontrado..."
             rows={3}
+            onFocus={e => { e.currentTarget.style.borderColor = '#38BDF8' }}
+            onBlur={e => { e.currentTarget.style.borderColor = colors.border }}
             style={{
-              width: '100%', padding: 12, borderRadius: 12, border: `1px solid ${colors.border}`,
-              background: colors.surfaceAlt, fontSize: 13, color: colors.text, resize: 'none',
-              fontFamily: 'inherit',
+              width: '100%', padding: '11px 14px', borderRadius: 12, border: `1px solid ${colors.border}`,
+              background: colors.surface, fontSize: 15, color: colors.text, resize: 'none', outline: 'none',
+              fontFamily: 'inherit', boxSizing: 'border-box', lineHeight: 1.5,
             }}
           />
         </div>
       </div>
 
       {/* Footer */}
-      <div style={{ padding: '12px 16px', borderTop: `1px solid ${colors.border}`, flexShrink: 0 }}>
+      <div style={{ padding: '12px 0', borderTop: `1px solid ${colors.border}`, flexShrink: 0 }}>
         <button
           onClick={salvarItem}
           disabled={!podeAvancar || saving}
           style={{
-            width: '100%', padding: '14px 20px', borderRadius: 14,
-            background: podeAvancar ? colors.primary : colors.border,
-            color: podeAvancar ? '#fff' : colors.textMuted,
-            border: 'none', fontSize: 15, fontWeight: 700, cursor: podeAvancar ? 'pointer' : 'default',
+            width: '100%', height: 48, padding: '0 20px', borderRadius: 12,
+            background: podeAvancar ? colors.primary : colors.accentBg,
+            color: podeAvancar ? '#fff' : colors.textSubtle,
+            border: podeAvancar ? 'none' : `1px solid ${colors.border}`, fontSize: 15.5, fontWeight: 500, cursor: podeAvancar ? 'pointer' : 'default',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
             opacity: saving ? 0.6 : 1,
           }}
@@ -856,7 +913,7 @@ export default function ChecklistVeiculoPage() {
           ) : step < items.length - 1 ? (
             <>Próximo <ChevronRight size={18} /></>
           ) : (
-            <>Ver Resumo <Check size={18} /></>
+            <>Ver resumo <Check size={18} /></>
           )}
         </button>
       </div>

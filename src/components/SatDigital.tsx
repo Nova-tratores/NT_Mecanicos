@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { colors, shadow } from '@/lib/ui'
+import { hojeBR } from '@/lib/hoje'
 import {
   Headset, Plus, Search, X, Clock, AlertTriangle, Loader2, ChevronDown,
   Wrench, RotateCcw, Truck, Calculator, CalendarDays, User,
@@ -34,13 +35,15 @@ const STATUS_CONFIG: Record<string, { label: string; cor: string }> = {
 
 function fmtData(iso: string) {
   if (!iso) return ''
-  return new Date(iso).toLocaleDateString('pt-BR')
+  // 'AAAA-MM-DD' sozinho é lido como UTC (mostrava um dia antes) (José, 23/10/2026)
+  return new Date(iso.length === 10 ? iso + 'T12:00:00' : iso).toLocaleDateString('pt-BR')
 }
 
 function isAtrasado(sat: SAT) {
   if (!sat.data_limite) return false
   if (sat.status === 'concluido' || sat.status === 'cancelado') return false
-  return new Date(sat.data_limite) < new Date(new Date().toDateString())
+  // Compara só o dia (Brasília): no próprio dia do limite ainda não está atrasado (José, 23/10/2026)
+  return String(sat.data_limite).slice(0, 10) < hojeBR()
 }
 
 function primeiroNome(nome: string) {
@@ -90,8 +93,11 @@ export default function SatDigital({ userId, userName }: Props) {
 
   const cancelar = async (sat: SAT) => {
     if (!confirm(`Cancelar SAT do cliente "${sat.cliente_nome}"?`)) return
-    await fetch('/api/sat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ acao: 'cancelar', id: sat.id, cancelado_por_nome: userName }) })
+    try {
+      const res = await fetch('/api/sat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ acao: 'cancelar', id: sat.id, cancelado_por_nome: userName }) })
+      if (!res.ok) { alert(`Não foi possível cancelar o SAT (erro ${res.status}).`); return }
+    } catch { alert('Sem conexão. Tente de novo quando tiver sinal.'); return }
     setSelectedSat(null)
     await carregar()
   }
@@ -369,18 +375,27 @@ function CriarSatModal({ userId, userName, onClose, onCreated }: {
     if (!clienteNome || !tipo) return
     setSalvando(true)
     try {
-      await fetch('/api/sat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await fetch('/api/sat', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           acao: 'criar', cliente_nome: clienteNome, cliente_endereco: clienteEndereco,
           cliente_cnpj: clienteCnpj, tipo, descricao, data_limite: dataLimite || null,
           criado_por: userId, criado_por_nome: userName,
         }) })
-      onCreated()
-    } catch (e) { console.error(e) }
+      // Só fecha se o servidor gravou; antes fechava mesmo com erro (José, 23/10/2026)
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        alert(`Não foi possível criar o SAT: ${j?.error || `erro ${res.status}`}`)
+      } else {
+        onCreated()
+      }
+    } catch (e) {
+      console.error(e)
+      alert('Sem conexão. Tente de novo quando tiver sinal.')
+    }
     setSalvando(false)
   }
 
-  const hoje = new Date().toISOString().slice(0, 10)
+  const hoje = hojeBR()
 
   return (
     <>
