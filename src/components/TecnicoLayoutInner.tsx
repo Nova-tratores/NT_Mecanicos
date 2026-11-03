@@ -231,13 +231,16 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
       // as ocorrências do Opa (−3/−5) agora nascem no servidor (instrumentation.ts) — José, 23/10/2026
       const { data } = await withTimeout(supabase
         .from('mecanico_ocorrencias')
-        .select('id, tipo, descricao, pontos, created_at')
+        .select('*')   // '*' para funcionar com ou sem a coluna ciente_em (sql/ocorrencias-ciencia.sql)
         .eq('tecnico_nome', user.tecnico_nome)
         .in('tipo', ['opa_dia1', 'opa_dia2'])
         .order('created_at', { ascending: true }))
       if (!data?.length) { setOcorrenciasPendentes([]); return }
       const localSet = getOcorrenciaViewsLocal()
-      setOcorrenciasPendentes(data.filter(o => !localSet.has(o.id)))
+      // ciência no banco (vale em qualquer celular) OU lembrada neste aparelho (confirmações de antes da coluna)
+      setOcorrenciasPendentes((data as (OcorrenciaPopup & { ciente_em?: string | null })[])
+        .filter(o => !o.ciente_em && !localSet.has(o.id))
+        .map(({ id, tipo, descricao, pontos, created_at }) => ({ id, tipo, descricao, pontos, created_at })))
     } catch {}
   }, [user?.tecnico_nome])
 
@@ -361,6 +364,12 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     const oc = ocorrenciasPendentes[0]
     addOcorrenciaViewLocal(oc.id)
     setOcorrenciasPendentes(prev => prev.filter(o => o.id !== oc.id))
+    // ciência no banco: não volta nem em outro celular (sem rede/sem migração: fica a do aparelho)
+    try {
+      await fetch('/api/ocorrencias/ciente', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: oc.id }),
+      })
+    } catch { /* offline: o aparelho lembra */ }
     setOcorrenciaConfirmando(false)
   }
 
