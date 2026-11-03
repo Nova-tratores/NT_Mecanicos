@@ -16,22 +16,35 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon, ChevronRight, Car, ClipboardCheck } from 'lucide-react'
 
+// ── "Já vi" dos pop-ups: localStorage + cópia em memória ──
+// O setItem pode dar erro (celular com o localStorage cheio — fotos/assinaturas em base64 antes de 23/10).
+// Antes o erro escapava no "Li e entendi": o botão travava em "Confirmando..." e o pop-up não saía
+// (José, 03/11/2026 — Opa do freio de mão). Agora o erro é engolido e a memória segura até fechar o app.
+const lembradosMemoria: Record<string, Set<string | number>> = {}
+function lerLembrados<T extends string | number>(chave: string): Set<T> {
+  const set = new Set<T>((lembradosMemoria[chave] || []) as Iterable<T>)
+  try {
+    const raw = localStorage.getItem(chave)
+    if (raw) for (const v of JSON.parse(raw) as T[]) set.add(v)
+  } catch { /* sem localStorage: fica só a memória */ }
+  return set
+}
+function lembrar(chave: string, id: string | number) {
+  (lembradosMemoria[chave] ||= new Set()).add(id)
+  try {
+    const set = lerLembrados<string | number>(chave)
+    set.add(id)
+    localStorage.setItem(chave, JSON.stringify([...set]))
+  } catch { /* localStorage cheio/bloqueado: a memória segura nesta abertura */ }
+}
+
 // ── Avisos confirmados: cache local para nunca mostrar de novo ──
 const AVISOS_CONFIRMADOS_KEY = 'nt-avisos-confirmados'
 
 // ── OPA vistas: cache local ──
 const OPA_VIEWS_KEY = 'nt-opa-views'
-function getOpaViewsLocal(): Set<string> {
-  try {
-    const raw = localStorage.getItem(OPA_VIEWS_KEY)
-    return raw ? new Set(JSON.parse(raw)) : new Set()
-  } catch { return new Set() }
-}
-function addOpaViewLocal(id: string) {
-  const set = getOpaViewsLocal()
-  set.add(id)
-  localStorage.setItem(OPA_VIEWS_KEY, JSON.stringify([...set]))
-}
+function getOpaViewsLocal(): Set<string> { return lerLembrados<string>(OPA_VIEWS_KEY) }
+function addOpaViewLocal(id: string) { lembrar(OPA_VIEWS_KEY, id) }
 
 interface OpaPopup {
   id: string; titulo: string; descricao: string | null
@@ -43,30 +56,11 @@ interface OcorrenciaPopup {
 }
 
 const OCORRENCIA_VIEWS_KEY = 'nt-ocorrencia-views'
-function getOcorrenciaViewsLocal(): Set<number> {
-  try {
-    const raw = localStorage.getItem(OCORRENCIA_VIEWS_KEY)
-    return raw ? new Set(JSON.parse(raw)) : new Set()
-  } catch { return new Set() }
-}
-function addOcorrenciaViewLocal(id: number) {
-  const set = getOcorrenciaViewsLocal()
-  set.add(id)
-  localStorage.setItem(OCORRENCIA_VIEWS_KEY, JSON.stringify([...set]))
-}
+function getOcorrenciaViewsLocal(): Set<number> { return lerLembrados<number>(OCORRENCIA_VIEWS_KEY) }
+function addOcorrenciaViewLocal(id: number) { lembrar(OCORRENCIA_VIEWS_KEY, id) }
 
-function getAvisosConfirmadosLocal(): Set<number> {
-  try {
-    const raw = localStorage.getItem(AVISOS_CONFIRMADOS_KEY)
-    return raw ? new Set(JSON.parse(raw)) : new Set()
-  } catch { return new Set() }
-}
-
-function addAvisoConfirmadoLocal(id: number) {
-  const set = getAvisosConfirmadosLocal()
-  set.add(id)
-  localStorage.setItem(AVISOS_CONFIRMADOS_KEY, JSON.stringify([...set]))
-}
+function getAvisosConfirmadosLocal(): Set<number> { return lerLembrados<number>(AVISOS_CONFIRMADOS_KEY) }
+function addAvisoConfirmadoLocal(id: number) { lembrar(AVISOS_CONFIRMADOS_KEY, id) }
 
 const LAYOUT_TIMEOUT = 8000
 function withTimeout<T>(p: PromiseLike<T>): Promise<T> {

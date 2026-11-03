@@ -24,7 +24,8 @@ function getOpaViewsLocal(): Set<string> {
 function addOpaViewLocal(id: string) {
   const set = getOpaViewsLocal()
   set.add(id)
-  localStorage.setItem(OPA_VIEWS_KEY, JSON.stringify([...set]))
+  // localStorage cheio/bloqueado não pode travar o "Li e entendi" (03/11/2026)
+  try { localStorage.setItem(OPA_VIEWS_KEY, JSON.stringify([...set])) } catch { /* a view vai para o banco igual */ }
 }
 
 interface OpaPopup {
