@@ -70,8 +70,12 @@ export async function escalarOpas(agoraMs = Date.now()): Promise<string> {
   rodandoOpa = true
   try {
     const sb = supabaseServidor()
-    const { data: opas } = await sb.from('portal_opas').select('id, titulo, descricao, created_at').eq('status', 'aberto')
-    if (!opas?.length) return ''
+    // select('*') + filtro aqui: funciona com ou sem a coluna "publico" no banco.
+    // Opa "só escritório" NÃO penaliza os mecânicos (portal: sql/opa-publico.sql).
+    const { data: todos } = await sb.from('portal_opas').select('*').eq('status', 'aberto')
+    const opas = ((todos || []) as { id: string; titulo: string; descricao: string | null; created_at: string; publico?: string | null }[])
+      .filter(o => o.publico !== 'escritorio')
+    if (!opas.length) return ''
     const nomes = await tecnicosAtivos()
     if (!nomes.length) return ''
 

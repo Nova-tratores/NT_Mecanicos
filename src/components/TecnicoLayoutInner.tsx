@@ -145,12 +145,17 @@ export default function TecnicoLayoutInner({ children }: { children: React.React
     if (!user?.id) return
     if (!navigator.onLine) return
     try {
-      const { data: opas } = await withTimeout(supabase
+      // select('*') + filtro aqui: funciona com ou sem a coluna "publico" no banco
+      const { data: todos } = await withTimeout(supabase
         .from('portal_opas')
-        .select('id, titulo, descricao, created_at')
+        .select('*')
         .eq('status', 'aberto')
         .order('created_at', { ascending: true }))
-      if (!opas || opas.length === 0) { setOpasPendentes([]); return }
+      // Opa "só escritório" não é para o mecânico (portal: sql/opa-publico.sql)
+      const opas = ((todos || []) as { id: string; titulo: string; descricao: string | null; created_at: string; publico?: string | null }[])
+        .filter(o => o.publico !== 'escritorio')
+        .map(({ id, titulo, descricao, created_at }) => ({ id, titulo, descricao, created_at }))
+      if (opas.length === 0) { setOpasPendentes([]); return }
 
       const ids = opas.map(o => o.id)
       const { data: views } = await withTimeout(supabase

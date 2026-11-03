@@ -65,13 +65,15 @@ export default function OpaTecnicoPage() {
       .order('created_at', { ascending: false })
       .limit(200)
     if (!lista) { setLoading(false); return }
-    const ids = lista.map((o: Opa) => o.id)
+    // Opa "só escritório" não é para o mecânico (portal: sql/opa-publico.sql)
+    const doMecanico = (lista as (Opa & { publico?: string | null })[]).filter(o => o.publico !== 'escritorio')
+    const ids = doMecanico.map((o: Opa) => o.id)
     let anexos: OpaAnexo[] = []
     if (ids.length) {
       const { data: anx } = await supabase.from('portal_opas_anexos').select('id, opa_id, url, tipo').in('opa_id', ids)
       anexos = anx || []
     }
-    setOpas((lista as Opa[]).map(o => ({ ...o, anexos: anexos.filter(a => a.opa_id === o.id) })))
+    setOpas((doMecanico as Opa[]).map(o => ({ ...o, anexos: anexos.filter(a => a.opa_id === o.id) })))
     setLoading(false)
   }, [])
 
