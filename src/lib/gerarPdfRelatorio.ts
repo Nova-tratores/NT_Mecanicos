@@ -101,6 +101,8 @@ function isVideoUrl(url: string): boolean {
 
 const VERMELHO = '#C41E2A'
 const AZUL_ESCURO = '#1E3A5F'
+const LARANJA = '#EA580C'
+const LARANJA_ESCURO = '#9A3412'
 const CINZA = '#6B7280'
 const CINZA_CLARO = '#F3F4F6'
 const PRETO = '#1F2937'
@@ -173,6 +175,11 @@ async function loadImageAsBase64(url: string, downloadFoto?: (url: string) => Pr
 }
 
 export async function gerarPdfRelatorio(dados: DadosRelatorio) {
+  // paliativo em LARANJA (José, 05/11/2026), igual ao cartão no portal; o final segue vermelho/azul
+  const paliativo = !!dados.paliativoMotivo
+  const COR_DESTAQUE = paliativo ? LARANJA : VERMELHO
+  const COR_TITULO = paliativo ? LARANJA_ESCURO : AZUL_ESCURO
+  const COR_FAIXA = paliativo ? '#FFEDD5' : '#DBEAFE'
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
   const pageW = doc.internal.pageSize.getWidth()
   const marginL = 15
@@ -202,13 +209,13 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
     doc.addImage(logoBase64, 'PNG', marginL, y - 2, 40, 12)
   } catch {
     doc.setFontSize(16)
-    doc.setTextColor(VERMELHO)
+    doc.setTextColor(COR_DESTAQUE)
     doc.text('NOVA TRATORES', marginL, y + 6)
   }
 
   // Título à direita
   doc.setFontSize(14)
-  doc.setTextColor(VERMELHO)
+  doc.setTextColor(COR_DESTAQUE)
   doc.text(dados.paliativoMotivo ? 'RELATÓRIO PALIATIVO' : 'RELATÓRIO DE SERVIÇO', pageW - marginR, y + 3, { align: 'right' })
   doc.setFontSize(10)
   doc.setTextColor(CINZA)
@@ -217,7 +224,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
   y += 16
 
   // Linha separadora
-  doc.setDrawColor(VERMELHO)
+  doc.setDrawColor(COR_DESTAQUE)
   doc.setLineWidth(0.8)
   doc.line(marginL, y, pageW - marginR, y)
   y += 6
@@ -227,7 +234,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
   // ============================================
   const drawSectionTitle = (title: string) => {
     checkNewPage(14)
-    doc.setFillColor(AZUL_ESCURO)
+    doc.setFillColor(COR_TITULO)
     doc.roundedRect(marginL, y, contentW, 7, 1, 1, 'F')
     doc.setFontSize(10)
     doc.setTextColor('#FFFFFF')
@@ -360,7 +367,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
   doc.setFillColor(CINZA_CLARO)
   doc.rect(marginL, y, contentW, 6, 'F')
   doc.setFontSize(8)
-  doc.setTextColor(AZUL_ESCURO)
+  doc.setTextColor(COR_TITULO)
   const cols = [0, 35, 65, 95, 130]
   const headers = ['Data', 'Hora Início', 'Hora Fim', 'Total KM']
   headers.forEach((h, i) => doc.text(h, marginL + cols[i] + 2, y + 4))
@@ -382,10 +389,10 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
 
   // Totais
   checkNewPage(10)
-  doc.setFillColor('#DBEAFE')
+  doc.setFillColor(COR_FAIXA)
   doc.rect(marginL, y, contentW, 7, 'F')
   doc.setFontSize(9)
-  doc.setTextColor(AZUL_ESCURO)
+  doc.setTextColor(COR_TITULO)
   doc.text(`Total Horas: ${dados.totalHora || '-'}`, marginL + 4, y + 5)
   doc.text(`Total KM: ${dados.totalKm || '-'}`, marginL + 70, y + 5)
   y += 12
@@ -398,7 +405,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
     doc.setFillColor(CINZA_CLARO)
     doc.rect(marginL, y, contentW, 6, 'F')
     doc.setFontSize(7)
-    doc.setTextColor(AZUL_ESCURO)
+    doc.setTextColor(COR_TITULO)
     const pCols = [0, 28, 98, 118, 138]
     const pHeaders = ['Código', 'Descrição', 'Qtd Enviada', 'Qtd Usada', 'Situação']
     pHeaders.forEach((h, i) => doc.text(h, marginL + pCols[i] + 2, y + 4))
@@ -498,7 +505,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
         doc.setFillColor('#F3F4F6')
         doc.roundedRect(x, y + 2, fotoW, fotoH, 2, 2, 'F')
         doc.setFontSize(9)
-        doc.setTextColor(AZUL_ESCURO)
+        doc.setTextColor(COR_TITULO)
         doc.text('Vídeo anexado', x + fotoW / 2, y + 2 + fotoH / 2 - 3, { align: 'center' })
         doc.setFontSize(7)
         doc.setTextColor(CINZA)
