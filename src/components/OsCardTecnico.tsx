@@ -44,6 +44,8 @@ export const SITUACAO = {
   atrasada: { rot: 'Atrasada', cor: colors.osAtrasada, dica: 'o dia já passou e não foi feita' },
   resservico: { rot: 'Resserviço', cor: colors.osResservico, dica: 'voltar para refazer' },
   orcamento: { rot: 'Orçamento', cor: '#0891B2', dica: 'esperando o cliente aprovar' },
+  // relatório paliativo enviado: ajudou o cliente, mas precisa voltar para finalizar (José, 05/11/2026)
+  paliativo: { rot: 'Serviço em aberto', cor: '#C2410C', dica: 'paliativo feito, falta finalizar' },
 } as const
 /** as 6 cores da legenda */
 export const LEGENDA: Situacao[] = [SITUACAO.fazer, SITUACAO.execucao, SITUACAO.pecas, SITUACAO.feita, SITUACAO.atrasada, SITUACAO.resservico]
@@ -51,6 +53,7 @@ export const LEGENDA: Situacao[] = [SITUACAO.fazer, SITUACAO.execucao, SITUACAO.
 /** situação pelo Status do POS. `atrasou` = o dia/previsão já passou (só vale antes de feita). */
 export function situacaoOS(status?: string | null, atrasou?: boolean, resservico?: boolean): Situacao {
   const s = String(status || '')
+  if (/Paliativo/i.test(s)) return SITUACAO.paliativo
   const feita = /Conclu|Relat|Executada|Omie|Cobrando|Garantia|Fatur|Finaliz/i.test(s)
   if (resservico && !feita) return SITUACAO.resservico
   if (feita) return SITUACAO.feita
@@ -275,6 +278,8 @@ export function OsCard({
   preenchida,
   index = 0,
   destaque,
+  href,
+  nota,
 }: {
   os: OrdemServico
   cidade?: string
@@ -282,6 +287,10 @@ export function OsCard({
   index?: number
   /** texto da busca, para destacar o trecho achado */
   destaque?: string
+  /** outro destino (ex.: OS de simulação vai direto ao Preencher) */
+  href?: string
+  /** chip extra (ex.: motivo do último paliativo) */
+  nota?: string
 }) {
   const rs = infoResservico(os)
   const solicitacao = rs ? (rs.refazer || rs.motivo) : (pedidoLimpo(os.Serv_Solicitado) || os.Tipo_Servico)
@@ -303,6 +312,7 @@ export function OsCard({
   if (maquina) chips.push({ icon: Cog, texto: maquina.length > 48 ? maquina.slice(0, 47) + '…' : maquina })
   if (os.ID_PPV) chips.push({ icon: Package, texto: os.ID_PPV })
   if (ehInterna(os)) chips.push({ icon: Building2, texto: 'Interna', cor: colors.primary })
+  if (nota) chips.push({ icon: Clock, texto: nota, cor: SITUACAO.paliativo.cor })
   if (preenchida) chips.push({ icon: CheckCircle2, texto: 'Relatório preenchido', cor: colors.osFeita })
   // a faixa já diz a situação; o chip só completa quando ela esconde a fase (atrasada) ou é "Aguardando outros"
   if (base === SITUACAO.atrasada) chips.push({ icon: Clock, texto: situacaoOS(os.Status, false, false).rot, cor: colors.textMuted })
@@ -310,7 +320,7 @@ export function OsCard({
 
   return (
     <CartaoSituacao
-      href={`/os/${os.Id_Ordem}`}
+      href={href || `/os/${os.Id_Ordem}`}
       sit={sit}
       numero={numeroOS(os.Id_Ordem)}
       cliente={os.Os_Cliente}

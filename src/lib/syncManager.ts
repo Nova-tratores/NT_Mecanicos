@@ -231,6 +231,10 @@ async function processarFila(): Promise<number> {
           const r = await resolverFotosPendentes(item.data)
           data = r.data
           fotoPendente = r.pendente
+        } else if (item.table === 'Ordem_Servico_Paliativos' && item.data.dados) {
+          // paliativo feito sem internet: as fotos estão dentro de "dados" (José, 05/11/2026)
+          const r = await resolverFotosPendentes(item.data.dados as Record<string, unknown>)
+          data = { ...item.data, dados: r.data }
         }
 
         // enfileiradoEm: o insert da fila confere se a linha já subiu desde o enfileiramento (sem duplicar)

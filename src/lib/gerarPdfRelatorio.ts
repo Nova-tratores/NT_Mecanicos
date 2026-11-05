@@ -82,6 +82,9 @@ interface DadosRelatorio {
   nomResp: string
   data: string
 
+  // Relatório PALIATIVO (José, 05/11/2026): título próprio + por que não terminou
+  paliativoMotivo?: string
+
   // Se true, não faz download, só retorna o blob
   apenasBlob?: boolean
 
@@ -206,7 +209,7 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
   // Título à direita
   doc.setFontSize(14)
   doc.setTextColor(VERMELHO)
-  doc.text('RELATÓRIO DE SERVIÇO', pageW - marginR, y + 3, { align: 'right' })
+  doc.text(dados.paliativoMotivo ? 'RELATÓRIO PALIATIVO' : 'RELATÓRIO DE SERVIÇO', pageW - marginR, y + 3, { align: 'right' })
   doc.setFontSize(10)
   doc.setTextColor(CINZA)
   doc.text(`OS: ${dados.ordemServico}`, pageW - marginR, y + 9, { align: 'right' })
@@ -340,6 +343,10 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
   const servLines = doc.splitTextToSize(dados.servicoRealizado || '-', contentW - 4)
   doc.text(servLines, marginL, y + 4)
   y += 4 + servLines.length * 4 + 4
+
+  if (dados.paliativoMotivo) {
+    drawRow([{ label: 'Serviço não finalizado — motivo', value: dados.paliativoMotivo }])
+  }
 
   if (dados.tipoRev) {
     drawRow([{ label: 'Tipo Revisão', value: dados.tipoRev }])

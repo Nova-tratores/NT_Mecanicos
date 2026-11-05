@@ -10,7 +10,7 @@ import { primeiroNomeIlike } from '@/lib/prefetch'
 import type { OrdemServico } from '@/lib/types'
 import {
   FileText, FileCheck, Send, ChevronDown, AlertTriangle, ClipboardList, Wrench, Hourglass, Layers, ChevronRight,
-  Search, X, Globe, Users, Building2, type LucideIcon,
+  Search, X, Globe, Users, Building2, RotateCcw, type LucideIcon,
 } from 'lucide-react'
 import {
   OsCard, FASES_ORCAMENTO, FASES_EXECUCAO, SITUACAO, situacaoOS, clarinho, nomeBonito, numeroOS,
@@ -30,6 +30,7 @@ interface OsData {
   cidadeMap: Record<string, string>
   enviadasCount: number
   agendaMap: Record<string, string[]> // Id_Ordem → datas agendadas
+  paliativoMap?: Record<string, string> // Id_Ordem → motivo do último paliativo (José, 05/11/2026)
 }
 
 /** tira o que quebra o filtro .or() do PostgREST (vírgula, parênteses) e os coringas do ilike */
@@ -87,6 +88,7 @@ async function fetchOsData(nome: string): Promise<OsData> {
   let enviadas = new Set<string>()
   const cidadeMap: Record<string, string> = {}
   const agendaMap: Record<string, string[]> = {}
+  const paliativoMap: Record<string, string> = {}
 
   // Status pós-relatório usados nos dois lados (lista + contador)
   const FASES_CONCLUIDAS_TECNICO = [
@@ -162,10 +164,21 @@ async function fetchOsData(nome: string): Promise<OsData> {
       }
       if (datas.size) agendaMap[o.Id_Ordem] = [...datas].sort()
     }
+
+    // Serviços em aberto: o motivo do último paliativo (tabela pode não existir ainda: segue sem)
+    const idsPal = todas.filter((o) => o.Status === FASE_PALIATIVO).map((o) => o.Id_Ordem)
+    if (idsPal.length) {
+      const { data: pals } = await supabase.from('Ordem_Servico_Paliativos').select('Ordem_Servico, motivo, created_at')
+        .in('Ordem_Servico', idsPal).order('created_at').then((r) => r, () => ({ data: null }))
+      for (const p of (pals || []) as { Ordem_Servico: string; motivo: string }[]) paliativoMap[p.Ordem_Servico] = p.motivo
+    }
   }
 
-  return { ordens: todas, preenchidas, enviadas, cidadeMap, enviadasCount: enviadas.size, agendaMap }
+  return { ordens: todas, preenchidas, enviadas, cidadeMap, enviadasCount: enviadas.size, agendaMap, paliativoMap }
 }
+
+/** OS na fase do relatório paliativo: ficam em "Serviços em aberto" até o finalizado (José, 05/11/2026) */
+const FASE_PALIATIVO = 'Preenchido Paliativo'
 
 /* ═══ Helpers ═══ */
 function getHoje() {
@@ -240,6 +253,15 @@ export default function OrdensHub() {
   const cidadeMap = raw.cidadeMap || {}
   const enviadasCount = raw.enviadasCount || 0
   const agendaMap = raw.agendaMap || {}
+  const paliativoMap = raw.paliativoMap || {}
+  // simulação: paliativo da OS TESTE guardado só neste navegador (preencher/page.tsx)
+  const [simPaliativo, setSimPaliativo] = useState<string | null>(null)
+  useEffect(() => {
+    offlineGet('prefetch:os-pal:TESTE').then((l) => {
+      const lista = (l || []) as { motivo?: string }[]
+      setSimPaliativo(lista.length ? lista[lista.length - 1].motivo || 'Paliativo' : null)
+    }).catch(() => {})
+  }, [])
 
   const hoje = getHoje()
 
@@ -363,7 +385,9 @@ export default function OrdensHub() {
   const achadas = q ? todasAbertas.filter((o) => casaBusca(o, q)) : []
   const cartao = (os: OrdemServico, i: number, destaque?: string, cid?: string) => (
     // "Relatório preenchido" só com relatório ENVIADO (rascunho de horários não conta — José, 23/10/2026)
-    <OsCard key={os.Id_Ordem} os={os} cidade={cid ?? cidadeMap[os.Cnpj_Cliente]} preenchida={enviadas.has(String(os.Id_Ordem))} index={i} destaque={destaque} />
+    <OsCard key={os.Id_Ordem} os={os} cidade={cid ?? cidadeMap[os.Cnpj_Cliente]} preenchida={enviadas.has(String(os.Id_Ordem))} index={i} destaque={destaque}
+      nota={os.Status === FASE_PALIATIVO ? (os.Id_Ordem === 'TESTE' ? simPaliativo : paliativoMap[os.Id_Ordem]) || undefined : undefined}
+      href={os.Id_Ordem === 'TESTE' ? '/os/TESTE/preencher' : undefined} />
   )
 
   /* ── grupos ── */
@@ -373,9 +397,15 @@ export default function OrdensHub() {
   // e o agrupar saiu (José, 23/10/2026)
   // atrasada = a mesma regra do cartão (previsão passou e a OS ainda está antes de feita), para a etiqueta e o grupo baterem
   const ehAtrasada = (o: OrdemServico) => { const p = (o.Previsao_Execucao || '').trim().slice(0, 10); return !!p && p < hoje && situacaoOS(o.Status, true, false) === SITUACAO.atrasada }
-  const listaAtrasadas = todasAbertas.filter(ehAtrasada)
-  const naoAtrasadas = todasAbertas.filter((o) => !ehAtrasada(o))
+  const emAberto = (o: OrdemServico) => o.Status === FASE_PALIATIVO
+  const listaPaliativo = [
+    ...todasAbertas.filter(emAberto),
+    ...(simPaliativo ? [{ Id_Ordem: 'TESTE', Status: FASE_PALIATIVO, Os_Cliente: 'CLIENTE TESTE (SIMULAÇÃO)', Serv_Solicitado: 'Revisão de 300 horas (simulação)' } as OrdemServico] : []),
+  ]
+  const listaAtrasadas = todasAbertas.filter((o) => !emAberto(o) && ehAtrasada(o))
+  const naoAtrasadas = todasAbertas.filter((o) => !emAberto(o) && !ehAtrasada(o))
   const grupos: Grupo[] = [
+    { k: 'pal', rot: 'Serviços em aberto', icon: RotateCcw, cor: SITUACAO.paliativo.cor, lista: listaPaliativo },
     { k: 'atr', rot: 'Atrasadas', icon: AlertTriangle, cor: SITUACAO.atrasada.cor, lista: listaAtrasadas },
     { k: 'abe', rot: 'Abertas no seu nome', icon: FileText, cor: colors.primary, lista: naoAtrasadas },
   ]
@@ -456,7 +486,7 @@ export default function OrdensHub() {
             </>
           ) : loading ? (
             <PageSpinner />
-          ) : todasAbertas.length === 0 ? (
+          ) : todasAbertas.length === 0 && !simPaliativo ? (
             <EmptyState icon={FileText} title="Nenhuma OS aberta" subtitle="Você está em dia" />
           ) : (
             grupos.filter((g) => g.lista.length > 0).map((g) => {

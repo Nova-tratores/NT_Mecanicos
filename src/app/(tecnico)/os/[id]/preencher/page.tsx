@@ -9,7 +9,7 @@ import { supabase } from '@/lib/supabase'
 import { offlineWrite } from '@/lib/offlineWrite'
 import type { OrdemServico } from '@/lib/types'
 import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV } from '@/lib/prefetch'
-import { offlineSet, addPendingPdf, removePendingPdf, queueSync } from '@/lib/offlineCache'
+import { offlineSet, offlineGet, addPendingPdf, removePendingPdf, queueSync } from '@/lib/offlineCache'
 import { diasDoRegistro, buscarRelatorioDaOS, minutosDoDia, horasTexto, horasDecimais, atualizarCacheRelatorio } from '@/lib/diasRelatorio'
 import { downloadFotoRelatorio, cidadeDoCliente } from '@/lib/gerarEAnexarRelatorio'
 import FotoUpload from '@/components/FotoUpload'
@@ -98,7 +98,9 @@ const qtdNum = (v: unknown) => parseFloat(String(v ?? '').replace(',', '.')) || 
 const normFase = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()
 const FASES_ANTES_DO_RELATORIO = new Set([
   '', 'Orçamento', 'Orçamento enviado para o cliente e aguardando', 'Execução', 'Execução Procurando peças',
-  'Execução aguardando peças (em transporte)', 'Aguardando outros', 'Aguardando ordem Técnico',
+  'Execução aguardando peças (em transporte)', 'Aguardando outros', 'Aguardando ordem Técnico', 'Preenchido Paliativo',
+  // fases do POS que faltavam (OS-0853 estava em Orçamento Aprovado — José, 05/11/2026)
+  'Orçamento Aprovado', 'Execução (Realizando Diagnóstico)',
 ].map(normFase))
 
 interface PecaInfo {
@@ -116,6 +118,20 @@ interface PecaInfo {
 }
 
 /** chave fixa: peça do PPV = código; extra = uid criado na hora */
+/** Relatório PALIATIVO (José, 05/11/2026): ajudou o cliente na hora mas o serviço não terminou. Vai para
+ *  Ordem_Servico_Paliativos (vários por OS), a OS vai para 'Preenchido Paliativo' e fica em "Serviços em aberto"
+ *  até o técnico mandar o FINALIZADO (o relatório de sempre, em Ordem_Servico_Tecnicos). */
+type TipoRelatorio = '' | 'paliativo' | 'finalizado'
+const MOTIVOS_PALIATIVO = [
+  'Falta de Peças', 'Falta de Identificar o Problema', 'Falta Ferramenta',
+  'Falta de Auxilio', 'Falta de Serviço de Terceiro', 'Falta de Tempo',
+]
+const FASE_PALIATIVO = 'Preenchido Paliativo'
+interface PaliativoAnterior { id: number; created_at: string; motivo: string; TecResp1: string | null; DataInicio: string | null; TotalHora: string | null; dados: Record<string, unknown> | null }
+/** do paliativo anterior vem só o que não muda entre as visitas (cliente, local, equipamento, diagnóstico, peças);
+ *  dias, carro, serviço realizado, fotos e assinaturas são desta visita */
+const CAMPOS_DA_VISITA = /^(DataInicio|DataFinal|InicioHora|FinalHora|FinaHora|InicioKm|FinalKm|AdicionarData|DiasExecucao|TotalHora|TotalKm|NumPlaca|ServicoRealizado|Foto|AssCliente|AssTecnico|IdOs|Status|Data$|pdf_criado)/
+
 const chavePeca = (p: PecaInfo) => (p.origem === 'ppv' && p.codigo ? `ppv:${p.codigo}` : (p.uid || `m:${p.codigo || p.descricao}`))
 const comUid = (lista: PecaInfo[]) => lista.map((p) => (p.uid ? p : { ...p, uid: p.origem === 'ppv' && p.codigo ? `ppv:${p.codigo}` : `m:${novoId()}` }))
 
@@ -129,8 +145,20 @@ interface MovimentacaoPPV {
   TipoMovimento: string
 }
 
+/** OS de SIMULAÇÃO (José, 05/11/2026): /os/TESTE/preencher abre esta OS fictícia — nada é lido nem gravado
+ *  no banco (fotos ficam só no celular; Enviar não salva relatório, não muda fase, não gera garantia nem PDF). */
+const ID_SIMULACAO = 'TESTE'
+const OS_SIMULACAO: Record<string, unknown> = {
+  Id_Ordem: ID_SIMULACAO, Status: 'Execução', Data: new Date().toISOString().slice(0, 10),
+  Os_Cliente: 'CLIENTE TESTE (SIMULAÇÃO)', Cnpj_Cliente: '', Endereco_Cliente: 'Fazenda Teste, Zona Rural',
+  Os_Tecnico: 'Mecânico Teste', Os_Tecnico2: '', Tipo_Servico: 'Revisão', Revisao: '300', Projeto: '',
+  Serv_Solicitado: 'Revisão de 300 horas (simulação — nada é salvo)', Qtd_HR: 0, Qtd_KM: 0, Valor_Total: 0,
+  ID_PPV: '', Previsao_Execucao: '', Previsao_Faturamento: '',
+}
+
 export default function PreencherOS({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params)
+  const simulacao = id === ID_SIMULACAO
   const { user } = useCurrentUser()
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
@@ -140,6 +168,14 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [tecnicos, setTecnicos] = useState<string[]>([])
   const [veiculos, setVeiculos] = useState<{ IdPlaca: number; NumPlaca: string }[]>([])
   const [existingId, setExistingId] = useState<number | null>(null)
+
+  // Paliativo × finalizado (José, 05/11/2026)
+  const [tipoRelatorio, setTipoRelatorio] = useState<TipoRelatorio>('')
+  const [motivoPaliativo, setMotivoPaliativo] = useState('')
+  const [paliativosAnteriores, setPaliativosAnteriores] = useState<PaliativoAnterior[]>([])
+  const paliativo = tipoRelatorio === 'paliativo'
+  /** Status do relatório que já existe em Ordem_Servico_Tecnicos ('rascunho' = horários salvos na tela da OS) */
+  const existingStatusRef = useRef('')
 
   // Form state
   const [tecResp1, setTecResp1] = useState('')
@@ -405,6 +441,21 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     else if (pecasLoaded) setPecas(pecasLoaded)
   }
 
+  /** OS sem relatório finalizado mas com paliativo: a nova visita começa com os dados fixos do último paliativo */
+  /** true = já preencheu a tela (o chamador não aplica mais nada). O rascunho da tela da OS ("Salvar horários")
+   *  traz só os horários DESTA visita; o resto vem do paliativo. */
+  const aplicarPaliativos = async (lista: PaliativoAnterior[], existing: Record<string, unknown> | null, osData: Record<string, unknown> | null) => {
+    setPaliativosAnteriores(lista)
+    existingStatusRef.current = String(existing?.Status || '')
+    if (existing?.Status === 'enviado') { setTipoRelatorio('finalizado'); return false } // reabrindo o finalizado já enviado
+    const ultimo = lista[lista.length - 1]?.dados
+    if (!ultimo) return false
+    const daVisita = (r: Record<string, unknown>, sim: boolean) => Object.fromEntries(Object.entries(r).filter(([k]) => CAMPOS_DA_VISITA.test(k) === sim))
+    await aplicarRelatorio({ ...daVisita(ultimo, false), ...(existing ? daVisita(existing, true) : {}) }, osData)
+    if (user) setTecResp1(user.tecnico_nome)
+    return true
+  }
+
   useEffect(() => {
     const timeoutMs = 6000
     const withTimeout = <T,>(p: PromiseLike<T>): Promise<T> =>
@@ -419,6 +470,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       aplicarOS(osData)
       if (cachedTecnicos) setTecnicos(cachedTecnicos.map(t => t.UsuNome).filter(Boolean))
       if (cachedVeiculos) setVeiculos(cachedVeiculos)
+      const pals = ((await offlineGet(`prefetch:os-pal:${id}`)) as PaliativoAnterior[] | null) || []
+      if (await aplicarPaliativos(pals, (cachedTec as Record<string, unknown> | null) || null, osData)) return
       if (cachedTec) {
         await aplicarRelatorio(cachedTec as Record<string, unknown>, osData)
       } else {
@@ -429,14 +482,32 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     }
 
     const carregar = async () => {
+      if (simulacao) {
+        aplicarOS(OS_SIMULACAO)
+        if (user) setTecResp1(user.tecnico_nome)
+        // paliativos simulados ficam só neste navegador (para testar o "preencher de novo")
+        const pals = ((await offlineGet(`prefetch:os-pal:${id}`)) as PaliativoAnterior[] | null) || []
+        if (!(await aplicarPaliativos(pals, null, OS_SIMULACAO))) preencherEquipDaOS(OS_SIMULACAO, null)
+        // só leitura: listas de técnicos e placas
+        const [c, v] = await Promise.allSettled([
+          withTimeout(supabase.from('Tecnicos_Appsheet').select('UsuNome').order('UsuNome')),
+          withTimeout(supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca')),
+        ])
+        if (c.status === 'fulfilled' && c.value.data) setTecnicos((c.value.data as { UsuNome: string }[]).map(t => t.UsuNome).filter(Boolean))
+        if (v.status === 'fulfilled' && v.value.data) setVeiculos(v.value.data as { IdPlaca: number; NumPlaca: string }[])
+        setLoading(false)
+        return
+      }
       try {
         if (!navigator.onLine) { await carregarDoCache(); return }
 
-        const [osRes, tecRes, veicRes, relRes] = await Promise.allSettled([
+        const [osRes, tecRes, veicRes, relRes, palRes] = await Promise.allSettled([
           withTimeout(supabase.from('Ordem_Servico').select('*').eq('Id_Ordem', id).single()),
           withTimeout(supabase.from('Tecnicos_Appsheet').select('UsuNome').order('UsuNome')),
           withTimeout(supabase.from('SupaPlacas').select('IdPlaca, NumPlaca').order('NumPlaca')),
           buscarRelatorioDaOS(id, '*', timeoutMs),
+          withTimeout(supabase.from('Ordem_Servico_Paliativos').select('id, created_at, motivo, TecResp1, DataInicio, TotalHora, dados')
+            .eq('Ordem_Servico', id).order('created_at')),
         ])
 
         // A OS não veio (rede instável / estourou o tempo): tudo do cache
@@ -471,9 +542,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           existing = ((await getCachedOSTec(id)) as Record<string, unknown> | null) || null
         }
 
-        if (existing) {
+        // paliativos anteriores (tabela pode não existir ainda: segue sem eles)
+        let pals: PaliativoAnterior[] = []
+        if (palRes.status === 'fulfilled' && !palRes.value.error) {
+          pals = (palRes.value.data || []) as PaliativoAnterior[]
+          offlineSet(`prefetch:os-pal:${id}`, pals)
+        } else pals = ((await offlineGet(`prefetch:os-pal:${id}`)) as PaliativoAnterior[] | null) || []
+        const veioDoPaliativo = await aplicarPaliativos(pals, existing, osData)
+
+        if (veioDoPaliativo) {
+          // já preenchida com o paliativo + horários desta visita
+        } else if (existing) {
           await aplicarRelatorio(existing, osData)
-        } else {
+        } else if (!veioDoPaliativo) {
           if (user) setTecResp1(user.tecnico_nome)
           preencherEquipDaOS(osData, null)
           if (osData.ID_PPV) await carregarProdutosPPV(osData.ID_PPV as string)
@@ -565,6 +646,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotosExtras,
     fotosAlmoco,
     assCliente, assTecnico,
+    tipoRelatorio, motivoPaliativo,
   }), [
     tecResp1, temTec2, tecResp2, diagnostico, servicoRealizado,
     tipoServico, ehGarantia, tipoRev, projeto, chassis, marca, modelo, horimetro, numPlaca, nomResp,
@@ -577,11 +659,14 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     fotosExtras,
     fotosAlmoco,
     assCliente, assTecnico,
+    tipoRelatorio, motivoPaliativo,
   ])
 
   // foto que estava subindo (blob:) não sobrevive a fechar o app: no rascunho ela não volta
   const semBlob = (v: unknown) => (typeof v === 'string' && v.startsWith('blob:') ? '' : (v as string))
   const setFormData = useCallback((data: Record<string, unknown>) => {
+    if (data.tipoRelatorio === 'paliativo' || data.tipoRelatorio === 'finalizado') setTipoRelatorio(data.tipoRelatorio)
+    if (data.motivoPaliativo !== undefined) setMotivoPaliativo(data.motivoPaliativo as string)
     if (data.tecResp1 !== undefined) setTecResp1(data.tecResp1 as string)
     if (data.temTec2 !== undefined) setTemTec2(data.temTec2 as boolean)
     if (data.tecResp2 !== undefined) setTecResp2(data.tecResp2 as string)
@@ -678,6 +763,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     const isVid = (file as File).type?.startsWith('video/')
     const ext = (file instanceof File ? file.name.split('.').pop() : (isVid ? 'mp4' : 'jpg')) || 'jpg'
     const fileToUpload = await comprimirImagem(file)
+    if (simulacao) return await fileToBase64(fileToUpload) // simulação: a foto fica só no celular
     const path = `os-tecnicos/${id}/${campo}_${Date.now()}.${ext}`
     // tempo máximo: sem ele, com "sinal" mas sem internet, a foto ficava girando para sempre
     const limite = isVid ? 180_000 : 40_000
@@ -851,6 +937,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const pendencias = (): { msg: string; alvo: string }[] => {
     const p: { msg: string; alvo: string }[] = []
     const tem = (f: string) => !!f && !f.startsWith('blob:')
+    if (!tipoRelatorio) p.push({ msg: 'Escolha se o serviço foi paliativo ou finalizado.', alvo: 'passo-tipo' })
     if (!naOficina) {
       if (!fazenda.trim()) p.push({ msg: 'Preencha o nome da fazenda.', alvo: 'campo-fazenda' })
       if (!cidadeLocal.trim()) p.push({ msg: 'Preencha a cidade.', alvo: 'campo-cidade' })
@@ -897,12 +984,14 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       ]
       if (faltas.length) p.push({ msg: `Garantia: falta foto ${faltas.join(', ')}.`, alvo: 'passo-gar' })
     }
-    if (os?.ID_PPV && !todosRevisados) {
+    // paliativo: as peças do PPV são revisadas só no finalizado
+    if (os?.ID_PPV && !todosRevisados && !paliativo) {
       p.push({ msg: `Revise todos os produtos do PPV antes de enviar. ${ppvItems.filter(x => !x.revisado).length} produto(s) pendente(s).`, alvo: 'secao-ppv' })
     }
     if (manualItems.length > 0 && !justificativaPecaExtra.trim()) {
       p.push({ msg: 'Você adicionou peças/serviços extras. Justifique por que não avisou antes.', alvo: 'secao-extras' })
     }
+    if (paliativo && !motivoPaliativo) p.push({ msg: 'Escolha por que o serviço não foi finalizado.', alvo: 'passo-motivo' })
     if (!assCliente) p.push({ msg: 'Falta a assinatura do cliente.', alvo: 'passo-ass' })
     if (!assTecnico) p.push({ msg: 'Falta a assinatura do técnico.', alvo: 'passo-ass' })
     const n = subindo()
@@ -947,7 +1036,67 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     nomResp, fazenda: naOficina ? 'Oficina' : fazenda, cidadeServico: naOficina ? 'Oficina' : cidadeLocal,
     data: hojeBR(),
     downloadFoto: downloadFotoRelatorio,
+    paliativoMotivo: paliativo ? motivoPaliativo : undefined,
   })
+
+  /**
+   * Envio do PALIATIVO (José, 05/11/2026): uma linha nova em Ordem_Servico_Paliativos (com o PDF quando há
+   * internet), a OS vai para 'Preenchido Paliativo' e fica em "Serviços em aberto". Não mexe no relatório
+   * finalizado (Ordem_Servico_Tecnicos), no PPV nem na garantia. Na simulação fica só neste navegador.
+   */
+  const enviarPaliativo = async (payload: Record<string, unknown>, fotos: Parameters<typeof dadosPdf>[0]) => {
+    const linha: Record<string, unknown> = {
+      Ordem_Servico: id,
+      TecResp1: tecResp1,
+      TecResp2: temTec2 ? tecResp2 : '',
+      motivo: motivoPaliativo,
+      DataInicio: payload.DataInicio, DataFinal: payload.DataFinal,
+      TotalHora: payload.TotalHora, TotalKm: String(payload.TotalKm ?? ''),
+      NumPlaca: numPlaca,
+      dados: { ...payload, Status: 'paliativo', MotivoPaliativo: motivoPaliativo },
+    }
+    if (simulacao) {
+      const antes = ((await offlineGet(`prefetch:os-pal:${id}`)) as PaliativoAnterior[] | null) || []
+      await offlineSet(`prefetch:os-pal:${id}`, [...antes, { ...linha, id: Date.now(), created_at: new Date().toISOString() }])
+      setSaving(false); setSucesso(true); clearBackup(true)
+      return
+    }
+
+    // PDF primeiro (só com internet): o link vai junto na linha
+    if (navigator.onLine) {
+      try {
+        const cidade = await cidadeDoCliente(os?.Cnpj_Cliente)
+        const pdfBlob = await gerarPdfRelatorio({ ...dadosPdf(fotos, cidade), apenasBlob: true })
+        if (pdfBlob) {
+          const caminho = `os-tecnicos/${id}/paliativo_${Date.now()}.pdf`
+          const { error } = await supabase.storage.from('requisicoes').upload(caminho, pdfBlob as Blob, { contentType: 'application/pdf' })
+          if (!error) linha.pdf_url = supabase.storage.from('requisicoes').getPublicUrl(caminho).data.publicUrl
+        }
+      } catch (e) { console.warn('[paliativo] PDF não gerado:', e) }
+    }
+
+    const res = await offlineWrite({ table: 'Ordem_Servico_Paliativos', action: 'insert', data: linha })
+    if (!res.ok) { setSaving(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
+
+    // os horários salvos na tela da OS (rascunho do relatório final) eram desta visita: zera, senão o finalizado
+    // levaria estes dias de novo e o POS somaria em dobro. Na volta ele registra os horários da nova visita.
+    if (existingId && existingStatusRef.current !== 'enviado') {
+      const limpa: Record<string, unknown> = { DiasExecucao: [], TotalHora: '', TotalKm: '', NumPlaca: '', AdicionarData2: false, AdicionarData3: false }
+      for (const k of ['DataInicio', 'DataFinal', 'InicioHora', 'FinalHora', 'InicioKm', 'FinalKm', 'DataInicio2', 'InicioHora2', 'FinalHora2', 'InicioKm2', 'FinalKm2', 'DataInicio3', 'InicioHora3', 'FinaHora3', 'InicioKm3', 'FinalKm3']) limpa[k] = ''
+      await offlineWrite({ table: 'Ordem_Servico_Tecnicos', action: 'update', data: limpa, match: { IdOs: existingId } })
+      await offlineSet(`prefetch:os-tec:${id}`, null)
+    }
+
+    // fase: só avança se a OS ainda está antes do relatório (não volta OS já faturada etc.)
+    if (FASES_ANTES_DO_RELATORIO.has(normFase(String(os?.Status || '')))) {
+      await offlineWrite({ table: 'Ordem_Servico', action: 'update', data: { Status: FASE_PALIATIVO }, match: { Id_Ordem: id } })
+    }
+    notificarPortalOS(id, user?.tecnico_nome || '', os?.Os_Cliente || '')
+    setSaving(false)
+    setNaFila(!!res.queued)
+    setSucesso(true)
+    clearBackup(true)
+  }
 
   // qualquer erro inesperado (celular sem espaço, cache) libera o botão e explica, em vez de ficar "Enviando..." (José, 23/10/2026)
   const enviar = async () => {
@@ -976,6 +1125,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     if (!resumoConfirmado.current) { setResumoAberto(true); return }
     resumoConfirmado.current = false
     setResumoAberto(false)
+    if (simulacao && !paliativo) { setSucesso(true); clearBackup(true); return } // simulação: não grava nada
     setSaving(true)
 
     // Resolver fotos pendentes (base64 → upload para Supabase se online)
@@ -1097,6 +1247,19 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       Data: hojeBR(),
       Status: 'enviado',
       pdf_criado: false,
+    }
+
+    if (paliativo) {
+      await enviarPaliativo(payload, {
+        fotoHorimetro: fotoHorimetroFinal, fotoChassis: fotoChassisFinal,
+        fotoFrente: fotoFrenteFinal, fotoDireita: fotoDireitaFinal, fotoEsquerda: fotoEsquerdaFinal,
+        fotoTraseira: fotoTraseiraFinal, fotoVolante: fotoVolanteFinal,
+        fotoFalha1: fotoFalha1Final, fotoFalha2: fotoFalha2Final, fotoFalha3: fotoFalha3Final, fotoFalha4: fotoFalha4Final,
+        fotoPecaNova1: fotoPecaNova1Final, fotoPecaNova2: fotoPecaNova2Final,
+        fotoPecaInstalada1: fotoPecaInstalada1Final, fotoPecaInstalada2: fotoPecaInstalada2Final,
+        fotosExtras: fotosExtrasFinal,
+      })
+      return
     }
 
     // Um relatório por OS: o offlineWrite grava por Ordem_Servico (update se já existe, senão insert)
@@ -1324,8 +1487,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           }}>
             <CheckCircle size={34} color="#fff" />
           </div>
-          <h2 style={{ fontSize: 22, fontWeight: 500, color: colors.text, margin: '0 0 6px' }}>{naFila ? 'OS guardada no celular' : 'OS enviada!'}</h2>
-          <p style={{ fontSize: 15, color: colors.textMuted, margin: '0 0 22px' }}>{naFila ? 'Sem internet agora. O relatório sobe sozinho quando o celular pegar sinal.' : 'Os dados foram salvos com sucesso.'}</p>
+          <h2 style={{ fontSize: 22, fontWeight: 500, color: colors.text, margin: '0 0 6px' }}>{paliativo ? (naFila ? 'Paliativo guardado no celular' : 'Paliativo enviado') : simulacao ? 'Simulação concluída' : naFila ? 'OS guardada no celular' : 'OS enviada!'}</h2>
+          <p style={{ fontSize: 15, color: colors.textMuted, margin: '0 0 22px' }}>{paliativo ? `A OS ficou em "Serviços em aberto". Quando voltar para terminar, preencha de novo e escolha Finalizado.${simulacao ? ' (Simulação: ficou só neste navegador.)' : ''}` : simulacao ? 'Era só um teste: nada foi salvo nem enviado.' : naFila ? 'Sem internet agora. O relatório sobe sozinho quando o celular pegar sinal.' : 'Os dados foram salvos com sucesso.'}</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
             <button onClick={handleGerarPdf} disabled={gerandoPdf} style={{
               background: gerandoPdf ? colors.textGhost : colors.primary, color: '#fff', borderRadius: 12,
@@ -1383,6 +1546,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     return anex.length >= (tipoServico.includes('Implemento') ? 1 : 2)
   })()
   const passos: { k: string; t: string; ok: boolean; alvo: string }[] = [
+    { k: 'tipo', t: 'Tipo', ok: !!tipoRelatorio, alvo: 'passo-tipo' },
     { k: 'tec', t: 'Técnico', ok: !!tecResp1 && (!temTec2 || !!tecResp2), alvo: 'passo-tec' },
     { k: 'local', t: 'Local', ok: naOficina || !!(fazenda.trim() && cidadeLocal.trim()), alvo: 'passo-local' },
     { k: 'dias', t: 'Datas e horas', ok: dias.every(d => d.data && d.horaInicio && d.horaFim && d.kmTotal.trim() && (!minutosDoDia(d.horaInicio, d.horaFim).virou || d.virouNoite)) && almocosOS.every(a => { const f = fotosAlmoco[a.data]; return !!f && !f.startsWith('blob:') }), alvo: 'secao-dias' },
@@ -1391,8 +1555,9 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     { k: 'fotos', t: 'Fotos', ok: ehGarantiaTipo || fotosOk, alvo: 'secao-fotos' },
     { k: 'equip', t: 'Equipamento', ok: !!(marca.trim() && modelo.trim() && chassis.trim()), alvo: 'passo-equip' },
     ...(ehGarantiaTipo ? [{ k: 'gar', t: 'Garantia', ok: !!(fotoFrente && fotoFalha1 && fotoPecaNova1), alvo: 'passo-gar' }] : []),
-    ...(os?.ID_PPV ? [{ k: 'ppv', t: 'Peças do PPV', ok: todosRevisados, alvo: 'secao-ppv' }] : []),
+    ...(os?.ID_PPV && !paliativo ? [{ k: 'ppv', t: 'Peças do PPV', ok: todosRevisados, alvo: 'secao-ppv' }] : []),
     { k: 'extras', t: 'Extras', ok: manualItems.length === 0 || !!justificativaPecaExtra.trim(), alvo: 'secao-extras' },
+    ...(paliativo ? [{ k: 'motivo', t: 'Por que não terminou', ok: !!motivoPaliativo, alvo: 'passo-motivo' }] : []),
     { k: 'ass', t: 'Assinaturas', ok: !!(assCliente && assTecnico), alvo: 'passo-ass' },
   ]
   passosRef.current = passos
@@ -1407,6 +1572,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       case 'veic': return numPlaca === 'OFICINA' ? 'Oficina' : numPlaca
       case 'equip': return [marca, modelo, chassis ? '…' + chassis.slice(-6) : ''].filter(Boolean).join(' ')
       case 'diag': return tipoServico
+      case 'tipo': return paliativo ? 'Paliativo — precisa voltar' : 'Finalizado'
+      case 'motivo': return motivoPaliativo
       default: return ''
     }
   }
@@ -1466,6 +1633,14 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
     <NotificacaoObrigatoria>
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', minWidth: 0 }}>
       <style>{CSS_PREENCHER}</style>
+      {simulacao && (
+        <div style={{
+          background: colors.warningBg, border: `1px solid ${colors.warningBorder}`, borderRadius: 12,
+          padding: '10px 12px', marginBottom: 10, fontSize: 14, color: '#9A3412', lineHeight: 1.4,
+        }}>
+          <b>Simulação</b> — OS de teste. Pode preencher tudo; ao enviar, nada é salvo no sistema.
+        </div>
+      )}
       {avisoBackup && (
         <div style={{
           background: colors.warningBg, border: `1px solid ${colors.warningBorder}`, borderRadius: 12,
@@ -1608,6 +1783,48 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           </div>
         </div>
       )}
+
+      {/* 0. PALIATIVO × FINALIZADO (José, 05/11/2026) */}
+      <div id="passo-tipo" style={sectionStyle} data-secao-recolhida={okPasso('tipo') && recolhidas.has('tipo') ? '1' : undefined}>
+        {sectionTitle('tipo', 'Como ficou o serviço?', 'Escolha antes de preencher')}
+        {paliativosAnteriores.length > 0 && (
+          <div style={{
+            background: colors.warningBg, border: `1px solid ${colors.warningBorder}`, borderRadius: 12,
+            padding: '10px 12px', marginBottom: 12, fontSize: 14, color: '#9A3412', lineHeight: 1.45,
+          }}>
+            Esta OS já teve {paliativosAnteriores.length === 1 ? 'um paliativo' : `${paliativosAnteriores.length} paliativos`}:
+            {paliativosAnteriores.map((p) => (
+              <div key={p.id}>· {(p.DataInicio || p.created_at || '').slice(0, 10).split('-').reverse().join('/')} — {p.motivo}{p.TotalHora ? ` · ${p.TotalHora}` : ''}</div>
+            ))}
+            Os dados do cliente, do equipamento e o diagnóstico já vieram preenchidos. Preencha o dia, o carro e o que foi feito agora.
+          </div>
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          {([
+            { v: 'paliativo', titulo: 'Paliativo', sub: 'Ajudei o cliente, mas precisa voltar', cor: colors.osPecas, Icone: AlertTriangle },
+            { v: 'finalizado', titulo: 'Finalizado', sub: 'Serviço terminado', cor: colors.osFeita, Icone: CheckCircle2 },
+          ] as const).map((o) => {
+            const sel = tipoRelatorio === o.v
+            return (
+              <button key={o.v} type="button" onClick={() => setTipoRelatorio(o.v)} aria-pressed={sel} style={{
+                position: 'relative', textAlign: 'left', padding: '12px 12px 12px', borderRadius: 14, cursor: 'pointer', font: 'inherit',
+                border: `${sel ? 2 : 1}px solid ${sel ? o.cor : colors.border}`, margin: sel ? 0 : 1,
+                background: sel ? `color-mix(in srgb, ${o.cor} 7%, #fefefe)` : colors.surface, outline: 'none',
+                display: 'flex', flexDirection: 'column', gap: 8,
+              }}>
+                <span style={{ width: 36, height: 36, borderRadius: 10, display: 'grid', placeItems: 'center',
+                  color: sel ? '#fefefe' : o.cor, background: sel ? o.cor : `color-mix(in srgb, ${o.cor} 10%, #fefefe)` }}>
+                  <o.Icone size={18} />
+                </span>
+                <span>
+                  <span style={{ display: 'block', fontSize: 16, color: colors.text }}>{o.titulo}</span>
+                  <span style={{ display: 'block', fontSize: 13, color: colors.textSubtle }}>{o.sub}</span>
+                </span>
+              </button>
+            )
+          })}
+        </div>
+      </div>
 
       {/* 1. TÉCNICO */}
       <div id="passo-tec" style={sectionStyle} data-secao-recolhida={okPasso('tec') && recolhidas.has('tec') ? '1' : undefined}>
@@ -2398,6 +2615,22 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
         </button>
       </div>
 
+      {/* PALIATIVO: por que não terminou (José, 05/11/2026) */}
+      {paliativo && (
+        <div id="passo-motivo" style={sectionStyle} data-secao-recolhida={okPasso('motivo') && recolhidas.has('motivo') ? '1' : undefined}>
+          {sectionTitle('motivo', 'Por que não conseguiu finalizar?', 'Vai junto com o relatório paliativo')}
+          <div style={{ display: 'grid', gap: 8 }}>
+            {MOTIVOS_PALIATIVO.map((m) => (
+              <button key={m} type="button" onClick={() => setMotivoPaliativo(m)} aria-pressed={motivoPaliativo === m}
+                style={{ ...escolha(motivoPaliativo === m, colors.osPecas), justifyContent: 'flex-start', padding: '10px 14px', textAlign: 'left' }}>
+                {motivoPaliativo === m ? <Check size={18} /> : <span style={{ width: 18 }} />}
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* 8. ASSINATURAS */}
       <div id="passo-ass" style={sectionStyle} data-secao-recolhida={okPasso('ass') && recolhidas.has('ass') ? '1' : undefined}>
         {sectionTitle('ass', 'Assinaturas', 'Cliente e técnico')}
@@ -2410,6 +2643,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       {resumoAberto && (
         <ResumoEnvio
           itens={[
+            ['Relatório', paliativo ? `PALIATIVO — ${motivoPaliativo}` : 'Finalizado'],
             ['Cliente', os?.Os_Cliente || ''],
             ['Técnico', resumoSecao('tec')],
             ['Onde', resumoSecao('local')],
@@ -2431,8 +2665,8 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       {/* BOTÃO ENVIAR */}
       <div style={{ marginBottom: 30, marginTop: 4, paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
         {(() => {
-          const bloqueado = !!os?.ID_PPV && !todosRevisados
-          const motivo = (os?.ID_PPV && !todosRevisados)
+          const bloqueado = !!os?.ID_PPV && !todosRevisados && !paliativo
+          const motivo = bloqueado
             ? `Revise ${ppvItems.filter(p => !p.revisado).length} peça(s) do PPV para enviar`
             : null
           return (
@@ -2452,7 +2686,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
               }}
             >
               <Send size={19} style={{ flexShrink: 0 }} />
-              {saving ? 'Enviando...' : motivo || 'Enviar OS'}
+              {saving ? 'Enviando...' : motivo || (paliativo ? 'Enviar relatório paliativo' : 'Enviar OS')}
             </button>
           )
         })()}
