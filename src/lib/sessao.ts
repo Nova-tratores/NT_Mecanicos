@@ -4,8 +4,11 @@
 // Sessão expirada com o perfil guardado: o app continua abrindo, mas avisa "entre de novo" (gravar no banco falharia).
 import { cancelarPush } from './push-cliente'
 import { offlineKeys, offlineDelete } from './offlineCache'
+import { supabase } from './supabase'
 
 export const EVENTO_SESSAO_EXPIRADA = 'nt-sessao-expirada'
+/** login voltou (renovou sozinho ou o técnico entrou pela janelinha): a tela recarrega agenda/Liga */
+export const EVENTO_SESSAO_VOLTOU = 'nt-sessao-voltou'
 let saindo = false
 
 /** quem chamou o signOut fomos nós (não mostrar "sessão expirou") */
@@ -15,6 +18,25 @@ export function estaSaindo() { return saindo }
 export function avisarSessaoExpirada() {
   if (saindo || typeof window === 'undefined') return
   window.dispatchEvent(new Event(EVENTO_SESSAO_EXPIRADA))
+}
+
+export function avisarSessaoVoltou() {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new Event(EVENTO_SESSAO_VOLTOU))
+}
+
+/** Tem login válido no banco? Se o token venceu, tenta renovar sozinho antes de dizer que não (José, 06/11/2026:
+ *  sem login o banco grava como anônimo e a tabela recusa — o paliativo deu "row-level security"). */
+export async function temSessaoValida(ms = 6000): Promise<boolean> {
+  const limite = <T,>(p: PromiseLike<T>) => Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))])
+  try {
+    const { data } = await limite(supabase.auth.getSession())
+    const s = data.session
+    if (s && (!s.expires_at || s.expires_at * 1000 > Date.now() + 30_000)) return true
+    if (!s) return false
+    const r = await limite(supabase.auth.refreshSession())
+    return !!r.data.session
+  } catch { return false }
 }
 
 /** chaves do localStorage que são do técnico (o resto — preferências do aparelho — fica) */

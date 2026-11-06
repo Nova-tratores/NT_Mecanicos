@@ -16,6 +16,7 @@
 
 import { supabase } from './supabase'
 import { queueSync } from './offlineCache'
+import { avisarSessaoExpirada, temSessaoValida } from './sessao'
 import { melhorRelatorio } from './diasRelatorio'
 
 const WRITE_TIMEOUT = 8000
@@ -57,6 +58,15 @@ export function isNetworkError(err: unknown): boolean {
 
 /** Update/delete que não mexeu em nenhuma linha (sessão expirada com RLS) é FALHA, não sucesso. */
 export const SEM_LINHA = 'nenhuma linha foi alterada (sessão expirada? entre de novo no app)'
+
+/** Recusa que PODE ser por login (sessão caiu). Quem usa confere temSessaoValida(): sem login o item espera o
+ *  técnico entrar de novo; com login é erro de dado de verdade (José, 06/11/2026: paliativo deu "row-level
+ *  security" e itens assim viravam falha para sempre). */
+export function isSessionError(err: unknown): boolean {
+  const msg = String((err as { message?: string })?.message || err || '').toLowerCase()
+  return msg.includes('row-level security') || msg.includes('jwt') || msg.includes('sessão expirada')
+    || msg.includes('not authenticated') || msg.includes('permission denied')
+}
 
 /* ═══ Campos usados para achar a linha já gravada ═══
    Só escalares curtos: texto até 200 letras (sem base64), número e sim/não. Arrays, objetos, nulos e textos
@@ -179,6 +189,14 @@ export async function offlineWrite(opts: WriteOptions): Promise<{ ok: boolean; q
     return { ok: true, queued: true }
   }
 
+  // Com internet mas sem login (sessão caiu no meio do preenchimento): não grava como anônimo — guarda na fila,
+  // que sobe sozinha quando o técnico entrar de novo, e mostra o aviso. Nada do que ele fez se perde (José, 06/11/2026)
+  if (!(await temSessaoValida())) {
+    await queueSync(queueItem)
+    avisarSessaoExpirada()
+    return { ok: true, queued: true }
+  }
+
   // Tenta online (o "já gravou?" depois de timeout olha só a partir daqui)
   const inicio = Date.now()
   try {
@@ -188,6 +206,12 @@ export async function offlineWrite(opts: WriteOptions): Promise<{ ok: boolean; q
       if (isNetworkError(result.error)) {
         const r = await enfileirarSemDuplicar(queueItem, inicio)
         return { ok: true, queued: r }
+      }
+      // login caiu entre a conferência e o envio: guarda, avisa, e sobe quando ele entrar de novo
+      if (isSessionError(result.error) && !(await temSessaoValida())) {
+        await queueSync(queueItem)
+        avisarSessaoExpirada()
+        return { ok: true, queued: true }
       }
       return { ok: false, queued: false, error: result.error.message }
     }

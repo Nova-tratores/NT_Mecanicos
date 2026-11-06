@@ -1488,7 +1488,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
             <CheckCircle size={34} color="#fff" />
           </div>
           <h2 style={{ fontSize: 22, fontWeight: 500, color: colors.text, margin: '0 0 6px' }}>{paliativo ? (naFila ? 'Paliativo guardado no celular' : 'Paliativo enviado') : simulacao ? 'Simulação concluída' : naFila ? 'OS guardada no celular' : 'OS enviada!'}</h2>
-          <p style={{ fontSize: 15, color: colors.textMuted, margin: '0 0 22px' }}>{paliativo ? `A OS ficou em "Serviços em aberto". Quando voltar para terminar, preencha de novo e escolha Finalizado.${simulacao ? ' (Simulação: ficou só neste navegador.)' : ''}` : simulacao ? 'Era só um teste: nada foi salvo nem enviado.' : naFila ? 'Sem internet agora. O relatório sobe sozinho quando o celular pegar sinal.' : 'Os dados foram salvos com sucesso.'}</p>
+          <p style={{ fontSize: 15, color: colors.textMuted, margin: '0 0 22px' }}>{paliativo ? `A OS ficou em "Serviços em aberto". Quando voltar para terminar, preencha de novo e escolha Finalizado.${simulacao ? ' (Simulação: ficou só neste navegador.)' : ''}` : simulacao ? 'Era só um teste: nada foi salvo nem enviado.' : naFila ? 'O relatório está guardado e sobe sozinho quando o celular pegar sinal (ou quando você entrar de novo, se o login caiu).' : 'Os dados foram salvos com sucesso.'}</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
             <button onClick={handleGerarPdf} disabled={gerandoPdf} style={{
               background: gerandoPdf ? colors.textGhost : colors.primary, color: '#fff', borderRadius: 12,

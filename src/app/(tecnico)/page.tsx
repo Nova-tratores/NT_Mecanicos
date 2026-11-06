@@ -25,6 +25,7 @@ import SeloOffline from '@/components/SeloOffline'
 import BotaoAtalhos from '@/components/BotaoAtalhos'
 import VitrineCatalogo from '@/components/VitrineCatalogo'
 import { colors } from '@/lib/ui'
+import { EVENTO_SESSAO_VOLTOU, avisarSessaoExpirada } from '@/lib/sessao'
 import {
   CartaoSituacao, LEGENDA, SITUACAO, situacaoOS, nomeBonito, cidadeCurta, numeroOS, clarinho,
   type ChipCartao, type Situacao,
@@ -645,6 +646,13 @@ export default function TecnicoHome() {
   const uid = user?.id || ''
   const chaveFeed = `${uid}:${semana}`
   const feedGuardado = useMemo(() => (uid ? feedSalvo(uid, semana) : null), [uid, semana])
+  // login voltou (renovou ou entrou pela janelinha): busca a agenda de novo (José, 06/11/2026)
+  const [recargaFeed, setRecargaFeed] = useState(0)
+  useEffect(() => {
+    const on = () => setRecargaFeed((n) => n + 1)
+    window.addEventListener(EVENTO_SESSAO_VOLTOU, on)
+    return () => window.removeEventListener(EVENTO_SESSAO_VOLTOU, on)
+  }, [])
 
   useEffect(() => {
     if (!uid) return
@@ -655,10 +663,12 @@ export default function TecnicoHome() {
       setFeedState({ chave: `${uid}:${semana}`, feed: f })
     }).catch((e) => {
       console.warn('[home] feed da Lousa:', e)
+      // sem login a agenda não vem: avisa (o aviso tenta renovar sozinho antes de pedir a senha)
+      if (navigator.onLine && /sem sessão|feed 401/.test(String((e as Error)?.message))) avisarSessaoExpirada()
       if (vivo) setFeedState({ chave: `${uid}:${semana}`, feed: null })
     })
     return () => { vivo = false }
-  }, [uid, semana])
+  }, [uid, semana, recargaFeed])
 
   if (loading) return <PageSpinner />
 

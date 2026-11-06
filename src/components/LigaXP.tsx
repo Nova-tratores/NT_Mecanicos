@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react'
 import { Shield, Gem, TrendingUp, TrendingDown, Trophy } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { colors } from '@/lib/ui'
+import { EVENTO_SESSAO_VOLTOU, avisarSessaoExpirada } from '@/lib/sessao'
 
 interface Liga {
   semLiga?: boolean
@@ -40,6 +41,14 @@ export default function LigaXP() {
   const [liga, setLiga] = useState<Liga | null>(null)
   const [carregando, setCarregando] = useState(true)
 
+  // login voltou (renovou ou entrou pela janelinha): busca a Liga de novo (José, 06/11/2026)
+  const [recarga, setRecarga] = useState(0)
+  useEffect(() => {
+    const on = () => setRecarga((n) => n + 1)
+    window.addEventListener(EVENTO_SESSAO_VOLTOU, on)
+    return () => window.removeEventListener(EVENTO_SESSAO_VOLTOU, on)
+  }, [])
+
   useEffect(() => {
     let vivo = true
     try { localStorage.removeItem('nt-liga-xp') } catch { /* chave antiga, sem dono */ }
@@ -50,7 +59,7 @@ export default function LigaXP() {
         const { data } = await supabase.auth.getSession()
         const token = data.session?.access_token
         const uid = data.session?.user?.id || ''
-        if (!token) return
+        if (!token) { if (navigator.onLine) avisarSessaoExpirada(); return }
         const r = await fetch(`${PORTAL}/api/mecanicos/liga/eu`, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
         if (!r.ok) return
         const j = (await r.json()) as Liga
@@ -61,7 +70,7 @@ export default function LigaXP() {
       finally { if (vivo) setCarregando(false) }
     })()
     return () => { vivo = false }
-  }, [])
+  }, [recarga])
 
   const cartao: React.CSSProperties = { background: '#FEFEFE', border: `1px solid ${colors.border}`, borderRadius: 18, padding: 14, display: 'grid', gap: 12, minWidth: 0 }
 

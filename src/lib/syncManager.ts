@@ -5,8 +5,9 @@
 
 import { supabase } from './supabase'
 import { getQueue, removeFromQueue, updateQueueItem, getPendingPdfs, removePendingPdf, type SyncItem } from './offlineCache'
-import { executarEscrita, isNetworkError } from './offlineWrite'
+import { executarEscrita, isNetworkError, isSessionError } from './offlineWrite'
 import { gerarEAnexarRelatorio } from './gerarEAnexarRelatorio'
+import { avisarSessaoExpirada, temSessaoValida } from './sessao'
 
 const MAX_RETRIES = 10
 const SYNC_TIMEOUT = 45000
@@ -201,8 +202,8 @@ async function processarFila(): Promise<number> {
 
     // sem sessão válida o banco recusa tudo (0 linhas) e cada volta do app gastava uma tentativa até virar
     // "falha": sem login, a fila só espera (José, 23/10/2026)
-    const { data: sess } = await supabase.auth.getSession()
-    if (!sess.session || (sess.session.expires_at && sess.session.expires_at * 1000 < Date.now() - 60_000)) {
+    // (token vencido tenta renovar antes de desistir — José, 06/11/2026)
+    if (!(await temSessaoValida())) {
       console.warn('[sync] sem sessão válida: a fila espera o técnico entrar de novo')
       return 0
     }
@@ -248,6 +249,12 @@ async function processarFila(): Promise<number> {
             // Rede ruim: registra a tentativa mas NUNCA marca como falha
             console.warn(`[sync] Item ${item.id} falhou por rede (tentativa ${retries}), fica na fila:`, errMsg)
             if (item.id) await updateQueueItem(item.id, { retries, lastError: errMsg })
+          } else if (isSessionError(result.error) && !(await temSessaoValida())) {
+            // login caiu no meio da rodada: não gasta tentativa, para tudo e pede para entrar de novo (José, 06/11/2026)
+            console.warn(`[sync] Item ${item.id} recusado por login, a fila espera:`, errMsg)
+            if (item.id) await updateQueueItem(item.id, { lastError: errMsg })
+            avisarSessaoExpirada()
+            break
           } else if (retries >= MAX_RETRIES) {
             console.error(`[sync] Item ${item.id} falhou ${MAX_RETRIES}x, marcando como falha permanente:`, result.error)
             if (item.id) await updateQueueItem(item.id, { retries, failed: true, failedAt: Date.now(), lastError: errMsg })
@@ -318,7 +325,8 @@ export async function ressuscitarFalhasDeRede(): Promise<number> {
   const items = await getQueue()
   let n = 0
   for (const item of items) {
-    if (item.failed && (!item.lastError || isNetworkError(item.lastError))) {
+    // falha por LOGIN também volta: era o técnico sem sessão, não dado errado (José, 06/11/2026)
+    if (item.failed && (!item.lastError || isNetworkError(item.lastError) || isSessionError(item.lastError))) {
       if (item.id) {
         await updateQueueItem(item.id, { failed: false, retries: 0, failedAt: undefined })
         n++

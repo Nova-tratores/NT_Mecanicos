@@ -25,13 +25,13 @@ create index if not exists idx_os_paliativos_os on "Ordem_Servico_Paliativos" ("
 alter table "Ordem_Servico_Paliativos" enable row level security;
 drop policy if exists p_os_paliativos_ins on "Ordem_Servico_Paliativos";
 create policy p_os_paliativos_ins on "Ordem_Servico_Paliativos"
-  for insert to authenticated with check (true);
+  for insert to anon, authenticated with check (true);
 drop policy if exists p_os_paliativos_sel on "Ordem_Servico_Paliativos";
 create policy p_os_paliativos_sel on "Ordem_Servico_Paliativos"
-  for select to authenticated using (true);
+  for select to anon, authenticated using (true);
 drop policy if exists p_os_paliativos_upd on "Ordem_Servico_Paliativos";
 create policy p_os_paliativos_upd on "Ordem_Servico_Paliativos"
-  for update to authenticated using (true) with check (true);
+  for update to anon, authenticated using (true) with check (true);
 
 -- Conferência (deve voltar 0)
 select count(*) from "Ordem_Servico_Paliativos";
