@@ -545,9 +545,13 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
   doc.setFontSize(8)
   doc.setTextColor(CINZA)
   doc.text('Assinatura do Cliente', marginL, y)
-  if (dados.assCliente) {
+  // a assinatura pode vir como imagem (base64) ou como link do storage: o jsPDF só desenha a imagem
+  const assClienteImg = await loadImageAsBase64(dados.assCliente || '', dados.downloadFoto)
+  const assTecnicoImg = await loadImageAsBase64(dados.assTecnico || '', dados.downloadFoto)
+  const formatoImg = (d: string) => (d.startsWith('data:image/jpeg') || d.startsWith('data:image/jpg') ? 'JPEG' : 'PNG')
+  if (assClienteImg) {
     try {
-      doc.addImage(dados.assCliente, 'PNG', marginL, y + 2, assW, 25)
+      doc.addImage(assClienteImg, formatoImg(assClienteImg), marginL, y + 2, assW, 25)
     } catch { /* */ }
   } else {
     doc.setDrawColor('#E5E7EB')
@@ -556,9 +560,9 @@ export async function gerarPdfRelatorio(dados: DadosRelatorio) {
 
   // Assinatura do técnico
   doc.text('Assinatura do Técnico', marginL + assW + 10, y)
-  if (dados.assTecnico) {
+  if (assTecnicoImg) {
     try {
-      doc.addImage(dados.assTecnico, 'PNG', marginL + assW + 10, y + 2, assW, 25)
+      doc.addImage(assTecnicoImg, formatoImg(assTecnicoImg), marginL + assW + 10, y + 2, assW, 25)
     } catch { /* */ }
   } else {
     doc.setDrawColor('#E5E7EB')

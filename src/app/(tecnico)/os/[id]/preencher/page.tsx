@@ -1163,6 +1163,12 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       resolverFoto(fotoPecaInstalada1, 'FotoPecaInstalada1'),
       resolverFoto(fotoPecaInstalada2, 'FotoPecaInstalada2'),
     ])
+    // assinaturas também sobem para o storage (antes iam em base64 para a linha do relatório: até 7 MB cada,
+    // 150 MB na tabela — 10/11/2026). A foto da assinatura é comprimida no upload.
+    const [assClienteFinal, assTecnicoFinal] = await Promise.all([
+      resolverFoto(assCliente, 'AssCliente'),
+      resolverFoto(assTecnico, 'AssTecnico'),
+    ])
     const fotosExtrasFinal = (await Promise.all(
       fotosExtras.map((f, i) => resolverFoto(f.v, `FotoExtra${i + 1}`))
     )).filter(Boolean)
@@ -1241,7 +1247,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       TemAlmoco: almocosFotos.length > 0,
       ValorAlmoco: almocosFotos[0]?.valor ?? null,
       FotoAlmoco: almocosFotos[0]?.foto ?? null,
-      AssCliente: assCliente, AssTecnico: assTecnico,
+      AssCliente: assClienteFinal, AssTecnico: assTecnicoFinal,
       PecasInfo: JSON.stringify(pecas),
       JustificativaPecaExtra: justificativaPecaExtra || null,
       Data: hojeBR(),

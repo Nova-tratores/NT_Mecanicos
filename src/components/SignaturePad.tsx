@@ -2,6 +2,7 @@
 import { useRef, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Eraser, Camera, Image as ImageIcon, Pen, Maximize2, Check, X, RotateCcw } from 'lucide-react'
+import { comprimirImagem, blobParaBase64 } from '@/lib/imagem'
 
 interface SignaturePadProps {
   label: string
@@ -165,14 +166,13 @@ export default function SignaturePad({ label, value, onSave, allowPhoto }: Signa
     setHasDrawn(false)
   }
 
-  const handlePhoto = (file: File) => {
-    const reader = new FileReader()
-    reader.onload = (e) => {
-      const dataUrl = e.target?.result as string
-      setPhotoPreview(dataUrl)
-      onSave(dataUrl)
-    }
-    reader.readAsDataURL(file)
+  // foto da assinatura: comprime antes (a do celular chegava com 3–7 MB e ia assim para o relatório)
+  const handlePhoto = async (file: File) => {
+    const reduzida = await comprimirImagem(file)
+    const dataUrl = await blobParaBase64(reduzida).catch(() => '')
+    if (!dataUrl) return
+    setPhotoPreview(dataUrl)
+    onSave(dataUrl)
   }
 
   return (
