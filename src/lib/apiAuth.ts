@@ -8,6 +8,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { timingSafeEqual } from 'crypto'
 import { serverEnv } from '@/lib/server-env'
 import { cleanName } from '@/lib/relatorios'
+import { comMidia } from '@/lib/midia';
 
 type Rec = Record<string, unknown>
 
@@ -31,7 +32,7 @@ export function supabaseAdmin(): SupabaseClient {
   if (_sb) return _sb
   const url = serverEnv('NEXT_PUBLIC_SUPABASE_URL'), key = serverEnv('SUPABASE_SERVICE_ROLE_KEY')
   if (!url || !key) throw new Error('SUPABASE_SERVICE_ROLE_KEY não configurada no servidor')
-  _sb = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+  _sb = comMidia(createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } }))
   return _sb
 }
 
