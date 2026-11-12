@@ -376,6 +376,8 @@ export function sincronizarTudo(): Promise<number> {
       // atualizações de requisição guardadas no celular (comprovante sem sinal) sobem junto (José, 23/10/2026)
       try { const { enviarPendentes } = await import('@/app/(tecnico)/requisicoes/_util'); n += await enviarPendentes() } catch { /* tenta no próximo sync */ }
       await processarPdfsPendentes()
+      // sobrou relatório parado: o celular manda sozinho quando a internet voltar, mesmo com o app fechado (12/11/2026)
+      try { const s = await import('./enviarRelatorioServidor'); if (await s.temRelatorioNaFila()) await s.pedirEnvioEmSegundoPlano() } catch { /* sem suporte */ }
     } finally {
       estadoListeners.forEach((cb) => cb({ rodando: false, enviados: n }))
     }
@@ -402,6 +404,9 @@ export function startAutoSync() {
       void sincronizarTudo()
     }
   })
+
+  // abriu sem sinal com relatório parado: pede o envio sozinho para quando a internet voltar (12/11/2026)
+  void import('./enviarRelatorioServidor').then(async (s) => { if (await s.temRelatorioNaFila()) await s.pedirEnvioEmSegundoPlano() }).catch(() => {})
 
   // Sync inicial se tiver internet (antes, devolve pra fila o que morreu por rede)
   if (navigator.onLine) {

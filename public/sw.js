@@ -3,7 +3,7 @@
 // cache novo, nunca apagadas.
 // Programa do deploy (/_next/static) num cache SEM limite: o limite expulsava JS do deploy atual quando
 // imagens enchiam o cache (José, 23/10/2026). Imagens e outros GET ficam no cache com limite.
-const STATIC_CACHE = 'nt-static-v32';
+const STATIC_CACHE = 'nt-static-v33';
 const ASSETS_CACHE = 'nt-assets-v32';
 const PAGES_CACHE = 'nt-pages-v13';
 const TILES_CACHE = 'nt-tiles-v1';
@@ -378,6 +378,85 @@ async function idbDelete(keys) {
   });
 }
 
+// ── Relatórios parados na fila vão para o SERVIDOR com o app fechado (José, 12/11/2026) ──
+// "consegue forçar isso, se conectar com a internet?" — Background Sync ('enviar-relatorios'): o Android acorda o
+// service worker quando a internet volta. Mesma regra de src/lib/enviarRelatorioServidor.ts (resgatarFilaPeloServidor):
+// relatório final (Status 'enviado') → POST /api/relatorio/receber com o último token guardado ('sw-token');
+// o servidor grava e o item sai da fila (junto com o item que só sobe a fase da OS).
+function idbFila() {
+  return idbOpen().then((db) => new Promise((resolve) => {
+    if (!db || !db.objectStoreNames.contains('syncQueue')) return resolve([]);
+    const r = db.transaction('syncQueue', 'readonly').objectStore('syncQueue').getAll();
+    r.onsuccess = () => resolve(r.result || []);
+    r.onerror = () => resolve([]);
+  }));
+}
+function idbFilaApagar(ids) {
+  if (!ids.length) return Promise.resolve();
+  return idbOpen().then((db) => new Promise((resolve) => {
+    if (!db) return resolve();
+    const tx = db.transaction('syncQueue', 'readwrite');
+    const st = tx.objectStore('syncQueue');
+    for (const id of ids) st.delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+  }));
+}
+const ehRelatorioFinal = (i) => i && i.table === 'Ordem_Servico_Tecnicos' && i.data && i.data.Status === 'enviado' && typeof i.data.Ordem_Servico === 'string';
+const ehFaseDaOS = (i, os) => i && i.table === 'Ordem_Servico' && i.match && String(i.match.Id_Ordem || '') === os
+  && Object.keys(i.data || {}).every((k) => k === 'Status' || k === 'Tipo_Servico');
+
+let enviandoRelatorios = null;
+function enviarRelatoriosParados() {
+  if (enviandoRelatorios) return enviandoRelatorios;
+  enviandoRelatorios = (async () => {
+    const token = await idbGet('sw-token');
+    if (!token) return 0;
+    const fila = await idbFila();
+    const porOS = new Map();
+    for (const i of fila) if (ehRelatorioFinal(i)) {
+      const os = i.data.Ordem_Servico, atual = porOS.get(os);
+      if (!atual || (i.createdAt || 0) >= (atual.createdAt || 0)) porOS.set(os, i);
+    }
+    let enviados = 0, semRede = false;
+    const chegaram = [];
+    for (const [os, item] of porOS) {
+      let r;
+      try {
+        r = await fetch('/api/relatorio/receber', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ payload: item.data }),
+        });
+      } catch { semRede = true; break; }
+      if (r.status >= 500) { semRede = true; break; }
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) { console.warn('[SW] servidor não gravou', os, j.erro || r.status); continue; }
+      enviados++; chegaram.push(os);
+      await idbFilaApagar(fila.filter((i) => i.id && ((ehRelatorioFinal(i) && i.data.Ordem_Servico === os) || ehFaseDaOS(i, os))).map((i) => i.id));
+    }
+    if (enviados) {
+      const lista = chegaram.map((o) => o.replace(/^OS-0*/, '')).join(', ');
+      try {
+        await self.registration.showNotification(enviados === 1 ? `Relatório da OS ${lista} chegou ao portal` : `${enviados} relatórios chegaram ao portal`, {
+          body: enviados === 1 ? 'Enviado sozinho assim que o celular pegou internet.' : `OS ${lista} — enviados sozinhos assim que o celular pegou internet.`,
+          icon: '/capa_app.png', badge: '/capa_app.png', tag: 'relatorios-enviados', data: { url: '/os' },
+        });
+      } catch { /* sem permissão de notificação */ }
+      const clientes = await self.clients.matchAll({ type: 'window' }).catch(() => []);
+      for (const c of clientes) c.postMessage({ type: 'relatorios-enviados', os: chegaram });
+    }
+    // sem rede: falha o evento para o celular tentar de novo sozinho mais tarde
+    if (semRede) throw new Error('sem rede para mandar os relatórios');
+    return enviados;
+  })().finally(() => { enviandoRelatorios = null; });
+  return enviandoRelatorios;
+}
+
+self.addEventListener('sync', (event) => {
+  if (event.tag === 'enviar-relatorios') event.waitUntil(enviarRelatoriosParados());
+});
+
 // Mesmo nome? Cópia de mesmoNome (src/lib/push-server.ts) — o SW não importa módulos.
 // "DANILO DE SOUZA" × "Danilo de Souza", "José Oliveira" × "JOSE ANTONIO DE OLIVEIRA"
 function semAcento(s) { return String(s == null ? '' : s).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().trim(); }
@@ -522,7 +601,7 @@ async function backgroundPrefetch() {
 // ── Periodic Background Sync — roda a cada ~2h quando tem internet ──
 self.addEventListener('periodicsync', (event) => {
   if (event.tag === 'bg-prefetch') {
-    event.waitUntil(backgroundPrefetch());
+    event.waitUntil(Promise.all([backgroundPrefetch(), enviarRelatoriosParados().catch(() => {})]));
   }
 });
 
@@ -550,6 +629,7 @@ self.addEventListener('push', (event) => {
     Promise.all([
       self.registration.showNotification(title, options),
       backgroundPrefetch().catch(() => {}),
+      enviarRelatoriosParados().catch(() => {}), // relatório parado sobe junto (12/11/2026)
     ])
   );
 });

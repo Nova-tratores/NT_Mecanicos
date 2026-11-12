@@ -34,7 +34,7 @@ import ResumoEnvio from '@/components/relatorio/ResumoEnvio'
 import AssinaturaTecnico from '@/components/relatorio/AssinaturaTecnico'
 import NotificacaoObrigatoria from '@/components/NotificacaoObrigatoria'
 import { normFase, FASES_ANTES_DO_RELATORIO } from '@/lib/fasesRelatorio'
-import { enviarRelatorioAoServidor } from '@/lib/enviarRelatorioServidor'
+import { enviarRelatorioAoServidor, pedirEnvioEmSegundoPlano } from '@/lib/enviarRelatorioServidor'
 
 const VIDEO_EXTS = /\.(mp4|mov|webm|avi|mkv|3gp)(\?|$)/i
 function isVideo(url: string): boolean {
@@ -1386,6 +1386,7 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       setNaFila(true)
       setSucesso(true)
       clearBackup(true) // enviado: o rascunho não volta
+      void pedirEnvioEmSegundoPlano() // o celular manda sozinho quando a internet voltar, mesmo fechado (12/11/2026)
       return
     }
 

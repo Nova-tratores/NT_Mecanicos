@@ -56,6 +56,8 @@ async function apagarInscricaoNoServidor(): Promise<void> {
 }
 
 export async function limparDadosDoAparelho(): Promise<void> {
+  // antes de apagar o login guardado: relatório parado na fila vai para o servidor (12/11/2026)
+  try { const s = await import('./enviarRelatorioServidor'); await s.resgatarFilaPeloServidor() } catch { /* sem rede: a fila fica */ }
   await apagarInscricaoNoServidor()
   await cancelarPush().catch(() => {})
 

@@ -5,16 +5,21 @@
 // O último token fica guardado à parte: quando a renovação falha, o supabase-js apaga a sessão e o servidor
 // ficaria sem saber quem é o técnico.
 import { supabase } from './supabase'
-import { getQueue, removeFromQueue, type SyncItem } from './offlineCache'
+import { getQueue, removeFromQueue, offlineSet, type SyncItem } from './offlineCache'
 
 const CHAVE_TOKEN = 'nt-ultimo-token'
 let ouvindo = false
 
-/** guarda o token de cada login/renovação (chamar uma vez; idempotente) */
+/** guarda o token de cada login/renovação (chamar uma vez; idempotente). Vai também para o IndexedDB ('sw-token'):
+ *  o service worker não lê o localStorage e precisa dele para mandar a fila com o app fechado (José, 12/11/2026) */
 export function guardarUltimoToken() {
   if (ouvindo || typeof window === 'undefined') return
   ouvindo = true
-  const salvar = (t?: string | null) => { try { if (t) localStorage.setItem(CHAVE_TOKEN, t) } catch { /* sem espaço */ } }
+  const salvar = (t?: string | null) => {
+    if (!t) return
+    try { localStorage.setItem(CHAVE_TOKEN, t) } catch { /* sem espaço */ }
+    void offlineSet('sw-token', t).catch(() => {})
+  }
   supabase.auth.getSession().then(({ data }) => salvar(data.session?.access_token)).catch(() => {})
   supabase.auth.onAuthStateChange((_e, s) => salvar(s?.access_token))
 }
@@ -49,6 +54,25 @@ export async function enviarRelatorioAoServidor(payload: Record<string, unknown>
   } catch (e) {
     return { ok: false, alcancou: false, erro: (e as Error)?.name === 'AbortError' ? 'o servidor demorou' : String((e as Error)?.message || e) }
   } finally { clearTimeout(t) }
+}
+
+/**
+ * Pede ao celular para mandar a fila SOZINHO quando a internet voltar, mesmo com o app fechado (Background Sync —
+ * Android/Chrome; no iPhone não existe e segue o envio ao abrir o app). O service worker (public/sw.js, evento
+ * 'sync' com a tag 'enviar-relatorios') manda os relatórios parados para /api/relatorio/receber (José, 12/11/2026).
+ */
+export async function pedirEnvioEmSegundoPlano(): Promise<void> {
+  try {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return
+    const reg = await navigator.serviceWorker.ready
+    const sync = (reg as unknown as { sync?: { register: (tag: string) => Promise<void> } }).sync
+    if (sync) await sync.register('enviar-relatorios')
+  } catch { /* sem suporte: fica o envio ao abrir o app */ }
+}
+
+/** há relatório final parado na fila? (para pedir o envio em segundo plano ao abrir o app) */
+export async function temRelatorioNaFila(): Promise<boolean> {
+  try { return (await getQueue()).some((i) => ehRelatorioFinal(i)) } catch { return false }
 }
 
 /** item da fila que é o relatório final (não só fotos, não rascunho) */
