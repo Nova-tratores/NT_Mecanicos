@@ -9,7 +9,8 @@ import { supabase } from '@/lib/supabase'
 import { offlineWrite } from '@/lib/offlineWrite'
 import type { OrdemServico } from '@/lib/types'
 import { getCachedOS, getCachedOSTec, getCachedTecnicos, getCachedVeiculos, getCachedPPV } from '@/lib/prefetch'
-import { offlineSet, offlineGet, addPendingPdf, removePendingPdf, queueSync } from '@/lib/offlineCache'
+import { offlineSet, offlineGet, addPendingPdf, removePendingPdf, queueSync, getQueue } from '@/lib/offlineCache'
+import { sincronizarTudo } from '@/lib/syncManager'
 import { diasDoRegistro, buscarRelatorioDaOS, minutosDoDia, horasTexto, horasDecimais, atualizarCacheRelatorio } from '@/lib/diasRelatorio'
 import { downloadFotoRelatorio, cidadeDoCliente } from '@/lib/gerarEAnexarRelatorio'
 import FotoUpload from '@/components/FotoUpload'
@@ -32,6 +33,8 @@ import LeituraFoto from '@/components/relatorio/LeituraFoto'
 import ResumoEnvio from '@/components/relatorio/ResumoEnvio'
 import AssinaturaTecnico from '@/components/relatorio/AssinaturaTecnico'
 import NotificacaoObrigatoria from '@/components/NotificacaoObrigatoria'
+import { normFase, FASES_ANTES_DO_RELATORIO } from '@/lib/fasesRelatorio'
+import { enviarRelatorioAoServidor } from '@/lib/enviarRelatorioServidor'
 
 const VIDEO_EXTS = /\.(mp4|mov|webm|avi|mkv|3gp)(\?|$)/i
 function isVideo(url: string): boolean {
@@ -88,20 +91,7 @@ const paraExtras = (lista: unknown): FotoExtra[] => (Array.isArray(lista) ? list
 /** quantidade digitada ("2,5" ou "2.5") */
 const qtdNum = (v: unknown) => parseFloat(String(v ?? '').replace(',', '.')) || 0
 
-/* Fases ANTES do relatório: só nelas o envio sobe a OS para 'Relatório Concluído' (José, 23/10/2026).
-   Lógica invertida: a lista do "depois" não casava com o banco ("Enviar Omie", "Cobrando Cliente") e reeditar
-   voltava a OS de fase. Fase desconhecida fica como está.
-   Status distintos em Ordem_Servico (REST, 23/10/2026): Aguardando ordem Técnico (21), Cancelada (182),
-   Cobrando Cliente (2), Concluída (609), Enviar Omie (15), Execução (2), Execução aguardando peças
-   (em transporte) (2), Orçamento enviado para o cliente e aguardando (3), Preenchido Garantia (21),
-   Relatório Concluído (2). Ordem das fases: lib/constants FASES_OS. */
-const normFase = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()
-const FASES_ANTES_DO_RELATORIO = new Set([
-  '', 'Orçamento', 'Orçamento enviado para o cliente e aguardando', 'Execução', 'Execução Procurando peças',
-  'Execução aguardando peças (em transporte)', 'Aguardando outros', 'Aguardando ordem Técnico', 'Preenchido Paliativo',
-  // fases do POS que faltavam (OS-0853 estava em Orçamento Aprovado — José, 05/11/2026)
-  'Orçamento Aprovado', 'Execução (Realizando Diagnóstico)',
-].map(normFase))
+// Fases antes do relatório: regra comum com o servidor (lib/fasesRelatorio.ts — 12/11/2026)
 
 interface PecaInfo {
   descricao: string
@@ -164,6 +154,18 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
   const [saving, setSaving] = useState(false)
   const [sucesso, setSucesso] = useState(false)
   const [naFila, setNaFila] = useState(false) // enviado sem internet: guardado no celular (José, 23/10/2026)
+  const [tentandoDeNovo, setTentandoDeNovo] = useState(false)
+  /** "Tentar enviar agora" (12/11/2026): o servidor resgata a fila; se o relatório desta OS saiu da fila, chegou */
+  const tentarDeNovo = async () => {
+    setTentandoDeNovo(true)
+    try {
+      await sincronizarTudo()
+      const fila = await getQueue()
+      const aindaAqui = fila.some((i) => (i.table === 'Ordem_Servico_Tecnicos' || i.table === 'Ordem_Servico_Paliativos') && String(i.data?.Ordem_Servico || '') === id)
+      if (!aindaAqui) setNaFila(false)
+      else alert('Ainda não foi. Confira se o celular tem internet e toque de novo. O relatório continua guardado no celular.')
+    } finally { setTentandoDeNovo(false) }
+  }
   const [os, setOs] = useState<OrdemServico | null>(null)
   const [tecnicos, setTecnicos] = useState<string[]>([])
   const [veiculos, setVeiculos] = useState<{ IdPlaca: number; NumPlaca: string }[]>([])
@@ -1268,13 +1270,20 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
       return
     }
 
+    // 1º o SERVIDOR grava (José, 12/11/2026: "não pode depender só do celular do técnico"): não depende do login
+    // do celular nem da fila. Se o servidor não for alcançado, segue o caminho antigo (grava direto / fila), e a
+    // fila também é resgatada pelo servidor assim que houver sinal.
+    const doServidor = await enviarRelatorioAoServidor(payload)
+    if (!doServidor.ok && doServidor.alcancou) console.warn('[relatorio] servidor não gravou:', doServidor.erro)
     // Um relatório por OS: o offlineWrite grava por Ordem_Servico (update se já existe, senão insert)
-    const res = await offlineWrite({
-      table: 'Ordem_Servico_Tecnicos',
-      action: existingId ? 'update' : 'insert',
-      data: payload,
-      match: existingId ? { IdOs: existingId } : undefined,
-    })
+    const res = doServidor.ok
+      ? { ok: true, queued: false, idOs: doServidor.idOs, error: undefined as string | undefined }
+      : await offlineWrite({
+        table: 'Ordem_Servico_Tecnicos',
+        action: existingId ? 'update' : 'insert',
+        data: payload,
+        match: existingId ? { IdOs: existingId } : undefined,
+      })
     if (!res.ok) { setSaving(false); alert('Erro ao salvar: ' + (res.error || 'Erro desconhecido')); return }
     if (res.idOs) setExistingId(res.idOs)
     const queued = res.queued
@@ -1488,14 +1497,24 @@ export default function PreencherOS({ params }: { params: Promise<{ id: string }
           boxShadow: '0 10px 24px -20px rgba(15,23,42,.5)',
         }}>
           <div style={{
-            width: 64, height: 64, borderRadius: 18, background: colors.osFeita,
+            width: 64, height: 64, borderRadius: 18, background: naFila && !simulacao ? colors.danger : colors.osFeita,
             display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 16,
           }}>
-            <CheckCircle size={34} color="#fff" />
+            {naFila && !simulacao ? <AlertTriangle size={34} color="#fff" /> : <CheckCircle size={34} color="#fff" />}
           </div>
-          <h2 style={{ fontSize: 22, fontWeight: 500, color: colors.text, margin: '0 0 6px' }}>{paliativo ? (naFila ? 'Paliativo guardado no celular' : 'Paliativo enviado') : simulacao ? 'Simulação concluída' : naFila ? 'OS guardada no celular' : 'OS enviada!'}</h2>
-          <p style={{ fontSize: 15, color: colors.textMuted, margin: '0 0 22px' }}>{paliativo ? `A OS ficou em "Serviços em aberto". Quando voltar para terminar, preencha de novo e escolha Finalizado.${simulacao ? ' (Simulação: ficou só neste navegador.)' : ''}` : simulacao ? 'Era só um teste: nada foi salvo nem enviado.' : naFila ? 'O relatório está guardado e sobe sozinho quando o celular pegar sinal (ou quando você entrar de novo, se o login caiu).' : 'Os dados foram salvos com sucesso.'}</p>
+          <h2 style={{ fontSize: 22, fontWeight: 500, color: colors.text, margin: '0 0 6px' }}>{paliativo ? (naFila ? 'Paliativo AINDA NÃO chegou ao portal' : 'Paliativo enviado') : simulacao ? 'Simulação concluída' : naFila ? 'AINDA NÃO chegou ao portal' : 'OS enviada!'}</h2>
+          <p style={{ fontSize: 15, color: colors.textMuted, margin: '0 0 22px' }}>{paliativo ? `A OS ficou em "Serviços em aberto". Quando voltar para terminar, preencha de novo e escolha Finalizado.${simulacao ? ' (Simulação: ficou só neste navegador.)' : ''}` : simulacao ? 'Era só um teste: nada foi salvo nem enviado.' : naFila ? 'O relatório ficou guardado no celular. Ele vai sozinho quando o celular pegar sinal, mas confira: toque em "Tentar enviar agora" quando tiver internet. Não desinstale o app nem saia da conta até ir.' : 'O relatório chegou ao portal.'}</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
+            {naFila && !simulacao && (
+              <button onClick={tentarDeNovo} disabled={tentandoDeNovo} style={{
+                background: tentandoDeNovo ? colors.textGhost : colors.danger, color: '#fff', borderRadius: 12,
+                height: 48, fontSize: 16, fontWeight: 500, border: 'none', cursor: tentandoDeNovo ? 'not-allowed' : 'pointer',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+              }}>
+                <Send size={20} />
+                {tentandoDeNovo ? 'Enviando...' : 'Tentar enviar agora'}
+              </button>
+            )}
             <button onClick={handleGerarPdf} disabled={gerandoPdf} style={{
               background: gerandoPdf ? colors.textGhost : colors.primary, color: '#fff', borderRadius: 12,
               height: 48, fontSize: 16, fontWeight: 500, border: 'none',

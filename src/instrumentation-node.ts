@@ -6,6 +6,8 @@
 import { vigiarOS, pushDaManha } from './lib/vigia-os-push'
 // Opa sem resolver (−3/−5) e sino de OS nova: saíram do celular e rodam aqui (José, 23/10/2026)
 import { escalarOpas, avisarOsNovas } from './lib/robos-servidor'
+// relatório que chegou ao servidor e não gravou: tenta de novo (José, 12/11/2026)
+import { reaplicarPendentes } from './lib/relatorioRecebido'
 
 export function ligarRobos() {
   if (process.env.NODE_ENV !== 'production' || process.env.PUSH_VIGIA === 'off') return
@@ -17,6 +19,7 @@ export function ligarRobos() {
     try { const r = await pushDaManha(); if (r) console.log('[push]', r) } catch (e) { console.warn('[push] manhã falhou:', e instanceof Error ? e.message : e) }
     try { const r = await escalarOpas(); if (r) console.log('[robô]', r) } catch (e) { console.warn('[robô] opa falhou:', e instanceof Error ? e.message : e) }
     try { const r = await avisarOsNovas(); if (r) console.log('[robô]', r) } catch (e) { console.warn('[robô] OS nova falhou:', e instanceof Error ? e.message : e) }
+    try { const r = await reaplicarPendentes(); if (r) console.log('[relatorio]', r) } catch (e) { console.warn('[relatorio] reenvio falhou:', e instanceof Error ? e.message : e) }
     rodando = false
   }
   setTimeout(() => { void rodar() }, 30_000)

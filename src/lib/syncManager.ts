@@ -370,7 +370,9 @@ export function sincronizarTudo(): Promise<number> {
     estadoListeners.forEach((cb) => cb({ rodando: true, enviados: 0 }))
     let n = 0
     try {
-      n = await processQueue()
+      // 1º o servidor resgata os relatórios parados na fila — não depende de login válido (José, 12/11/2026)
+      try { const { resgatarFilaPeloServidor } = await import('./enviarRelatorioServidor'); n += await resgatarFilaPeloServidor() } catch { /* tenta no próximo sync */ }
+      n += await processQueue()
       // atualizações de requisição guardadas no celular (comprovante sem sinal) sobem junto (José, 23/10/2026)
       try { const { enviarPendentes } = await import('@/app/(tecnico)/requisicoes/_util'); n += await enviarPendentes() } catch { /* tenta no próximo sync */ }
       await processarPdfsPendentes()

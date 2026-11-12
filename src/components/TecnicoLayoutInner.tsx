@@ -9,9 +9,12 @@ import PushPermissionBanner from '@/components/PushPermissionBanner'
 import OfflineSync from '@/components/OfflineSync'
 import { prefetchAll, hasPrefetchedBefore } from '@/lib/prefetch'
 import { instalarAuthFetch } from '@/lib/apiFetch'
+import { guardarUltimoToken } from '@/lib/enviarRelatorioServidor'
 
 // token do login em todo fetch para /api do app (José, 23/10/2026)
 instalarAuthFetch()
+// último token guardado à parte: com o login vencido o servidor ainda sabe quem mandou o relatório (12/11/2026)
+guardarUltimoToken()
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { Megaphone, WifiOff, AlertCircle, AlertTriangle, Film, Image as ImageIcon, ChevronRight, Car, ClipboardCheck } from 'lucide-react'

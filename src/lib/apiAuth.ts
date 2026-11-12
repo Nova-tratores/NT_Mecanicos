@@ -47,7 +47,13 @@ export async function exigirUsuario(req: Request): Promise<UsuarioApi | NextResp
   const { data: auth, error } = await sb.auth.getUser(token)
   const uid = auth?.user?.id
   if (error || !uid) return nao('login inválido')
+  return usuarioPorId(uid, auth.user?.email || '')
+}
 
+/** monta o usuário do app pelo id (nome, cpf, papel) — usado pelo exigirUsuario e pelo login vencido */
+export async function usuarioPorId(uid: string, email = ''): Promise<UsuarioApi | NextResponse> {
+  let sb: SupabaseClient
+  try { sb = supabaseAdmin() } catch (e) { return nao((e as Error).message, 500) }
   const [perm, fu, mu] = await Promise.all([
     sb.from('portal_permissoes').select('is_admin, mecanico_role, mecanico_tecnico_nome').eq('user_id', uid).maybeSingle(),
     sb.from('financeiro_usu').select('nome, cpf, ativo').eq('id', uid).maybeSingle(),
@@ -58,7 +64,7 @@ export async function exigirUsuario(req: Request): Promise<UsuarioApi | NextResp
   const nomes = [p.mecanico_tecnico_nome, f.nome, m.tecnico_nome].map((x) => String(x || '').trim()).filter(Boolean)
   return {
     userId: uid,
-    email: auth.user?.email || '',
+    email,
     nome: nomes[0] || '',
     nomes: [...new Set(nomes)],
     cpf: (f.cpf as string) || null,

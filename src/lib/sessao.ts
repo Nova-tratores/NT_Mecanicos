@@ -40,7 +40,7 @@ export async function temSessaoValida(ms = 6000): Promise<boolean> {
 }
 
 /** chaves do localStorage que são do técnico (o resto — preferências do aparelho — fica) */
-const PREFIXOS_LS = ['nt-mecanicos-profile', 'nt-home-feed:', 'nt-liga-xp', 'nt-prefetch-timestamp', 'nt-vitrine-catalogo', 'nt-sem-notificacao:']
+const PREFIXOS_LS = ['nt-ultimo-token', 'nt-mecanicos-profile','nt-home-feed:', 'nt-liga-xp', 'nt-prefetch-timestamp', 'nt-vitrine-catalogo', 'nt-sem-notificacao:']
 
 /** apaga no servidor a inscrição de push deste aparelho (DELETE /api/push/subscribe), antes de desinscrever (José, 23/10/2026) */
 async function apagarInscricaoNoServidor(): Promise<void> {
